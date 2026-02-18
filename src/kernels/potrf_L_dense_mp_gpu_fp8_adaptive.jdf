@@ -1,0 +1,2062 @@
+extern "C" %{
+/**
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2018-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ **/
+
+#include "hicma_parsec.h"
+
+/**
+ * @file potrf_L_dense_mp_gpu_fp8_adaptive.jdf
+ * @brief Cholesky factorization (POTRF) task graph with FP8 precision support
+ * 
+ * This file implements a task-based Cholesky factorization algorithm using PaRSEC runtime
+ * with enhanced support for FP8 (8-bit floating point) precision. It extends the base
+ * implementation with additional precision conversion capabilities and FP8-specific optimizations.
+ * 
+ * Key features:
+ * - Full FP8 precision support with conversion routines
+ * - Mixed precision computation (DP, SP, HP, FP8)
+ * - GPU acceleration with CUDA/HIP support including FP8 kernels
+ * - Low-rank compression for off-diagonal blocks
+ * - Enhanced memory pool management for FP8 data types
+ * - Dynamic task scheduling with priority-based execution
+ * 
+ * FP8 Support:
+ * - FP8 data type definitions and conversions
+ * - GPU kernels optimized for FP8 arithmetic
+ * - Memory-efficient FP8 storage and communication
+ */
+
+/* 
+ * Helper routines for task pool initialization and key generation:
+ * 1. undetermined_nb_tasks: Returns PARSEC_UNDETERMINED_NB_TASKS to allow dynamic task creation
+ * 2. my_make_key_potrf_dgemm: Creates unique keys for GEMM tasks to ensure proper task ordering
+ * 
+ * These functions are essential for the PaRSEC runtime to properly manage task dependencies
+ * and ensure correct execution order in the Cholesky factorization algorithm.
+ */
+static uint32_t undetermined_nb_tasks(struct __parsec_potrf_L_dense_mp_gpu_fp8_adaptive_internal_taskpool_s *__tp);
+static parsec_key_t my_make_key_potrf_dgemm(const parsec_taskpool_t * tp, const parsec_assignment_t * as);
+
+/**
+ * Task Priority System:
+ * 
+ * The priority system ensures that tasks are executed in the correct order for Cholesky factorization.
+ * Higher priority values indicate tasks that should be executed earlier.
+ * 
+ * Priority formulas:
+ * - potrf_dpotrf(k)    : (MT-k)**3     - Diagonal block factorization
+ * - potrf_dsyrk(k,m)   : (MT-m)**3 + 3 * (m - k)     - Rank-k update
+ * - potrf_dtrsm(m,k)   : (MT-m)**3 + 3 * (m - k) * (2 * MT - k - m - 1)     - Triangular solve
+ * - potrf_dgemm(m,n,k) : (MT-m)**3 + 3 * (m - n) * (2 * MT - m - n - 1) + 6 * (m - k)     - Matrix multiply
+ *
+ * Maximum priority calculation:
+ * (MT - PRI_CHANGE)**3 + 3 * MT * (2 * MT - PRI_CHANGE - 1) + 6 * MT  < (MT**3 + 6 MT**2 + 3 MT)
+ *
+ * WARNING: If mt (matrix tile count) is greater than 1200, integer overflow may occur.
+ */
+
+%}
+
+%option nb_local_tasks_fn = undetermined_nb_tasks
+
+/**
+ * Global Variables:
+ * These variables are shared across all tasks in the task graph
+ */
+descA        [ type = "parsec_tiled_matrix_t*" ]        /* Main matrix descriptor for the input matrix A */
+descAr       [ type = "parsec_tiled_matrix_t*" aligned = descA ]  /* Rank matrix descriptor for low-rank compression */
+descRank     [ type = "parsec_tiled_matrix_t*" aligned = descA ]  /* Matrix descriptor for rank information storage */
+descNorm     [ type = "parsec_tiled_matrix_t*" aligned = descA ]        /* Norm descriptor used for norm */
+descFake     [ type = "parsec_tiled_matrix_t*" ]        /* Fake descriptor used for termination tasks */
+params_tlr   [ type = "hicma_parsec_params_t *" ]       /* TLR (Tile Low-Rank) parameters and configuration */
+
+/**
+ * Hidden Global Variables:
+ * These variables are internal to the task pool and not exposed to external users
+ */
+/* Memory pool handlers for different data types and operations */
+p_work       [ type = "parsec_memory_pool_t *" hidden = on default = NULL ]  /* General purpose work memory pool */
+p_work_rr    [ type = "parsec_memory_pool_t *" hidden = on default = NULL ]  /* Memory pool for rank reduction operations */
+p_work_mbr   [ type = "parsec_memory_pool_t *" hidden = on default = NULL ]  /* Memory pool for matrix block operations */
+p_work_full_dp        [ type = "parsec_memory_pool_t *" hidden = on default = NULL ]  /* Double precision full matrix memory pool */
+p_work_full_sp        [ type = "parsec_memory_pool_t *" hidden = on default = NULL ]  /* Single precision full matrix memory pool */
+p_work_full_hp        [ type = "parsec_memory_pool_t *" hidden = on default = NULL ]  /* Half precision full matrix memory pool */
+p_work_full_fp8       [ type = "parsec_memory_pool_t *" hidden = on default = NULL ]  /* FP8 precision full matrix memory pool */
+p_work_uv_dp          [ type = "parsec_memory_pool_t *" hidden = on default = NULL ]  /* Double precision U/V factor memory pool */
+p_work_uv_sp          [ type = "parsec_memory_pool_t *" hidden = on default = NULL ]  /* Single precision U/V factor memory pool */
+
+/* Task priority control variables */
+PRI_CHANGE   [ type = "int" hidden = on default = 0 ]   /* Priority change threshold for task scheduling */
+PRI_MAX      [ type = "int" hidden = on default = "(descA->mt * ( 3 + descA->mt * ( 2 + descA->mt )))" ]  /* Maximum priority value */
+
+/* GPU-related variables */
+ws_gpu       [ type = "void *" hidden = on default = NULL ]  /* GPU workspace memory */
+nb_cuda_devices      [ type = "int"   hidden = on default = 0 ]  /* Number of available CUDA devices */
+cuda_device_index    [ type = "int *" hidden = on default = "NULL"]  /* Array of CUDA device indices for load balancing */
+
+
+/**************************************************
+ *               Define Arena                     *
+ **************************************************/
+/**
+ * Arena definition for memory management and data type handling.
+ * This arena defines the memory pools and data types used throughout
+ * the Cholesky factorization algorithm, including support for:
+ * - Double precision (FULL_DP)
+ * - Single precision (FULL_SP) 
+ * - Half precision (FULL_HP)
+ * - FP8 precision (FULL_FP8)
+ * - Low-rank U/V factors (UV_DP, UV_SP)
+ * - Rank information (AR)
+ * - Communication buffers (BYTE)
+ */
+my_arena(k)
+
+// Execution space - single iteration for arena initialization
+k = 0 .. 0 
+
+// Parallel partitioning - binds to the main matrix descriptor
+:descA(0, 0)
+
+// Memory pool parameters for different data types and operations
+READ A1 <- NULL       [ type = FULL_DP ]    /* Double precision full matrix memory pool */
+READ A2 <- NULL       [ type = FULL_SP ]    /* Single precision full matrix memory pool */
+READ A3 <- NULL       [ type = FULL_HP ]    /* Half precision full matrix memory pool */
+READ A4 <- NULL       [ type = UV_DP ]      /* Double precision U/V factor memory pool */
+READ A5 <- NULL       [ type = UV_SP ]      /* Single precision U/V factor memory pool */
+READ A6 <- NULL       [ type = BYTE ]       /* Communication buffer memory pool */
+READ A7 <- NULL       [ type = AR ]         /* Rank information memory pool */
+READ A8 <- NULL       [ type = FULL_FP8 ]   /* FP8 precision full matrix memory pool */
+
+BODY
+{
+    /* Arena initialization - no specific operations needed */
+}
+END
+
+
+/**************************************************
+ *               potrf_bind_A                     *
+ **************************************************/
+/**
+ * Matrix binding task for Cholesky factorization.
+ * This task binds matrix tiles to the appropriate computational tasks
+ * based on their position in the matrix and the algorithm requirements.
+ * 
+ * Task routing logic:
+ * - (0,0): First diagonal block -> POTRF factorization
+ * - (m,0): First column blocks -> TRSM triangular solve
+ * - (m,m): Diagonal blocks -> SYRK rank-k update
+ * - (m,n): Off-diagonal blocks -> GEMM matrix multiplication
+ */
+potrf_bind_A(m, n)
+
+// Execution space - iterate over all matrix tiles
+m = 0 .. descA->mt-1
+n = %{ return parsec_imax(m-params_tlr->band_size_dense+1, 0); %} .. m
+
+// Parallel partitioning - bind to matrix descriptor
+:descA(m, n)
+
+// Data flow routing based on tile position
+READ A <- descA(m, n)       
+       -> (m == 0 && n == 0) ? T potrf_dpotrf(0)                      [ type_remote = FULL_DP ]
+       -> (n == 0)? C potrf_dtrsm(m, n)                               [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_potrf_L_dense_mp_gpu_fp8_adaptive(params_tlr->decisions, m, n, descA->lmt)]; %} ] 
+       -> (m == n && n > 0) ? T potrf_dsyrk(0, m)                     [ type_remote = FULL_DP ]
+       -> (m != n && n > 0) ? C potrf_dgemm(m, n, 0)                  [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_potrf_L_dense_mp_gpu_fp8_adaptive(params_tlr->decisions, m, n, descA->lmt)]; %} ] 
+
+BODY
+{
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)  || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    /* GPU load balancing and data placement optimization */
+    if( nb_cuda_devices > 0 ) {
+        int g = gpu_load_balance_2d( m, n, params_tlr );
+        parsec_advise_data_on_device( _f_A->original,
+                                    cuda_device_index[g],
+                                    PARSEC_DEV_DATA_ADVICE_PREFERRED_DEVICE );
+    }
+#endif
+}
+END
+
+
+/**************************************************
+ *                  TERMINATE                     *
+ **************************************************/
+/**
+ * Termination task for Cholesky factorization.
+ * This task is executed on each node after the last diagonal block
+ * factorization is completed, signaling the end of the computation.
+ * 
+ * The task sets the number of remaining tasks to 1, which allows
+ * the PaRSEC runtime to properly terminate the task pool.
+ */
+TERMINATE(n)
+// Execution space - one task per compute node
+n = 0 .. descA->super.nodes-1
+
+// Use fake descriptor for termination
+:descFake(0, n)
+
+// Control dependency - wait for the last POTRF task to complete
+CTL ctl <- ctl potrf_dpotrf(descA->mt-1)
+
+BODY
+{
+    /* Signal completion by setting task count to 1 */
+    __parsec_tp->super.super.tdm.module->taskpool_set_nb_tasks(&__parsec_tp->super.super, 1);
+#if DEBUG_INFO
+    fprintf(stderr, "Rank %d in TERMINATE\n", n);
+#endif
+}
+END
+
+
+/**************************************************
+ *               potrf_dpotrf                     *
+ **************************************************/
+/**
+ * Cholesky factorization of diagonal blocks (POTRF).
+ * This task performs the Cholesky factorization of the k-th diagonal block.
+ * It is the core computational kernel that decomposes a symmetric positive
+ * definite matrix into L*L^T form.
+ * 
+ * The task supports multiple execution backends:
+ * - GPU execution (CUDA/HIP) for large blocks
+ * - Recursive CPU execution for medium blocks
+ * - Sequential CPU execution for small blocks
+ * 
+ * Priority: High priority to ensure diagonal blocks are processed first
+ */
+potrf_dpotrf(k) [high_priority = on]
+
+// Execution space - one task per diagonal block
+k = 0 .. descA->mt-1
+
+info = 0  /* Return code for recursive calls */
+
+// Parallel partitioning - operates on diagonal blocks
+:descA(k, k)
+
+// Data dependencies and flow
+RW T <- (k == 0) ? A potrf_bind_A(k, k) : T potrf_dsyrk(k-1, k)   [ type_remote = FULL_DP ] 
+     -> T0 potrf_dpotrf_send(k)                                   [ type_remote = FULL_DP ] 
+     -> descA(k, k)                       
+
+// Termination control - last diagonal block triggers termination
+CTL ctl -> (k == descA->mt-1)? ctl TERMINATE(0 .. descA->super.nodes-1)
+
+// Dynamic priority calculation for task scheduling
+; (k >= (descA->mt - PRI_CHANGE)) ? (descA->mt - k) * (descA->mt - k) * (descA->mt - k) : PRI_MAX
+
+BODY [type=CUDA]
+{
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+    /* GPU-accelerated Cholesky factorization using CUDA */
+    hicma_parsec_core_potrf_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream, T, k );
+#if ENABLE_PROFILING
+    /* Stop profiling after processing a few blocks for performance analysis */
+    if( 10 == k) cudaProfilerStop();
+#endif
+#endif
+}
+END
+
+BODY [type=HIP]
+{
+#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    /* GPU-accelerated Cholesky factorization using HIP (AMD ROCm) */
+    hicma_parsec_core_potrf_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream, T, k );
+#endif
+}
+END
+
+BODY [type=RECURSIVE]
+{
+    /* Recursive CPU execution for medium-sized blocks */
+    int tempkm = k == descA->mt-1 ? descA->m - k*descA->mb : descA->mb;
+    int smallnb = params_tlr->HNB;
+
+    /* Use sequential CPU version for small blocks */
+    if( tempkm <= smallnb ) { 
+        return PARSEC_HOOK_RETURN_NEXT;
+    }
+
+    if(DEBUG_INFO) printf("POTRF_Recursive: %d\n", k);
+
+    /* Count floating-point operations for performance monitoring */
+    unsigned long int cnt = hicma_parsec_op_counts('c', tempkm, 0, 0, 0);
+    params_tlr->op_band[es->th_id] += cnt;
+    params_tlr->op_path[es->th_id] += cnt;
+
+    /* Print progress information */
+    hicma_parsec_print_process( descA->mt, k, params_tlr->start_time_potrf );
+
+    /* Create subtile descriptor for recursive call */
+    subtile_desc_t *small_descT;
+    parsec_taskpool_t *parsec_dpotrf;
+
+    small_descT = subtile_desc_create( descA, k, k,
+            smallnb, smallnb, 0, 0, tempkm, tempkm );
+    small_descT->mat = T;
+
+    /* Create recursive POTRF task pool */
+    parsec_dpotrf = dplasma_dpotrf_New(params_tlr->uplo, (parsec_tiled_matrix_t *)small_descT, &this_task->locals.info.value);
+
+    params_tlr->decisions_storage_final[k*descA->lmt+k] = DENSE_DP;
+
+    /* Execute recursive call asynchronously */
+    parsec_recursivecall((parsec_task_t*)this_task,
+            parsec_dpotrf, dplasma_dpotrf_Destruct,
+            1, small_descT);
+
+    return PARSEC_HOOK_RETURN_ASYNC;
+}
+END
+
+BODY
+{
+    /* Sequential CPU execution for small blocks or fallback */
+    hicma_parsec_core_potrf_cpu( descA, params_tlr, es, T, k );
+}
+END
+
+
+/**************************************************
+ *               potrf_dpotrf_send                *
+ **************************************************/
+/**
+ * Precision conversion and data sending for POTRF results.
+ * This task handles precision conversion from double precision to the
+ * target precision (single, half, or FP8) and prepares data for
+ * subsequent TRSM operations.
+ * 
+ * The task performs:
+ * - Precision conversion when needed (DP -> SP/HP/FP8)
+ * - Data preparation for triangular solve operations
+ * - Memory management for converted data
+ */
+potrf_dpotrf_send(k) [high_priority = on]
+
+// Execution space - one task per diagonal block
+k = 0 .. descA->mt-1
+
+// Parallel partitioning - operates on diagonal blocks
+:descA(k, k)
+
+// Data flow with conditional precision conversion
+READ T0 <- T potrf_dpotrf(k)                                                                                               [ type_remote = FULL_DP ]
+        -> (%{ return params_tlr->decisions_send[k*params_tlr->NT+k] == DENSE_DP; %})? T potrf_dtrsm(k+1..descA->lmt-1, k) [ type_remote = FULL_DP ]
+
+RW T    <- (%{ return params_tlr->decisions_send[k*params_tlr->NT+k] != DENSE_DP; %})? NEW: NULL                           [ type = FULL_SP ]
+        -> (%{ return params_tlr->decisions_send[k*params_tlr->NT+k] != DENSE_DP; %})? T potrf_dtrsm(k+1..descA->lmt-1, k) [ type_remote = FULL_SP ] 
+; (k >= (descA->mt - PRI_CHANGE)) ? (descA->mt - k) * (descA->mt - k) * (descA->mt - k) : PRI_MAX
+
+
+BODY [type=CUDA]
+{
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+    /* GPU-accelerated precision conversion from double to single precision */
+    if( params_tlr->decisions_send[k*params_tlr->NT+k] != DENSE_DP ) {
+        hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(cuda_device, cuda_stream));
+        double2float_GPU( descA->mb, descA->nb, T0, descA->mb, T, descA->mb, cuda_stream->cuda_stream );
+        this_task->data._f_T.data_out->original->nb_elts = descA->mb * descA->nb * sizeof(float);
+    }
+#endif
+}
+END
+
+BODY [type=HIP]
+{
+#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    /* HIP-accelerated precision conversion from double to single precision */
+    if( params_tlr->decisions_send[k*params_tlr->NT+k] != DENSE_DP ) {
+        hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(cuda_device, cuda_stream));
+        double2float_GPU( descA->mb, descA->nb, T0, descA->mb, T, descA->mb, cuda_stream->cuda_stream );
+        this_task->data._f_T.data_out->original->nb_elts = descA->mb * descA->nb * sizeof(float);
+    } 
+#endif
+}
+END
+
+BODY
+{
+    /* CPU-based precision conversion from double to single precision */
+    if( params_tlr->decisions_send[k*params_tlr->NT+k] != DENSE_DP ) {
+        hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
+        LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, T0, descA->mb, T, descA->mb );
+        this_task->data._f_T.data_out->original->nb_elts = descA->mb * descA->nb * sizeof(float);
+    }
+}
+END
+
+
+
+/**************************************************
+ *               potrf_dtrsm                      *
+ **************************************************/
+/**
+ * Triangular solve operation (TRSM) for Cholesky factorization.
+ * This task performs the triangular solve L*X = B, where L is the
+ * lower triangular factor from POTRF and B is the input matrix block.
+ * 
+ * The task supports:
+ * - Multiple precision formats (DP, SP, HP, FP8)
+ * - Low-rank compression for off-diagonal blocks
+ * - GPU acceleration for dense blocks
+ * - Recursive CPU execution for medium blocks
+ * - Sequential CPU execution for small blocks
+ */
+potrf_dtrsm(m, k) [high_priority = on]
+
+// Execution space - off-diagonal blocks below the diagonal
+m = 1 .. descA->mt-1
+k = 0 .. m-1
+
+// Control message size for rank information
+size = 1
+
+// Local copy of band size for GPU evaluation
+band_size_dense_local = params_tlr->band_size_dense
+
+
+// Parallel partitioning
+: descA(m, k)
+
+// Parameters
+READ  T <- (%{ return params_tlr->decisions_send[k*params_tlr->NT+k] == DENSE_DP; %})? T0 potrf_dpotrf_send(k)  [ type_remote = FULL_DP ] 
+        <- T potrf_dpotrf_send(k)                                                                                 [ type_remote = FULL_SP ]
+
+RW    C <- (k == 0 && m-k < params_tlr->band_size_dense) ? A potrf_bind_A(m, k) [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_potrf_L_dense_mp_gpu_fp8_adaptive(params_tlr->decisions, m, k, descA->lmt)]; %} ]
+        <- (k == 0 && m-k >= params_tlr->band_size_dense) ? descA(m, k)         
+        <- C potrf_dgemm(m, k, k-1)                                             [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_potrf_L_dense_mp_gpu_fp8_adaptive(params_tlr->decisions, m, k, descA->lmt)]; %} ]
+        -> A potrf_dsyrk(k, m)                                                  [ type_remote = BYTE layout_remote = MPI_BYTE count_remote = size ]
+        -> C0 potrf_dtrsm_send(m, k)                                            [ type_remote = BYTE layout_remote = MPI_BYTE count_remote = size ]  
+        -> descA(m, k)                                                         
+
+READ  Cr <- (k == 0 && m-k >= params_tlr->band_size_dense) ? descAr(m, k)  
+         <- (k != 0 && m-k >= params_tlr->band_size_dense) ? Cr potrf_dgemm(m, k, k-1): NULL   [ type_remote = AR ]
+         -> (m-k >= params_tlr->band_size_dense) ? Ar potrf_dsyrk(k, m)                        [ type_remote = AR ]
+         -> (m-k >= params_tlr->band_size_dense) ? Ar potrf_dgemm(m, k+1..m-1, k)              [ type_remote = AR ]
+         -> (m-k >= params_tlr->band_size_dense) ? Br potrf_dgemm(m+1..descA->mt-1, m, k)      [ type_remote = AR ]
+         -> (m-k >= params_tlr->band_size_dense) ? descAr(m, k)               
+
+RW  C_norm <- (params_tlr->adaptive_decision_runtime) ? descNorm(m, k): NULL
+           -> (params_tlr->adaptive_decision_runtime) ? A_norm potrf_dsyrk(k, m)                       [ type_remote = NORM ]
+           -> (params_tlr->adaptive_decision_runtime) ? A_norm potrf_dgemm(m, k+1..m-1, k)              [ type_remote = NORM ]
+           -> (params_tlr->adaptive_decision_runtime) ? B_norm potrf_dgemm(m+1..descA->mt-1, m, k)      [ type_remote = NORM ]
+           -> (params_tlr->adaptive_decision_runtime) ? descNorm(m, k)
+
+CTL ctl  <- (params_tlr->lookahead == 1 && m > params_tlr->lookahead+k)? ctl potrf_dsyrk(k, k+1)
+CTL ctl1 <- (params_tlr->lookahead > 1 && m > params_tlr->lookahead+k)? ctl2 potrf_dtrsm(k+2, k)
+CTL ctl2 -> (params_tlr->lookahead > 1 && m == k+2)? ctl1 potrf_dtrsm(params_tlr->lookahead+k+1 .. descA->mt-1, k)
+
+CTL ctl_left  -> (params_tlr->left_looking > 0)? ctl_left potrf_dgemm(m, k+params_tlr->Q*params_tlr->left_looking, 0)
+
+
+; (m >= (descA->mt - PRI_CHANGE)) ? (descA->mt - m) * (descA->mt - m) * (descA->mt - m) + 3 * ((2 * descA->mt) - k - m - 1) * (m - k) : PRI_MAX
+
+
+BODY [type=CUDA]
+{
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+    /* Skip GPU execution for low-rank blocks */
+    if ( !IS_DENSE(m, k) ) {
+        return PARSEC_HOOK_RETURN_NEXT;
+    }
+
+    parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, ws_gpu);
+    cublasSetStream( stream_found->handle_cublas, cuda_stream->cuda_stream );
+
+    /* After the last GEMM that writes C, optionally store C in SP.
+     * handle_cublas is HOST pointer mode (synchronous nrm2 result).
+     * handle_cublas_deviceptr cannot write into a host stack address. */
+    const size_t tile_elems = descA->mb * descA->nb;
+    const int idx_C = k * descA->lmt + m;
+    uint16_t decision = params_tlr->decisions[idx_C];
+    if( 0 == k && 0 == params_tlr->adaptive_decision && DENSE_DP == params_tlr->decisions[idx_C] ) {
+        double C_norm_host = 0.0;
+        float *C_s = (float *)stream_found->gpu_buffer_C;
+        cublasDnrm2(stream_found->handle_cublas, tile_elems, C, 1, &C_norm_host);
+        hicma_parsec_get_precision_tile(params_tlr, &decision, C_norm_host, m, k);
+        if( params_tlr->verbose > 100 ) {
+            printf("m %d k %d C_norm %lf new_decision %d old_decision %d\n",
+                   m, k, C_norm, decision, params_tlr->decisions[idx_C]);
+        }
+        if( DENSE_DP != decision ) {
+            double2float_GPU(descA->mb, descA->nb, C, descA->mb, C_s, descA->mb,
+                             cuda_stream->cuda_stream);
+            memcpy_float_GPU(descA->mb, descA->nb, C_s, C, cuda_stream->cuda_stream);
+            this_task->data._f_C.data_out->original->nb_elts = (size_t)tile_elems * sizeof(float);
+            gpu_task->flow_nb_elts[0] = (size_t)tile_elems * sizeof(float);
+            params_tlr->decisions[idx_C] = DENSE_SP;
+        }
+    }
+
+    /* GPU-accelerated triangular solve using CUDA */
+    hicma_parsec_core_trsm_gpu( descA, params_tlr, stream_found, cuda_device, gpu_task, cuda_stream, T, C, m, k );
+
+    /* Update communication size and optionally compute F norm for runtime adaptation. */
+    //const int decision = params_tlr->decisions[k*descA->lmt+m];
+    //const size_t tile_elems = descA->mb * descA->mb;
+    if(params_tlr->adaptive_decision_runtime) {
+        if( DENSE_DP == decision ) {
+            double C_precision_dp = (double)DENSE_DP;
+            cublasDnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, (double *)C_norm);
+            set_device_double(((double *)C_norm) + 1, C_precision_dp, cuda_stream->cuda_stream);
+        } else {
+            double C_precision_sp = (double)DENSE_SP;
+            float *norm_sp_device = (float *)stream_found->gpu_buffer_C;
+            cublasSnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, norm_sp_device);
+            copy_device_float_to_device_double((double *)C_norm, norm_sp_device, cuda_stream->cuda_stream);
+            set_device_double(((double *)C_norm) + 1, C_precision_sp, cuda_stream->cuda_stream);
+        }
+    }
+    this_task->locals.size.value = tile_elems * ((DENSE_DP == decision) ? sizeof(double) : sizeof(float));
+#endif
+}
+END
+
+BODY [type=HIP]
+{
+#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    /* Skip GPU execution for low-rank blocks */
+    if ( !IS_DENSE(m, k) ) {
+        return PARSEC_HOOK_RETURN_NEXT;
+    }
+
+    parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, ws_gpu);
+    cublasSetStream( stream_found->handle_cublas, cuda_stream->cuda_stream );
+
+    /* After the last GEMM that writes C, optionally store C in SP.
+     * handle_cublas is HOST pointer mode (synchronous nrm2 result).
+     * handle_cublas_deviceptr cannot write into a host stack address. */
+    const size_t tile_elems = descA->mb * descA->nb;
+    const int idx_C = k * descA->lmt + m;
+    uint16_t decision = params_tlr->decisions[idx_C];
+    if( 0 == k && 0 == params_tlr->adaptive_decision && DENSE_DP == params_tlr->decisions[idx_C] ) {
+        double C_norm_host = 0.0;
+        float *C_s = (float *)stream_found->gpu_buffer_C;
+        cublasDnrm2(stream_found->handle_cublas, tile_elems, C, 1, &C_norm_host);
+        hicma_parsec_get_precision_tile(params_tlr, &decision, C_norm_host, m, k);
+        if( params_tlr->verbose > 100 ) {
+            printf("m %d k %d C_norm %lf new_decision %d old_decision %d\n",
+                   m, k, C_norm, decision, params_tlr->decisions[idx_C]);
+        }
+        if( DENSE_DP != decision ) {
+            double2float_GPU(descA->mb, descA->nb, C, descA->mb, C_s, descA->mb,
+                             cuda_stream->cuda_stream);
+            memcpy_float_GPU(descA->mb, descA->nb, C_s, C, cuda_stream->cuda_stream);
+            this_task->data._f_C.data_out->original->nb_elts =
+                (size_t)tile_elems * sizeof(float);
+            gpu_task->flow_nb_elts[0] = (size_t)tile_elems * sizeof(float);
+            params_tlr->decisions[idx_C] = DENSE_SP;
+        }
+    }
+
+    /* GPU-accelerated triangular solve using HIP (AMD ROCm) */
+    hicma_parsec_core_trsm_gpu( descA, params_tlr, stream_found, cuda_device, gpu_task, cuda_stream, T, C, m, k );
+
+    /* Update communication size and optionally compute F norm for runtime adaptation. */
+    //const int decision = params_tlr->decisions[k*descA->lmt+m];
+    //const size_t tile_elems = descA->mb * descA->mb;
+    if(params_tlr->adaptive_decision_runtime) {
+        if( DENSE_DP == decision ) {
+            double C_precision_dp = (double)DENSE_DP;
+            cublasDnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, (double *)C_norm);
+            set_device_double(((double *)C_norm) + 1, C_precision_dp, cuda_stream->cuda_stream);
+        } else {
+            double C_precision_sp = (double)DENSE_SP;
+            float *norm_sp_device = (float *)stream_found->gpu_buffer_C;
+            cublasSnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, norm_sp_device);
+            copy_device_float_to_device_double((double *)C_norm, norm_sp_device, cuda_stream->cuda_stream);
+            set_device_double(((double *)C_norm) + 1, C_precision_sp, cuda_stream->cuda_stream);
+        }
+    }
+    this_task->locals.size.value = tile_elems * ((DENSE_DP == decision) ? sizeof(double) : sizeof(float));
+#endif
+}
+END
+
+BODY [type=RECURSIVE]
+{
+    /* Recursive CPU execution for medium-sized dense blocks */
+    int tempmm = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
+    int smallnb = params_tlr->HNB;
+
+    /* Use sequential CPU version for small blocks or non-dense blocks */
+    if( tempmm <= smallnb || DENSE_DP != params_tlr->decisions[k*descA->lmt+m] ) {
+        return PARSEC_HOOK_RETURN_NEXT;
+    }
+
+    if(DEBUG_INFO) printf("TRSM Recursive: %d %d ; mb %d, nb: %d, band_size_dense: %d\n", m, k, descA->mb, descA->nb, params_tlr->band_size_dense);
+    
+    /* Create subtile descriptors for recursive call */
+    subtile_desc_t *small_descT;
+    subtile_desc_t *small_descC;
+
+    small_descT = subtile_desc_create( descA, k, k,
+            smallnb, smallnb, 0, 0, descA->mb, descA->mb );
+    small_descT->mat = T;
+
+    small_descC = subtile_desc_create( descA, m, k,
+            smallnb, smallnb, 0, 0, tempmm, descA->mb );
+    small_descC->mat = C;
+
+    /* Create recursive TRSM task pool */
+    parsec_taskpool_t* parsec_dtrsm = dplasma_dtrsm_New(PlasmaRight, PlasmaLower,
+            PlasmaTrans, PlasmaNonUnit,
+            (double)1.0,
+            (parsec_tiled_matrix_t *)small_descT,
+            (parsec_tiled_matrix_t *)small_descC );
+
+    params_tlr->decisions_storage_final[k*descA->lmt+m] = DENSE_DP;
+
+    /* Execute recursive call asynchronously */
+    parsec_recursivecall((parsec_task_t*)this_task,
+            parsec_dtrsm, dplasma_dtrsm_Destruct,
+            2, small_descT, small_descC );
+
+    /* Update communication size for double precision */
+    this_task->locals.size.value = descA->mb * descA->mb * sizeof(double);
+
+    /* Count floating-point operations */
+    hicma_parsec_op_count_trsm( descA, params_tlr, m, k, es->th_id, tempmm, IS_DENSE(m, k)? 0: ((int*)Cr)[0] );
+
+    return PARSEC_HOOK_RETURN_ASYNC;
+}
+END
+
+BODY
+{
+    /* Skip computation for zero-rank low-rank blocks */
+    if( !IS_DENSE(m, k) && 0 == *((int *)Cr) ) {
+        this_task->locals.size.value = 0;
+        return PARSEC_HOOK_RETURN_DONE;
+    }
+
+    /* Sequential CPU execution for small blocks or low-rank blocks */
+    hicma_parsec_core_trsm_cpu( descA, descRank, params_tlr, es,
+            p_work_full_sp, T, C, m, k, IS_DENSE(m, k)? 0: ((int*)Cr)[0] );
+
+    /* Update communication size based on data type and rank */
+    if( DENSE_DP == params_tlr->decisions[k*descA->lmt+m] ) {
+        this_task->locals.size.value = descA->mb * descA->mb * sizeof(double);
+        if(params_tlr->adaptive_decision_runtime) {
+            ((double *)C_norm)[0] = LAPACKE_dlange(LAPACK_COL_MAJOR, 'F', descA->mb, descA->nb, C, descA->mb);
+            ((double *)C_norm)[1] = (double)DENSE_DP; 
+        }
+    } else if( DENSE_SP == params_tlr->decisions[k*descA->lmt+m] || DENSE_HP == params_tlr->decisions[k*descA->lmt+m] || DENSE_FP8 == params_tlr->decisions[k*descA->lmt+m] ) {
+        this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
+        if(params_tlr->adaptive_decision_runtime) {
+            float C_norm_sp = LAPACKE_slange(LAPACK_COL_MAJOR, 'F', descA->mb, descA->nb, C, descA->mb);
+            ((double *)C_norm)[0] = C_norm_sp; 
+            ((double *)C_norm)[1] = (double)DENSE_SP; 
+        }
+    } else if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+m] ) {
+        this_task->locals.size.value = descA->mb * ((int *)Cr)[0] * 2 * sizeof(double);
+    } else { 
+        this_task->locals.size.value = descA->mb * ((int *)Cr)[0] * 2 * sizeof(float);
+    }
+    //printf("TRSM Norm %d %d: %.10lf\n", m, k, ((double *)C_norm)[0]);
+
+}
+END
+
+
+/**************************************************
+ *               potrf_dtrsm_send                 *
+ **************************************************/
+/**
+ * Precision conversion and data sending for TRSM results.
+ * This task handles precision conversion from the computation precision
+ * to the target precision for subsequent GEMM operations.
+ * 
+ * The task performs:
+ * - Precision conversion (DP -> SP/HP/FP8) when needed
+ * - Data preparation for matrix multiplication operations
+ * - Memory management for converted data
+ * - Communication size calculation based on target precision
+ */
+potrf_dtrsm_send(m, k) [high_priority = on]
+
+// Execution space - off-diagonal blocks below the diagonal
+m = 1 .. descA->mt-1
+k = 0 .. m-1
+
+// Communication size must be valid even when conversion is disabled and this
+// task is only forwarding the TRSM output. Runtime TRSM stores non-DP tiles in
+// single precision, independently of the static decisions_send value.
+size = %{ return descA->mb * descA->mb *
+                 ((DENSE_DP == params_tlr->decisions[k*descA->lmt+m]) ? sizeof(double) : sizeof(float)); %}
+
+// Local copy of band size for GPU evaluation
+band_size_dense_local = params_tlr->band_size_dense
+
+
+// Parallel partitioning
+: descA(m, k)
+
+// Parameters
+READ  C0 <- C potrf_dtrsm(m, k)                                                                       [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_potrf_L_dense_mp_gpu_fp8_adaptive(params_tlr->decisions, m, k, descA->lmt)]; %} ] 
+        -> (%{ return !hicma_parsec_convert_in_trsm(params_tlr, m, k); %})? A potrf_dgemm(m, k+1..m-1, k)          [ type_remote = BYTE layout_remote = MPI_BYTE count_remote = size ] 
+        -> (%{ return !hicma_parsec_convert_in_trsm(params_tlr, m, k); %})? B potrf_dgemm(m+1..descA->mt-1, m, k)  [ type_remote = BYTE layout_remote = MPI_BYTE count_remote = size ] 
+
+RW    C <- (%{ return hicma_parsec_convert_in_trsm(params_tlr, m, k); %})? NEW: NULL                               [ type = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_send_potrf_L_dense_mp_gpu_fp8_adaptive(params_tlr->decisions_send, m, k, descA->lmt)]; %} ]
+        -> (%{ return hicma_parsec_convert_in_trsm(params_tlr, m, k); %})? A potrf_dgemm(m, k+1..m-1, k)           [ type_remote = BYTE layout_remote = MPI_BYTE count_remote = size ]
+        -> (%{ return hicma_parsec_convert_in_trsm(params_tlr, m, k); %})? B potrf_dgemm(m+1..descA->mt-1, m, k)   [ type_remote = BYTE layout_remote = MPI_BYTE count_remote = size ]
+
+; (m >= (descA->mt - PRI_CHANGE)) ? (descA->mt - m) * (descA->mt - m) * (descA->mt - m) + 3 * ((2 * descA->mt) - k - m - 1) * (m - k) : PRI_MAX
+
+
+BODY [type=CUDA]
+{
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+    /* Skip GPU execution for low-rank blocks */
+    if ( !IS_DENSE(m, k) ) {
+        return PARSEC_HOOK_RETURN_NEXT;
+    }
+
+    /* Use the converted precision when conversion runs; otherwise forward the
+     * physical TRSM representation selected at runtime. */
+    if( hicma_parsec_convert_in_trsm(params_tlr, m, k) ) {
+        if( DENSE_DP == params_tlr->decisions_send[k*descA->lmt+m] ) {
+            this_task->locals.size.value = descA->mb * descA->mb * sizeof(double);
+        } else if( DENSE_SP == params_tlr->decisions_send[k*descA->lmt+m] ) {
+            this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
+        } else if( DENSE_HP == params_tlr->decisions_send[k*descA->lmt+m] ) {
+            this_task->locals.size.value = descA->mb * descA->mb * 2;
+        } else if( DENSE_FP8 == params_tlr->decisions_send[k*descA->lmt+m] ) {
+            this_task->locals.size.value = descA->mb * descA->mb;
+        }
+    } else {
+        this_task->locals.size.value = descA->mb * descA->mb *
+            ((DENSE_DP == params_tlr->decisions[k*descA->lmt+m]) ? sizeof(double) : sizeof(float));
+    }
+
+    /* Perform precision conversion if needed */
+    if( hicma_parsec_convert_in_trsm(params_tlr, m, k) ) {
+        /* Update element count for converted data */
+        this_task->data._f_C.data_out->original->nb_elts = this_task->locals.size.value;
+
+        /* GPU-accelerated precision conversion */
+        if( DENSE_SP == params_tlr->decisions_send[k*params_tlr->NT+m] && DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
+            hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(cuda_device, cuda_stream));
+            double2float_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
+        } else if( DENSE_HP == params_tlr->decisions_send[k*params_tlr->NT+m] ) {
+            if( DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
+                hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(cuda_device, cuda_stream));
+                double2half_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
+            } else {
+                hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(cuda_device, cuda_stream));
+                float2half_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
+            }
+        } else if( DENSE_FP8 == params_tlr->decisions_send[k*params_tlr->NT+m] ) {
+#if HAVE_FP8
+            if( DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
+                hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(cuda_device, cuda_stream));
+                double2fp8_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
+            } else {
+                hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(cuda_device, cuda_stream));
+                float2fp8_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
+            }
+#endif
+        }
+    }
+
+#endif
+}
+END
+
+BODY [type=HIP]
+{
+#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    /* Skip GPU execution for low-rank blocks */
+    if ( !IS_DENSE(m, k) ) {
+        return PARSEC_HOOK_RETURN_NEXT;
+    }
+
+    /* Use the converted precision when conversion runs; otherwise forward the
+     * physical TRSM representation selected at runtime. */
+    if( hicma_parsec_convert_in_trsm(params_tlr, m, k) ) {
+        if( DENSE_DP == params_tlr->decisions_send[k*descA->lmt+m] ) {
+            this_task->locals.size.value = descA->mb * descA->mb * sizeof(double);
+        } else if( DENSE_SP == params_tlr->decisions_send[k*descA->lmt+m] ) {
+            this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
+        } else if( DENSE_HP == params_tlr->decisions_send[k*descA->lmt+m] ) {
+            this_task->locals.size.value = descA->mb * descA->mb * 2;
+        } else if( DENSE_FP8 == params_tlr->decisions_send[k*descA->lmt+m] ) {
+            this_task->locals.size.value = descA->mb * descA->mb;
+        }
+    } else {
+        this_task->locals.size.value = descA->mb * descA->mb *
+            ((DENSE_DP == params_tlr->decisions[k*descA->lmt+m]) ? sizeof(double) : sizeof(float));
+    }
+
+    /* Perform precision conversion if needed */
+    if( hicma_parsec_convert_in_trsm(params_tlr, m, k) ) {
+        /* Update element count for converted data */
+        this_task->data._f_C.data_out->original->nb_elts = this_task->locals.size.value;
+
+        /* HIP-accelerated precision conversion */
+        if( DENSE_SP == params_tlr->decisions_send[k*params_tlr->NT+m] && DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
+            hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(cuda_device, cuda_stream));
+            double2float_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
+        } else if( DENSE_HP == params_tlr->decisions_send[k*params_tlr->NT+m] ) {
+            if( DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
+                hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(cuda_device, cuda_stream));
+                double2half_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
+            } else {
+                hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(cuda_device, cuda_stream));
+                float2half_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
+            }
+        } else if( DENSE_FP8 == params_tlr->decisions_send[k*params_tlr->NT+m] ) {
+#if HAVE_FP8
+            if( DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
+                hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(cuda_device, cuda_stream));
+                double2fp8_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
+            } else {
+                hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(cuda_device, cuda_stream));
+                float2fp8_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
+            }
+#endif
+        }
+    }
+
+#endif
+}
+END
+
+BODY
+{
+    /* CPU execution should not perform precision conversion in this context */
+    if( hicma_parsec_convert_in_trsm(params_tlr, m, k) ) {
+        printf("%d %d You can not reach here !!!\n", m, k);
+    }
+}
+END
+
+
+/**************************************************
+ *               potrf_dsyrk                      *
+ **************************************************/
+/**
+ * Symmetric rank-k update operation (SYRK) for Cholesky factorization.
+ * This task performs the operation C = C - A*A^T, where A is the result
+ * from TRSM and C is the diagonal block being updated.
+ * 
+ * The task supports:
+ * - Multiple precision formats (DP, SP, HP, FP8)
+ * - Low-rank compression for off-diagonal blocks
+ * - GPU acceleration for dense blocks
+ * - Recursive CPU execution for medium blocks
+ * - Sequential CPU execution for small blocks
+ */
+potrf_dsyrk(k, m) [high_priority = on]
+
+// Execution space - off-diagonal blocks for rank-k updates
+k = 0   .. descA->mt-2
+m = k+1 .. descA->mt-1
+
+// Parallel partitioning - operates on diagonal blocks
+: descA(m, m)
+
+// Data dependencies and flow
+READ  A <- C potrf_dtrsm(m, k)                                                   [ type_remote = FULL_DP ] 
+READ  Ar <- (m-k >= params_tlr->band_size_dense) ? Cr potrf_dtrsm(m, k): NULL    [ type_remote = AR ]
+READ  A_norm <- (params_tlr->adaptive_decision_runtime) ? C_norm potrf_dtrsm(m, k): NULL    [ type_remote = NORM ]
+
+RW    T <- (k == 0) ? A potrf_bind_A(m, m) : T potrf_dsyrk(k-1, m)               [ type_remote = FULL_DP ] 
+        -> (m == k+1) ? T potrf_dpotrf(m) : T potrf_dsyrk(k+1, m)                [ type_remote = FULL_DP ] 
+
+// Lookahead control for improved parallelism
+CTL ctl -> (params_tlr->lookahead == 1 && m == k+1)? ctl potrf_dtrsm(params_tlr->lookahead+m .. descA->mt-1, k)
+
+// Dynamic priority calculation for task scheduling
+; (m >= (descA->mt - PRI_CHANGE)) ? (descA->mt - m) * (descA->mt - m) * (descA->mt - m) + 3 * (m - k) : PRI_MAX
+
+
+BODY [type=CUDA]
+{
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+    /* Extract rank information for low-rank blocks */
+    int Arank = 0;
+    if( !IS_DENSE(m, k) ) {
+        Arank = ((int *)this_task->data._f_Ar.data_in->original->device_copies[0]->device_private)[0];
+    }
+    /* GPU-accelerated symmetric rank-k update using CUDA */
+    if( params_tlr->adaptive_decision_runtime ) {
+        hicma_parsec_core_syrk_runtime_decision_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream, T, A, m, k, Arank, A_norm );
+    } else {
+        hicma_parsec_core_syrk_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream, T, A, m, k, Arank );
+    }
+#endif
+}
+END
+
+BODY [type=HIP]
+{
+#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    /* Extract rank information for low-rank blocks */
+    int Arank = 0;
+    if( !IS_DENSE(m, k) ) {
+        Arank = ((int *)this_task->data._f_Ar.data_in->original->device_copies[0]->device_private)[0];
+    }
+    /* GPU-accelerated symmetric rank-k update using HIP (AMD ROCm) */
+    if( params_tlr->adaptive_decision_runtime ) {
+        hicma_parsec_core_syrk_runtime_decision_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream, T, A, m, k, Arank, A_norm );
+    } else {
+        hicma_parsec_core_syrk_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream, T, A, m, k, Arank );
+    }
+#endif
+}
+END
+
+BODY [type=RECURSIVE]
+{
+    /* Recursive CPU execution for medium-sized dense blocks */
+    int tempmm = m == descA->mt-1 ? descA->m - m*descA->mb : descA->mb;
+    int smallnb = params_tlr->HNB;
+
+    /* Use sequential CPU version for small blocks or non-dense blocks */
+    if( tempmm <= smallnb || DENSE_DP != params_tlr->decisions[k*descA->lmt+m] ) {
+        return PARSEC_HOOK_RETURN_NEXT;
+    }
+
+    /* Count floating-point operations */
+    hicma_parsec_op_count_syrk( descA, params_tlr, m, k, es->th_id, tempmm, IS_DENSE(m, k)? 0: ((int*)Ar)[0] );
+
+    if(DEBUG_INFO) printf("SYRK Recursive %d %d \n", k, m);
+    
+    /* Create subtile descriptors for recursive call */
+    subtile_desc_t *small_descT;
+    subtile_desc_t *small_descA;
+    parsec_taskpool_t* parsec_dsyrk;
+    void *A_d;
+
+    small_descT = subtile_desc_create( descA, m, m,
+            smallnb, smallnb, 0, 0, tempmm, tempmm );
+    small_descT->mat = T;
+
+    small_descA = subtile_desc_create( descA, m, k,
+            smallnb, smallnb, 0, 0, tempmm, descA->mb );
+    small_descA->mat = A;
+
+    /* Create recursive SYRK task pool */
+    parsec_dsyrk = dplasma_dsyrk_New( PlasmaLower, PlasmaNoTrans,
+            (double)-1.0, (parsec_tiled_matrix_t*) small_descA,
+            (double)1.0,  (parsec_tiled_matrix_t*) small_descT);
+
+    /* Execute recursive call asynchronously */
+    parsec_recursivecall((parsec_task_t*)this_task,
+            parsec_dsyrk, dplasma_dsyrk_Destruct,
+            2, small_descA, small_descT);
+
+    return PARSEC_HOOK_RETURN_ASYNC;
+
+}
+END
+
+BODY
+{
+    /* Skip computation for zero-rank low-rank blocks */
+    if( !IS_DENSE(m, k) && 0 == *((int *)Ar) ) {
+        return PARSEC_HOOK_RETURN_DONE;
+    }
+
+    /* Sequential CPU execution for small blocks or low-rank blocks */
+    if(params_tlr->adaptive_decision_runtime) {
+        hicma_parsec_core_syrk_runtime_decision_cpu( descA, descRank, params_tlr, es,
+                p_work, p_work_full_dp, p_work_uv_dp, p_work_mbr, p_work_rr,
+                T, A, m, k, IS_DENSE(m, k)? 0: ((int*)Ar)[0], A_norm );
+
+    } else {
+        hicma_parsec_core_syrk_cpu( descA, descRank, params_tlr, es,
+                p_work, p_work_full_dp, p_work_uv_dp, p_work_mbr, p_work_rr,
+                T, A, m, k, IS_DENSE(m, k)? 0: ((int*)Ar)[0] );
+    }
+
+}
+END
+
+/**************************************************
+ *               potrf_dgemm                      *
+ **************************************************/
+/**
+ * General matrix multiplication (GEMM) for Cholesky factorization.
+ * This task performs the operation C = C - A*B^T, where A and B are
+ * results from TRSM operations and C is the target block being updated.
+ * 
+ * The task supports multiple computation scenarios:
+ * - Dense C, Dense A, Dense B: Standard GEMM
+ * - Dense C, Low-rank A, Dense B: Mixed precision GEMM
+ * - Dense C, Low-rank A, Low-rank B: Low-rank GEMM
+ * - Low-rank C, Low-rank A, Dense B: Low-rank update
+ * - Low-rank C, Low-rank A, Low-rank B: Low-rank GEMM
+ * 
+ * Each scenario uses different computational kernels optimized for
+ * the specific data structure and precision requirements.
+ */
+// Name
+potrf_dgemm(m, n, k)  [ make_key_fn = my_make_key_potrf_dgemm ]
+
+// Execution space - off-diagonal blocks for matrix multiplication
+k = 0   .. descA->mt-3
+m = k+2 .. descA->mt-1
+n = k+1 .. m-1
+
+// Control message size for rank information
+size = 1
+
+// Local copy of band size for GPU evaluation
+band_size_dense_local = params_tlr->band_size_dense
+
+// Parallel partitioning
+: descA(m, n)
+
+// Parameters
+READ   A <- (%{ return !hicma_parsec_convert_in_trsm(params_tlr, m, k); %})? C0 potrf_dtrsm_send(m, k)  [ type_remote = FULL_DP ] 
+         <- C potrf_dtrsm_send(m, k)                                                                    [ type_remote = FULL_DP ] 
+READ  Ar <- (m-k >= params_tlr->band_size_dense) ? Cr potrf_dtrsm(m, k): NULL                [ type_remote = AR ]
+
+READ   B <- (%{ return !hicma_parsec_convert_in_trsm(params_tlr, n, k); %})? C0 potrf_dtrsm_send(n, k)  [ type_remote = FULL_DP ] 
+         <- C potrf_dtrsm_send(n, k)                                                                    [ type_remote = FULL_DP ] 
+READ  Br <- (n-k >= params_tlr->band_size_dense) ? Cr potrf_dtrsm(n, k): NULL                [ type_remote = AR ]
+
+RW    C <- (k == 0 && m-n < params_tlr->band_size_dense) ? A potrf_bind_A(m, n)              [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_potrf_L_dense_mp_gpu_fp8_adaptive(params_tlr->decisions, m, n, descA->lmt)]; %} ]
+        <- (k == 0 && m-n >= params_tlr->band_size_dense) ? descA(m, n)  
+        <- C potrf_dgemm(m, n, k-1)                        [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_potrf_L_dense_mp_gpu_fp8_adaptive(params_tlr->decisions, m, n, descA->lmt)]; %} ]
+        -> (n == k+1) ? C potrf_dtrsm(m, n)                [ type_remote = BYTE layout_remote = MPI_BYTE count_remote = size ] 
+        -> (n != k+1) ? C potrf_dgemm(m, n, k+1)           [ type_remote = BYTE layout_remote = MPI_BYTE count_remote = size ] 
+
+RW  Cr <- (k == 0 && m-n >= params_tlr->band_size_dense) ? descAr(m, n) 
+       <- (k != 0 && m-n >= params_tlr->band_size_dense) ? Cr potrf_dgemm(m, n, k-1): NULL         [ type_remote = AR ]
+       -> (n == k+1 && m-n >= params_tlr->band_size_dense) ? Cr potrf_dtrsm(m, n)                  [ type_remote = AR ]
+       -> (n != k+1 && m-n >= params_tlr->band_size_dense) ? Cr potrf_dgemm(m, n, k+1)             [ type_remote = AR ]
+
+READ  A_norm <- (params_tlr->adaptive_decision_runtime)? C_norm potrf_dtrsm(m, k): NULL            [ type_remote = NORM ]
+READ  B_norm <- (params_tlr->adaptive_decision_runtime)? C_norm potrf_dtrsm(n, k): NULL            [ type_remote = NORM ]
+
+CTL ctl_left <- (params_tlr->left_looking > 0 && k == 0 && n >= params_tlr->Q*params_tlr->left_looking)? ctl_left potrf_dtrsm(m, n-params_tlr->Q*params_tlr->left_looking) 
+
+
+; (m >= (descA->mt - PRI_CHANGE)) ? (descA->mt - m) * (descA->mt - m) * (descA->mt - m) + 3 * ((2 * descA->mt) - m - n - 3) * (m - n) + 6 * (m - k) : PRI_MAX
+
+
+BODY [type=CUDA]
+{
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+    /* Skip GPU execution for low-rank C blocks */
+    if( !IS_DENSE(m, n) ) {
+        return PARSEC_HOOK_RETURN_NEXT;
+    }
+
+    /* Performance timing for debugging */
+    struct timeval tstart;
+    gettimeofday(&tstart, NULL);
+    double start_time = tstart.tv_sec + tstart.tv_usec / 1.0e6 - params_tlr->start_time_potrf;
+
+    /* GPU-accelerated GEMM with different data structure combinations */
+    /* Case 1: C, A, B are all dense - standard GEMM */
+    if ( IS_DENSE(m, n) && IS_DENSE(m, k) && IS_DENSE(n, k) )
+    {
+        if( params_tlr->adaptive_decision_runtime ) {
+            hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( this_task, descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream,
+                    C, A, B, m, n, k, 0, 0, 0, A_norm, B_norm );
+        } else {
+            hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream,
+                    C, A, B, m, n, k, 0, 0, 0 );
+        }
+    }
+    /* Case 2: C is dense, A is low-rank, B is dense - mixed precision GEMM */
+    else if( IS_DENSE(m, n) && !IS_DENSE(m, k) && IS_DENSE(n, k) ) 
+    { 
+        int Arank = ((int *)this_task->data._f_Ar.data_in->original->device_copies[0]->device_private)[0];
+        /* Skip computation for zero-rank A blocks */
+        if( 0 == Arank ) {
+            return PARSEC_HOOK_RETURN_DONE;
+        }
+        hicma_parsec_core_gemm_denseC_lrA_denseB_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream,
+                C, A, B, m, n, k, 0, Arank, 0 );
+    }
+    /* Case 3: C is dense, A is low-rank, B is low-rank - low-rank GEMM */
+    else if( IS_DENSE(m, n) && !IS_DENSE(m, k) && !IS_DENSE(n, k) ) 
+    {
+        int Arank = ((int *)this_task->data._f_Ar.data_in->original->device_copies[0]->device_private)[0];
+        int Brank = ((int *)this_task->data._f_Br.data_in->original->device_copies[0]->device_private)[0];
+        /* Skip computation for zero-rank A or B blocks */
+        if( 0 == Arank || 0 == Brank ) {
+            return PARSEC_HOOK_RETURN_DONE;
+        }
+        hicma_parsec_core_gemm_denseC_lrA_lrB_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream,
+                C, A, B, m, n, k, 0, Arank, Brank );
+    }
+
+    /* Calculate communication size based on data type and precision */
+    if( DENSE_DP == params_tlr->decisions[n*descA->lmt+m] ) {
+        this_task->locals.size.value = descA->mb * descA->mb * sizeof(double);
+    } else if( DENSE_SP == params_tlr->decisions[n*descA->lmt+m] ) {
+        this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
+    } else if( DENSE_HP == params_tlr->decisions[n*descA->lmt+m] ) {
+        if( n-1 == k)
+            this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
+        else
+            this_task->locals.size.value = descA->mb * descA->mb * sizeof(float) / 2;
+    } else if( DENSE_FP8 == params_tlr->decisions[n*descA->lmt+m] ) {
+        if( n-1 == k)
+            this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
+        else
+            this_task->locals.size.value = descA->mb * descA->mb * sizeof(float) / 4;
+    }
+
+#endif
+}
+END
+
+BODY [type=HIP]
+{
+#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    /* Skip GPU execution for low-rank C blocks */
+    if( !IS_DENSE(m, n) ) {
+        return PARSEC_HOOK_RETURN_NEXT;
+    }
+
+    /* Performance timing for debugging */
+    struct timeval tstart;
+    gettimeofday(&tstart, NULL);
+    double start_time = tstart.tv_sec + tstart.tv_usec / 1.0e6 - params_tlr->start_time_potrf;
+
+    /* HIP-accelerated GEMM with different data structure combinations */
+    /* Case 1: C, A, B are all dense - standard GEMM */
+    if ( IS_DENSE(m, n) && IS_DENSE(m, k) && IS_DENSE(n, k) )
+    {
+        if( params_tlr->adaptive_decision_runtime ) {
+            hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( this_task, descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream,
+                    C, A, B, m, n, k, 0, 0, 0, A_norm, B_norm );
+        } else {
+            hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream,
+                    C, A, B, m, n, k, 0, 0, 0 );
+        }
+    }
+    /* Case 2: C is dense, A is low-rank, B is dense - mixed precision GEMM */
+    else if( IS_DENSE(m, n) && !IS_DENSE(m, k) && IS_DENSE(n, k) ) 
+    { 
+        int Arank = ((int *)this_task->data._f_Ar.data_in->original->device_copies[0]->device_private)[0];
+        /* Skip computation for zero-rank A blocks */
+        if( 0 == Arank ) {
+            return PARSEC_HOOK_RETURN_DONE;
+        }
+        hicma_parsec_core_gemm_denseC_lrA_denseB_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream,
+                C, A, B, m, n, k, 0, Arank, 0 );
+    }
+    /* Case 3: C is dense, A is low-rank, B is low-rank - low-rank GEMM */
+    else if( IS_DENSE(m, n) && !IS_DENSE(m, k) && !IS_DENSE(n, k) ) 
+    {
+        int Arank = ((int *)this_task->data._f_Ar.data_in->original->device_copies[0]->device_private)[0];
+        int Brank = ((int *)this_task->data._f_Br.data_in->original->device_copies[0]->device_private)[0];
+        /* Skip computation for zero-rank A or B blocks */
+        if( 0 == Arank || 0 == Brank ) {
+            return PARSEC_HOOK_RETURN_DONE;
+        }
+        hicma_parsec_core_gemm_denseC_lrA_lrB_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream,
+                C, A, B, m, n, k, 0, Arank, Brank );
+    }
+
+    /* Calculate communication size based on data type and precision */
+    if( DENSE_DP == params_tlr->decisions[n*descA->lmt+m] ) {
+        this_task->locals.size.value = descA->mb * descA->mb * sizeof(double);
+    } else if( DENSE_SP == params_tlr->decisions[n*descA->lmt+m] ) {
+        this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
+    } else if( DENSE_HP == params_tlr->decisions[n*descA->lmt+m] ) {
+        if( n-1 == k)
+            this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
+        else
+            this_task->locals.size.value = descA->mb * descA->mb * sizeof(float) / 2;
+    } else if( DENSE_FP8 == params_tlr->decisions[n*descA->lmt+m] ) {
+        if( n-1 == k)
+            this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
+        else
+            this_task->locals.size.value = descA->mb * descA->mb * sizeof(float) / 4;
+    }
+
+#endif
+}
+END
+
+
+BODY [type=RECURSIVE]
+{
+    /* Recursive CPU execution for medium-sized dense blocks */
+    int tempmm = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
+    int smallnb = params_tlr->HNB;
+
+    /* Use sequential CPU version for small blocks or non-dense blocks */
+    if( tempmm <= smallnb
+            || DENSE_DP != params_tlr->decisions[k*descA->lmt+m]
+            || DENSE_DP != params_tlr->decisions[k*descA->lmt+n]
+            || DENSE_DP != params_tlr->decisions[n*descA->lmt+m] ) {
+        return PARSEC_HOOK_RETURN_NEXT;
+    } 
+
+    if(DEBUG_INFO) printf("GEMM Recursive: %d %d %d\n", m, n, k);
+    
+    /* Create subtile descriptors for recursive call */
+    subtile_desc_t *small_descA;
+    subtile_desc_t *small_descB;
+    subtile_desc_t *small_descC;
+    parsec_taskpool_t *parsec_dgemm;
+
+    small_descA = subtile_desc_create( descA, m, k,
+            smallnb, smallnb, 0, 0, tempmm, descA->mb );
+    small_descA->mat = A;
+
+    small_descB = subtile_desc_create( descA, n, k,
+            smallnb, smallnb, 0, 0, descA->mb, descA->mb );
+    small_descB->mat = B;
+
+    small_descC = subtile_desc_create( descA, m, n,
+            smallnb, smallnb, 0, 0, tempmm, descA->mb );
+    small_descC->mat = C;
+
+    /* Create recursive GEMM task pool */
+    parsec_dgemm = dplasma_dgemm_New(PlasmaNoTrans, PlasmaTrans,
+            (double)-1.0,
+            (parsec_tiled_matrix_t *)small_descA,
+            (parsec_tiled_matrix_t *)small_descB,
+            (double) 1.0,
+            (parsec_tiled_matrix_t *)small_descC);
+
+    /* Execute recursive call asynchronously */
+    parsec_recursivecall((parsec_task_t*)this_task,
+            parsec_dgemm, dplasma_dgemm_Destruct,
+            3, small_descA, small_descB, small_descC );
+
+    /* Count floating-point operations */
+    int Crank = IS_DENSE(m, n)? 0: ((int*)Cr)[0];
+    int Arank = IS_DENSE(m, k)? 0: ((int*)Ar)[0];
+    int Brank = IS_DENSE(n, k)? 0: ((int*)Br)[0];
+    hicma_parsec_op_count_gemm_dense( descA, params_tlr, m, n, k, es->th_id, tempmm, Crank, Arank, Brank );
+
+    /* Update communication size for double precision */
+    this_task->locals.size.value = descA->mb * descA->mb * sizeof(double);
+
+    return PARSEC_HOOK_RETURN_ASYNC;
+}
+END
+
+BODY
+{
+    /* Extract rank information for all operands */
+    int Crank = IS_DENSE(m, n)? 0: ((int*)Cr)[0];
+    int Arank = IS_DENSE(m, k)? 0: ((int*)Ar)[0];
+    int Brank = IS_DENSE(n, k)? 0: ((int*)Br)[0];
+    double Anorm = (params_tlr->adaptive_decision_runtime)? ((double *)A_norm)[0]: 0; 
+    double Bnorm = (params_tlr->adaptive_decision_runtime)? ((double *)B_norm)[0]: 0; 
+
+    /* Calculate actual matrix dimensions */
+    int tempmm = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
+    void *A_use = A;
+    void *B_use = B;
+    void *A_d, *A_s, *B_d, *B_s, *A_h, *B_h;
+
+#if PRINT_RANK
+    /* Gather rank information for debugging and analysis */
+    hicma_parsec_gather_rank_initial( descA, descRank, params_tlr, m, n, k, Crank );
+#endif
+
+    /* CPU execution with different data structure combinations */
+    /* Case 1: C, A, B are all dense - standard GEMM */
+    if (  IS_DENSE(m, n) && IS_DENSE(m, k) && IS_DENSE(n, k) ) 
+    {
+        if(1 && params_tlr->adaptive_decision_runtime) {
+            hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( descA, descRank, params_tlr, es,
+                    p_work, p_work_full_dp, p_work_full_sp, p_work_full_hp,
+                    p_work_uv_dp, p_work_uv_sp, p_work_mbr, p_work_rr,
+                    C, A, B, m, n, k, Crank, Arank, Brank, A_norm, B_norm);
+        } else {
+            hicma_parsec_core_gemm_denseC_denseA_denseB_cpu( descA, descRank, params_tlr, es,
+                    p_work, p_work_full_dp, p_work_full_sp, p_work_full_hp,
+                    p_work_uv_dp, p_work_uv_sp, p_work_mbr, p_work_rr,
+                    C, A, B, m, n, k, Crank, Arank, Brank, Anorm, Bnorm);
+        }
+    }
+    /* Case 2: C is dense, A is low-rank, B is dense - mixed precision GEMM */
+    else if(  IS_DENSE(m, n) && !IS_DENSE(m, k) && IS_DENSE(n, k) ) 
+    { 
+        /* Skip computation for zero-rank A blocks */
+        if( 0 == Arank ) { 
+            return PARSEC_HOOK_RETURN_DONE;
+        } 
+
+        hicma_parsec_core_gemm_denseC_lrA_denseB_cpu( descA, descRank, params_tlr, es,
+            p_work, p_work_full_dp, p_work_full_sp, p_work_full_hp,
+            p_work_uv_dp, p_work_uv_sp, p_work_mbr, p_work_rr,
+            C, A, B, m, n, k, Crank, Arank, Brank );
+    }
+    /* Case 3: C is dense, A is low-rank, B is low-rank - low-rank GEMM */
+    else if(  IS_DENSE(m, n) && !IS_DENSE(m, k) && !IS_DENSE(n, k) )
+    {
+        /* Skip computation for zero-rank A or B blocks */
+        if( 0 == Arank || 0 == Brank ) {
+            return PARSEC_HOOK_RETURN_DONE;
+        }
+
+        hicma_parsec_core_gemm_denseC_lrA_lrB_cpu( descA, descRank, params_tlr, es,
+            p_work, p_work_full_dp, p_work_full_sp, p_work_full_hp,
+            p_work_uv_dp, p_work_uv_sp, p_work_mbr, p_work_rr,
+            C, A, B, m, n, k, Crank, Arank, Brank );
+    }
+    /* Case 4: C is low-rank, A is low-rank, B is dense - low-rank update */
+    else if( !IS_DENSE(m, n) && !IS_DENSE(m, k) && IS_DENSE(n, k) ) 
+    {
+        if(DEBUG_INFO) printf("GEMM (%d, %d, %d) : %d %d %d : C_LOW_RANK, A_LOW_RANK, B_DENSE\n",
+            m, n, k, params_tlr->decisions[n*descA->lmt+m], params_tlr->decisions[k*descA->lmt+m], params_tlr->decisions[k*descA->lmt+n]);
+
+        int tempmmu = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
+        int tempmmv = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
+        int ldamu = BLKLDD( descA, m );
+        int ldamv = BLKLDD( descA, m );
+        int ldanu = BLKLDD( descA, n );
+        int ldanv = BLKLDD( descA, n );
+
+        int Crank_old = ((int*)Cr)[0];
+        void *Au, *Av, *Cu, *Cv;
+
+        /* If rank is 0, return */
+        if( 0 == Arank ) {
+            return PARSEC_HOOK_RETURN_DONE;
+        }
+
+        void *p_elem_work = NULL;
+        p_elem_work = parsec_private_memory_pop( p_work );
+        int new_Crank = ((int*)Cr)[0];
+
+        if( LOW_RANK_DP == params_tlr->decisions[n*descA->lmt+m] )
+        {
+            /* Convert datatype, A */
+            if( LOW_RANK_SP == params_tlr->decisions[k*descA->lmt+m] ) {
+                A_d = parsec_private_memory_pop( p_work_uv_dp );
+                hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
+                LAPACKE_slag2d( LAPACK_COL_MAJOR, descA->mb, Arank * 2, A, descA->mb, A_d, descA->mb );
+                A_use = A_d;
+            }
+
+            /* Convert datatype, B */
+            if( DENSE_SP == params_tlr->decisions[k*descA->lmt+n] || DENSE_HP == params_tlr->decisions[k*descA->lmt+n] ) {
+                B_d = parsec_private_memory_pop( p_work_full_dp );
+                hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
+                LAPACKE_slag2d( LAPACK_COL_MAJOR, descA->mb, descA->nb, B, descA->mb, B_d, descA->mb );
+                B_use = B_d;
+            }
+
+            /* U and V pointer */
+            Au = (void *)A_use;
+            Av = (void *)A_use + descA->mb * Arank * sizeof(double);
+
+            Cu = (void *)C;
+            Cv = (void *)C + descA->mb * Crank_old * sizeof(double);
+
+            /** Calls two-step hcore_gemm.
+              First step reveals ACTUAL_RANK.
+              Second step constructs new CU and CV.
+              Provided CU and CV buffers must have at least ACTUAL_RANK number of columns.
+             */
+            double* work_new;
+            double* _CU;
+            double* _CV;
+            int CU_ncols;
+            int new_UVrk;
+            double* newU;
+            int ld_newU;
+            double* qrtauA;
+            int CV_ncols;
+            double* newV;
+            int ld_newV;
+            double* qrtauB;
+            int use_CUV_clone;
+            double* CUclone;
+            int ld_CUclone;
+            double *_CU_save;
+            double* CVclone;
+            int ld_CVclone;
+            double* _CV_save;
+            flop_counter flops;
+            HCORE_dgemm_qr_svd_b_dense( PlasmaNoTrans, PlasmaTrans,
+                    tempmmv, // ASSUMPTION: For a tile, if nrows<ncols, storage is ncols for both U and V
+                    tempmmv,
+                    (double)-1.0,
+                    Au, Av, Ar, ldamu,
+                    B_use, ldamv,
+                    (double)1.0,
+                    Cu, Cv, &new_Crank, ldamu,
+                    params_tlr->fixedrk, params_tlr->maxrank, params_tlr->compmaxrank, params_tlr->fixedacc, p_elem_work,
+                    &flops,
+                    /** parameters that will be passed to HCORE_dgemm_ormqr */
+                    &work_new,
+                    &_CU,
+                    &_CV,
+                    &CU_ncols,
+                    &new_UVrk,
+                    &newU,
+                    &ld_newU,
+                    &qrtauA,
+                    &CV_ncols,
+                    &newV,
+                    &ld_newV,
+                    &qrtauB,
+                    &use_CUV_clone,
+                    &CUclone,
+                    &ld_CUclone,
+                    &_CU_save,
+                    &CVclone,
+                    &ld_CVclone,
+                    &_CV_save
+                        );
+
+            /* If new_UVrk > Crank_old, re-allocate */
+            if( new_UVrk > Crank_old && !params_tlr->send_full_tile ) {
+                if( DEBUG_INFO ) printf("Reallocate %d %d %d : C_LOW_RANK_DP, A_LOW_RANK, B_DENSE\n", m, n, k);
+                if( NULL != this_task->data._f_C.data_out->device_private )
+                    free( this_task->data._f_C.data_out->device_private ); 
+                this_task->data._f_C.data_out->device_private = calloc( descA->mb * new_UVrk * 2, sizeof(double) );
+                this_task->data._f_C.data_out->original->nb_elts = descA->mb * new_UVrk * 2 * sizeof(double);
+            }
+
+            /* Address for Cu and Cv to be copied to */
+            _CU_save = this_task->data._f_C.data_out->device_private;
+            _CV_save = this_task->data._f_C.data_out->device_private + descA->mb * new_UVrk * sizeof(double);
+
+            HCORE_dgemm_ormqr( PlasmaNoTrans, PlasmaTrans,
+                    tempmmv, // ASSUMPTION: For a tile, if nrows<ncols, storage is ncols for both U and V
+                    tempmmv,
+                    (double)-1.0,
+                    Au, Av, Ar, ldamu,
+                    (double)1.0,
+                    Cu, Cv, &new_Crank, ldamu,
+                    params_tlr->fixedrk, params_tlr->maxrank, params_tlr->compmaxrank, params_tlr->fixedacc, work_new,
+                    &flops,
+                    /** parameters coming from HCORE_dgemm_qr_svd */
+                    _CU,
+                    _CV,
+                    CU_ncols,
+                    new_UVrk,
+                    newU,
+                    ld_newU,
+                    qrtauA,
+                    CV_ncols,
+                    newV,
+                    ld_newV,
+                    qrtauB,
+                    use_CUV_clone,
+                    CUclone,
+                    ld_CUclone,
+                    _CU_save,
+                    CVclone,
+                    ld_CVclone,
+                    _CV_save
+                        );
+
+            /* Update send size, how many bytes */
+            this_task->locals.size.value = descA->mb * ((int *)Cr)[0] * 2 * sizeof(double);
+
+            /* Push back to mempool */
+            if( LOW_RANK_SP == params_tlr->decisions[k*descA->lmt+m] )
+                parsec_private_memory_push( p_work_uv_dp, A_d );
+
+            if( DENSE_SP == params_tlr->decisions[k*descA->lmt+n] || DENSE_HP == params_tlr->decisions[k*descA->lmt+n] )
+                parsec_private_memory_push( p_work_full_dp, B_d );
+        }
+        else
+        {
+            /* Convert datatype, A */
+            if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+m] ) {
+                A_s = parsec_private_memory_pop( p_work_uv_sp );
+                hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
+                LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, Arank * 2, A, descA->mb, A_s, descA->mb );
+                A_use = A_s;
+            }
+
+            /* Convert datatype, B */
+            if( DENSE_DP == params_tlr->decisions[k*descA->lmt+n] ) {
+                B_s = parsec_private_memory_pop( p_work_full_sp );
+                hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
+                LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, B, descA->mb, B_s, descA->mb );
+                B_use = B_s;
+            }
+
+            /* U and V pointer */
+            Au = (void *)A_use;
+            Av = (void *)A_use + descA->mb * Arank * sizeof(float);
+
+            Cu = (void *)C;
+            Cv = (void *)C + descA->mb * Crank_old * sizeof(float);
+
+            /** Calls two-step hcore_gemm.
+              First step reveals ACTUAL_RANK.
+              Second step constructs new CU and CV.
+              Provided CU and CV buffers must have at least ACTUAL_RANK number of columns.
+             */
+
+            float* work_new;
+            float* _CU;
+            float* _CV;
+            int CU_ncols;
+            int new_UVrk;
+            float* newU;
+            int ld_newU;
+            float* qrtauA;
+            int CV_ncols;
+            float* newV;
+            int ld_newV;
+            float* qrtauB;
+            int use_CUV_clone;
+            float* CUclone;
+            int ld_CUclone;
+            float* _CU_save;
+            float* CVclone;
+            int ld_CVclone;
+            float* _CV_save;
+            flop_counter flops;
+            HCORE_sgemm_qr_svd_b_dense( PlasmaNoTrans, PlasmaTrans,
+                    tempmmv,
+                    tempmmv,
+                    (float)-1.0, 
+                    Au, Av, Ar, ldamu,
+                    B_use, ldamv,
+                    (float)1.0,
+                    Cu, Cv, &new_Crank, ldamu,
+                    params_tlr->fixedrk, params_tlr->maxrank, params_tlr->compmaxrank, params_tlr->fixedacc, p_elem_work,
+                    &flops,
+                    /** parameters that will be passed to HCORE_dgemm_ormqr */
+                    &work_new,
+                    &_CU,
+                    &_CV,
+                    &CU_ncols,
+                    &new_UVrk,
+                    &newU,
+                    &ld_newU,
+                    &qrtauA,
+                    &CV_ncols,
+                    &newV,
+                    &ld_newV,
+                    &qrtauB,
+                    &use_CUV_clone,
+                    &CUclone,
+                    &ld_CUclone,
+                    &_CU_save,
+                    &CVclone,
+                    &ld_CVclone,
+                    &_CV_save
+                        );
+
+            /* If new_UVrk > Crank_old, re-allocate */
+            if( new_UVrk > Crank_old && !params_tlr->send_full_tile ) {
+                if( DEBUG_INFO ) printf("Reallocate %d %d %d : C_LOW_RANK_SP, A_LOW_RANK, B_DENSE\n", m, n, k);
+                if( NULL != this_task->data._f_C.data_out->device_private )
+                    free( this_task->data._f_C.data_out->device_private ); 
+                this_task->data._f_C.data_out->device_private = calloc( descA->mb * new_UVrk * 2, sizeof(float) );
+                this_task->data._f_C.data_out->original->nb_elts = descA->mb * new_UVrk * 2 * sizeof(float);
+            }
+
+            /* Address for Cu and Cv to be copied to */
+            _CU_save = this_task->data._f_C.data_out->device_private;
+            _CV_save = this_task->data._f_C.data_out->device_private + descA->mb * new_UVrk * sizeof(float);
+
+            HCORE_sgemm_ormqr( PlasmaNoTrans, PlasmaTrans,
+                    tempmmv, // ASSUMPTION: For a tile, if nrows<ncols, storage is ncols for both U and V
+                    tempmmv,
+                    (float)-1.0,
+                    Au, Av, Ar, ldamu,
+                    (float)1.0,
+                    Cu, Cv, &new_Crank, ldamu,
+                    params_tlr->fixedrk, params_tlr->maxrank, params_tlr->compmaxrank, params_tlr->fixedacc, work_new,
+                    &flops,
+                    /** parameters coming from HCORE_dgemm_qr_svd */
+                    _CU,
+                    _CV,
+                    CU_ncols,
+                    new_UVrk,
+                    newU,
+                    ld_newU,
+                    qrtauA,
+                    CV_ncols,
+                    newV,
+                    ld_newV,
+                    qrtauB,
+                    use_CUV_clone,
+                    CUclone,
+                    ld_CUclone,
+                    _CU_save,
+                    CVclone,
+                    ld_CVclone,
+                    _CV_save
+                        );
+
+            /* Update send size, how many bytes */
+            this_task->locals.size.value = descA->mb * ((int *)Cr)[0] * 2 * sizeof(float);
+
+            /* Push back to mempool */
+            if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+m] )
+                parsec_private_memory_push( p_work_uv_sp, A_s );
+
+            if( DENSE_DP == params_tlr->decisions[k*descA->lmt+n] )
+                parsec_private_memory_push( p_work_full_sp, B_s );
+        }
+
+        ((int*)Cr)[0] = new_Crank;
+        parsec_private_memory_push( p_work, p_elem_work );
+
+        /* Operation count */
+        int Crank_old__Arank = Crank_old + Arank;
+        unsigned long int cnt = 0;
+
+        /// QR([CU AU])
+        unsigned long int qraflop = hicma_parsec_op_counts('q', tempmmv, Crank_old__Arank, 0, 0);///ASSUMPTION:tempmmv is not totally correct if nrowsC<ncolsC
+        unsigned long int qrbflop = hicma_parsec_op_counts('q', tempmmv, Crank_old__Arank, 0, 0);
+        /// Au * B
+        qrbflop += hicma_parsec_op_counts('m', Arank, tempmmv, tempmmv, 0);
+        int rA_nrows  = tempmmv < Crank_old__Arank ? tempmmv : Crank_old__Arank;
+        unsigned long int svdflop = hicma_parsec_op_counts('r', Crank_old__Arank, Crank_old__Arank, 2, 0);// trmm is used
+        svdflop += hicma_parsec_op_counts('s', Crank_old__Arank, 0, 0, 0);
+        svdflop += Crank_old__Arank * new_Crank;
+        unsigned long int newuflop = hicma_parsec_op_counts('o', tempmmv, new_Crank, Crank_old__Arank, 1);
+        unsigned long int newvflop = hicma_parsec_op_counts('o', new_Crank, tempmmv, Crank_old__Arank, 2);
+
+        cnt = qraflop + qrbflop + svdflop + newuflop + newvflop;
+        params_tlr->op_offband[es->th_id] += cnt;
+        params_tlr->op_offpath[es->th_id] += cnt;
+
+    }
+    /* Case 5: C is low-rank, A is low-rank, B is low-rank - low-rank GEMM */
+    else if( !IS_DENSE(m, n) && !IS_DENSE(m, k) && !IS_DENSE(n, k) ) 
+    {
+        if(DEBUG_INFO) printf("GEMM (%d, %d, %d) : %d %d %d : C_LOW_RANK, A_LOW_RANK, B_LOW_RANK\n",
+            m, n, k, params_tlr->decisions[n*descA->lmt+m], params_tlr->decisions[k*descA->lmt+m], params_tlr->decisions[k*descA->lmt+n]);
+
+        int tempmmu = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
+        int tempmmv = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
+        int ldamu = BLKLDD( descA, m );
+        int ldamv = BLKLDD( descA, m );
+        int ldanu = BLKLDD( descA, n );
+        int ldanv = BLKLDD( descA, n );
+
+        int Crank_old = ((int*)Cr)[0];
+        void *Au, *Av, *Bu, *Bv, *Cu, *Cv;
+
+        /* If rank is 0, return */
+        if( 0 == Arank || 0 == Brank ) {
+            return PARSEC_HOOK_RETURN_DONE;
+        }
+
+        void *p_elem_work = NULL;
+        p_elem_work = parsec_private_memory_pop( p_work );
+
+        if( LOW_RANK_DP == params_tlr->decisions[n*descA->lmt+m] )
+        {
+            /* Convert datatype, A */
+            if( LOW_RANK_SP == params_tlr->decisions[k*descA->lmt+m] ) {
+                A_d = parsec_private_memory_pop( p_work_uv_dp );
+                hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
+                LAPACKE_slag2d( LAPACK_COL_MAJOR, descA->mb, Arank * 2, A, descA->mb, A_d, descA->mb );
+                A_use = A_d;
+            }
+
+            /* Convert datatype, B */
+            if( LOW_RANK_SP == params_tlr->decisions[k*descA->lmt+n] ) {
+                B_d = parsec_private_memory_pop( p_work_uv_dp );
+                hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
+                LAPACKE_slag2d( LAPACK_COL_MAJOR, descA->mb, Brank * 2, B, descA->mb, B_d, descA->mb );
+                B_use = B_d;
+            }
+
+            /* U and V pointer */
+            Au = (void *)A_use;
+            Av = (void *)A_use + descA->mb * Arank * sizeof(double);
+            Bu = (void *)B_use;
+            Bv = (void *)B_use + descA->mb * Brank * sizeof(double);
+            Cu = (void *)C;
+            Cv = (void *)C + descA->mb * Crank_old * sizeof(double);
+
+            /** Calls two-step hcore_gemm.
+              First step reveals ACTUAL_RANK.
+              Second step constructs new CU and CV.
+              Provided CU and CV buffers must have at least ACTUAL_RANK number of columns.
+             */
+            double* work_new;
+            double* _CU;
+            double* _CV;
+            int CU_ncols;
+            int new_UVrk;
+            double* newU;
+            int ld_newU;
+            double* qrtauA;
+            int CV_ncols;
+            double* newV;
+            int ld_newV;
+            double* qrtauB;
+            int use_CUV_clone;
+            double* CUclone;
+            int ld_CUclone;
+            double *_CU_save;
+            double* CVclone;
+            int ld_CVclone;
+            double* _CV_save;
+            flop_counter flops;
+            HCORE_dgemm_qr_svd( PlasmaNoTrans, PlasmaTrans,
+                    tempmmv, // ASSUMPTION: For a tile, if nrows<ncols, storage is ncols for both U and V
+                    tempmmv,
+                    (double)-1.0,
+                    Au, Av, Ar, ldamu,
+                    Bu, Bv, Br, ldamv,
+                    (double)1.0,
+                    Cu, Cv, Cr, ldamu,
+                    params_tlr->fixedrk, params_tlr->maxrank, params_tlr->compmaxrank, params_tlr->fixedacc, p_elem_work,
+                    &flops,
+                    /** parameters that will be passed to HCORE_dgemm_ormqr */
+                    &work_new,
+                    &_CU,
+                    &_CV,
+                    &CU_ncols,
+                    &new_UVrk,
+                    &newU,
+                    &ld_newU,
+                    &qrtauA,
+                    &CV_ncols,
+                    &newV,
+                    &ld_newV,
+                    &qrtauB,
+                    &use_CUV_clone,
+                    &CUclone,
+                    &ld_CUclone,
+                    &_CU_save,
+                    &CVclone,
+                    &ld_CVclone,
+                    &_CV_save
+                        );
+
+            /* If new_UVrk > Crank_old, re-allocate */
+            if( new_UVrk > Crank_old && !params_tlr->send_full_tile ) {
+                if( DEBUG_INFO ) printf("\nReallocate %d %d %d : C_LOW_RANK_DP, A_LOW_RANK, B_LOW_RANK\n\n", m, n, k);
+                if( NULL != this_task->data._f_C.data_out->device_private )
+                    free( this_task->data._f_C.data_out->device_private ); 
+                this_task->data._f_C.data_out->device_private = calloc( descA->mb * new_UVrk * 2, sizeof(double) );
+                this_task->data._f_C.data_out->original->nb_elts = descA->mb * new_UVrk * 2 * sizeof(double);
+            }
+
+            /* Address for Cu and Cv to be copied to */
+            _CU_save = this_task->data._f_C.data_out->device_private;
+            _CV_save = this_task->data._f_C.data_out->device_private + descA->mb * new_UVrk * sizeof(double);
+
+            HCORE_dgemm_ormqr( PlasmaNoTrans, PlasmaTrans,
+                    tempmmv, // ASSUMPTION: For a tile, if nrows<ncols, storage is ncols for both U and V
+                    tempmmv,
+                    (double)-1.0,
+                    Au, Av, Ar, ldamu,
+                    (double)1.0,
+                    Cu, Cv, Cr, ldamu,
+                    params_tlr->fixedrk, params_tlr->maxrank, params_tlr->compmaxrank, params_tlr->fixedacc, work_new,
+                    &flops,
+                    /** parameters coming from HCORE_dgemm_qr_svd */
+                    _CU,
+                    _CV,
+                    CU_ncols,
+                    new_UVrk,
+                    newU,
+                    ld_newU,
+                    qrtauA,
+                    CV_ncols,
+                    newV,
+                    ld_newV,
+                    qrtauB,
+                    use_CUV_clone,
+                    CUclone,
+                    ld_CUclone,
+                    _CU_save,
+                    CVclone,
+                    ld_CVclone,
+                    _CV_save
+                        );
+
+            Cu = _CU_save;
+            Cv = _CV_save;
+
+            /* Update send size, how many bytes */
+            this_task->locals.size.value = descA->mb * ((int *)Cr)[0] * 2 * sizeof(double);
+
+            /* Push back to mempool */
+            if( LOW_RANK_SP == params_tlr->decisions[k*descA->lmt+m] )
+                parsec_private_memory_push( p_work_uv_dp, A_d );
+
+            if( LOW_RANK_SP == params_tlr->decisions[k*descA->lmt+n] )
+                parsec_private_memory_push( p_work_uv_dp, B_d );
+        }
+        else
+        {
+            /* Convert datatype, A */
+            if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+m] ) {
+                A_s = parsec_private_memory_pop( p_work_uv_sp );
+                hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
+                LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, Arank * 2, A, descA->mb, A_s, descA->mb );
+                A_use = A_s;
+            }
+
+            /* Convert datatype, B */
+            if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+n] ) {
+                B_s = parsec_private_memory_pop( p_work_uv_sp );
+                hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
+                LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, Brank * 2, B, descA->mb, B_s, descA->mb );
+                B_use = B_s;
+            }
+
+            /* U and V pointer */
+            Au = (void *)A_use;
+            Av = (void *)A_use + descA->mb * Arank * sizeof(float);
+            Bu = (void *)B_use;
+            Bv = (void *)B_use + descA->mb * Brank * sizeof(float);
+            Cu = (void *)C;
+            Cv = (void *)C + descA->mb * Crank_old * sizeof(float);
+
+            /** Calls two-step hcore_gemm.
+              First step reveals ACTUAL_RANK.
+              Second step constructs new CU and CV.
+              Provided CU and CV buffers must have at least ACTUAL_RANK number of columns.
+             */
+            float* work_new;
+            float* _CU;
+            float* _CV;
+            int CU_ncols;
+            int new_UVrk;
+            float* newU;
+            int ld_newU;
+            float* qrtauA;
+            int CV_ncols;
+            float* newV;
+            int ld_newV;
+            float* qrtauB;
+            int use_CUV_clone;
+            float* CUclone;
+            int ld_CUclone;
+            float* _CU_save;
+            float* CVclone;
+            int ld_CVclone;
+            float* _CV_save;
+            flop_counter flops;
+            HCORE_sgemm_qr_svd( PlasmaNoTrans, PlasmaTrans,
+                    tempmmv, // ASSUMPTION: For a tile, if nrows<ncols, storage is ncols for both U and V
+                    tempmmv,
+                    (float)-1.0,
+                    Au, Av, Ar, ldamu,
+                    Bu, Bv, Br, ldamv,
+                    (float)1.0,
+                    Cu, Cv, Cr, ldamu,
+                    params_tlr->fixedrk, params_tlr->maxrank, params_tlr->compmaxrank, params_tlr->fixedacc, p_elem_work,
+                    &flops,
+                    /** parameters that will be passed to HCORE_dgemm_ormqr */
+                    &work_new,
+                    &_CU,
+                    &_CV,
+                    &CU_ncols,
+                    &new_UVrk,
+                    &newU,
+                    &ld_newU,
+                    &qrtauA,
+                    &CV_ncols,
+                    &newV,
+                    &ld_newV,
+                    &qrtauB,
+                    &use_CUV_clone,
+                    &CUclone,
+                    &ld_CUclone,
+                    &_CU_save,
+                    &CVclone,
+                    &ld_CVclone,
+                    &_CV_save
+                        );
+
+            /* If new_UVrk > Crank_old, re-allocate */
+            if( new_UVrk > Crank_old && !params_tlr->send_full_tile ) {
+                if( DEBUG_INFO ) printf("\nReallocate %d %d %d : C_LOW_RANK_SP, A_LOW_RANK, B_LOW_RANK\n\n", m, n, k);
+                if( NULL != this_task->data._f_C.data_out->device_private )
+                    free( this_task->data._f_C.data_out->device_private ); 
+                this_task->data._f_C.data_out->device_private = calloc( descA->mb * new_UVrk * 2, sizeof(float) );
+                this_task->data._f_C.data_out->original->nb_elts = descA->mb * new_UVrk * 2 * sizeof(float);
+            }
+
+            /* Address for Cu and Cv to be copied to */
+            _CU_save = this_task->data._f_C.data_out->device_private;
+            _CV_save = this_task->data._f_C.data_out->device_private + descA->mb * new_UVrk * sizeof(float);
+
+            HCORE_sgemm_ormqr( PlasmaNoTrans, PlasmaTrans,
+                    tempmmv, // ASSUMPTION: For a tile, if nrows<ncols, storage is ncols for both U and V
+                    tempmmv,
+                    (float)-1.0,
+                    Au, Av, Ar, ldamu,
+                    (float)1.0,
+                    Cu, Cv, Cr, ldamu,
+                    params_tlr->fixedrk, params_tlr->maxrank, params_tlr->compmaxrank, params_tlr->fixedacc, work_new,
+                    &flops,
+                    /** parameters coming from HCORE_dgemm_qr_svd */
+                    _CU,
+                    _CV,
+                    CU_ncols,
+                    new_UVrk,
+                    newU,
+                    ld_newU,
+                    qrtauA,
+                    CV_ncols,
+                    newV,
+                    ld_newV,
+                    qrtauB,
+                    use_CUV_clone,
+                    CUclone,
+                    ld_CUclone,
+                    _CU_save,
+                    CVclone,
+                    ld_CVclone,
+                    _CV_save
+                        );
+
+            Cu = _CU_save;
+            Cv = _CV_save;
+
+            /* Update send size, how many bytes */
+            this_task->locals.size.value = descA->mb * ((int *)Cr)[0] * 2 * sizeof(float);
+
+            /* Push back to mempool */
+            if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+m] )
+                parsec_private_memory_push( p_work_uv_sp, A_s );
+
+            if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+n] )
+                parsec_private_memory_push( p_work_uv_sp, B_s );
+        }
+
+        /* Update new rank */
+        parsec_private_memory_push( p_work, p_elem_work );
+        int Crank_new = ((int*)Cr)[0];
+        if(DEBUG_INFO) printf("Cr value in DGEMM (%d, %d, %d): %d\n", m, n, k, ((int *)Cr)[0]);
+
+        /* Operation count */
+        int Crank_old__Arank = Crank_old + Arank;
+        unsigned long int cnt = 0;
+        /// QR([CU AU])
+        unsigned long int qraflop = hicma_parsec_op_counts('q', tempmmv, Crank_old__Arank, 0, 0);///ASSUMPTION:tempmmv is not totally correct if nrowsC<ncolsC
+        /// AV*BV^T
+        unsigned long int qrbflop = hicma_parsec_op_counts('m', Arank, Brank, tempmmv, 0);
+        /// (AV*BV^T) * BU^T
+        qrbflop += hicma_parsec_op_counts('m', Arank, tempmmv, Brank, 0);
+        qrbflop += hicma_parsec_op_counts('q', tempmmv, Crank_old__Arank, 0, 0);  
+        int rA_nrows  = tempmmv < Crank_old__Arank ? tempmmv : Crank_old__Arank;
+        unsigned long int svdflop = hicma_parsec_op_counts('r', Crank_old__Arank, Crank_old__Arank, 2, 0);// trmm is used
+        svdflop += hicma_parsec_op_counts('s', Crank_old__Arank, 0, 0, 0);
+        svdflop += Crank_old__Arank * Crank_new; 
+        unsigned long int newuflop = hicma_parsec_op_counts('o', tempmmv, Crank_new, Crank_old__Arank, 1);  
+        unsigned long int newvflop = hicma_parsec_op_counts('o', Crank_new, tempmmv, Crank_old__Arank, 2); 
+
+        cnt = qraflop + qrbflop + svdflop + newuflop + newvflop;
+
+        params_tlr->op_offband[es->th_id] += cnt;
+        params_tlr->op_offpath[es->th_id] += cnt;
+    }
+    /* Unsupported data structure combination */
+    else
+    {
+        fprintf(stderr, "decision is not support in GEMM %d %d %d : C %d A %d B %d\n",
+                m, n, k, params_tlr->decisions[n*descA->lmt+m], params_tlr->decisions[k*descA->lmt+m], params_tlr->decisions[k*descA->lmt+n]);
+    }
+
+    /* Sequential CPU execution with comprehensive data structure support */
+    /* Calculate communication size based on data type and precision */
+    /* TODO: only for dense now */
+    if( DENSE_DP == params_tlr->decisions[n*descA->lmt+m] ) {
+        this_task->locals.size.value = descA->mb * descA->mb * sizeof(double);
+    } else if( DENSE_SP == params_tlr->decisions[n*descA->lmt+m] ) {
+        this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
+    }
+#if !HAVE_HP_CPU
+    /* Half precision not supported on CPU - use single precision fallback */
+    else if( DENSE_HP == params_tlr->decisions[n*descA->lmt+m] ) {
+        this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
+    }
+#else
+    /* Native half precision support on CPU */
+    else if( DENSE_HP == params_tlr->decisions[n*descA->lmt+m] ) {
+        if( n-1 == k )
+            this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
+        else
+            this_task->locals.size.value = descA->mb * descA->mb * sizeof(float) / 2;
+    }
+#endif
+
+#if PRINT_RANK
+    /* Gather final rank information for debugging and analysis */
+    Crank = IS_DENSE(m, n)? 0: ((int*)Cr)[0];
+    hicma_parsec_gather_rank_final( descA, descRank, params_tlr, m, n, k, Crank );
+#endif
+
+}
+END
+
+extern "C" %{
+
+/**
+ * Helper function to return undetermined number of tasks.
+ * This allows PaRSEC to dynamically create tasks as needed during execution,
+ * which is essential for the Cholesky factorization algorithm where the
+ * number of tasks depends on the matrix size and computational decisions.
+ */
+static uint32_t undetermined_nb_tasks(struct __parsec_potrf_L_dense_mp_gpu_fp8_adaptive_internal_taskpool_s *__tp)
+{
+    (void)__tp;
+    return PARSEC_UNDETERMINED_NB_TASKS;
+}
+
+/**
+ * Helper function to create unique keys for GEMM tasks.
+ * This function generates unique identifiers for GEMM tasks based on their
+ * (m, n, k) coordinates, ensuring proper task ordering and dependency
+ * management in the PaRSEC runtime system.
+ * 
+ * The key generation uses a 3D indexing scheme:
+ * - k: iteration index (0 to mt-3)
+ * - m: row index (k+2 to mt-1) 
+ * - n: column index (k+1 to m-1)
+ * 
+ * This ensures that tasks are processed in the correct order for
+ * the Cholesky factorization algorithm.
+ */
+static parsec_key_t my_make_key_potrf_dgemm(const parsec_taskpool_t * tp, const parsec_assignment_t * as)
+{
+    const __parsec_potrf_L_dense_mp_gpu_fp8_adaptive_internal_taskpool_t *__parsec_tp =
+    (const __parsec_potrf_L_dense_mp_gpu_fp8_adaptive_internal_taskpool_t *) tp;
+    __parsec_potrf_L_dense_mp_gpu_fp8_adaptive_potrf_dgemm_parsec_assignment_t ascopy, *assignment = &ascopy;
+    memcpy(assignment, as, sizeof(__parsec_potrf_L_dense_mp_gpu_fp8_adaptive_potrf_dgemm_parsec_assignment_t));
+
+    /* Extract task coordinates */
+    uintptr_t __parsec_id = 0;
+    const int k = assignment->k.value;
+    hicma_parsec_int64_t k_min = 0;
+    const int m = assignment->m.value;
+    hicma_parsec_int64_t m_min = (k + 2);
+    const int n = assignment->n.value;
+    hicma_parsec_int64_t n_min = (k + 1);
+
+    /* Calculate ranges for 3D indexing */
+    hicma_parsec_int64_t k_range = __parsec_tp->super._g_descA->mt-2;
+    hicma_parsec_int64_t m_range = __parsec_tp->super._g_descA->mt-2;
+
+    /* Generate unique 3D index */
+    __parsec_id += (k - k_min);
+    __parsec_id += (m - m_min) * k_range;
+    __parsec_id += (n - n_min) * k_range * m_range;
+
+    (void) __parsec_tp;
+    return (parsec_key_t) __parsec_id;
+}
+
+%}

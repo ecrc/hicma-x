@@ -107,6 +107,8 @@ ctest --preset=release
 | `CMAKE_BUILD_TYPE` | `RelWithDebInfo` | Build type (Debug, Release, RelWithDebInfo, MinSizeRel) |
 | `HICMA_PARSEC_HAVE_CUDA` | `OFF` | Enable CUDA support |
 | `HICMA_PARSEC_HAVE_HIP` | `OFF` | Enable HIP support |
+| `ENABLE_SANITIZER` | `OFF` | Enable AddressSanitizer instrumentation |
+| `HICMA_ASAN_RUNTIME_LIBRARY` | empty | Optional absolute path to `libasan.so` when sanitizer link probe fails |
 | `ENABLE_CUTLASS` | `OFF` | Enable CUTLASS support (requires CUDA) |
 | `CMAKE_CUDA_ARCHITECTURES` | `70 80 90 90a` | Target CUDA architectures |
 
@@ -228,6 +230,24 @@ cmake ../ \
 This is the cmake command using gcc and openmpi.
 ```bash
 cmake .. -DCMAKE_BUILD_TYPE="Release" -DCMAKE_C_COMPILER=mpicc -DCMAKE_CXX_COMPILER=mpicxx -DCMAKE_Fortran_COMPILER=mpif90 -DHICMA_PARSEC_HAVE_CUDA=ON
+```
+
+#### 7. AddressSanitizer Link Failures
+
+If you enable `ENABLE_SANITIZER=ON` and CMake reports that `-fsanitize=address` cannot link, provide an explicit `libasan.so` path:
+
+```bash
+cmake -S . -B build \
+  -DENABLE_SANITIZER=ON \
+  -DHICMA_ASAN_RUNTIME_LIBRARY=/absolute/path/to/libasan.so
+```
+
+Example on systems that define `ICL_GCC_RUNTIME_ROOT`:
+
+```bash
+cmake -S . -B build \
+  -DENABLE_SANITIZER=ON \
+  -DHICMA_ASAN_RUNTIME_LIBRARY="$ICL_GCC_RUNTIME_ROOT/lib/libasan.so.8"
 ```
 
 ### Debug Build

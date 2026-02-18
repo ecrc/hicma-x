@@ -316,6 +316,8 @@ BODY [type=RECURSIVE]
     // Create recursive DPLASMA POTRF task pool
     parsec_dpotrf = dplasma_dpotrf_New(params_tlr->uplo, (parsec_tiled_matrix_t *)small_descT, &this_task->locals.info.value);
 
+    params_tlr->decisions_storage_final[k*descA->lmt+k] = DENSE_DP;
+
     // Execute recursive call with proper cleanup
     parsec_recursivecall((parsec_task_t*)this_task,
             parsec_dpotrf, dplasma_dpotrf_Destruct,
@@ -535,6 +537,8 @@ BODY [type=RECURSIVE]
             (double)1.0,
             (parsec_tiled_matrix_t *)small_descT,
             (parsec_tiled_matrix_t *)small_descC );
+
+    params_tlr->decisions_storage_final[k*descA->lmt+m] = DENSE_DP;
 
     // Execute recursive call with proper cleanup
     parsec_recursivecall((parsec_task_t*)this_task,

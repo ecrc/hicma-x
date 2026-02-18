@@ -284,6 +284,8 @@ BODY [type=RECURSIVE]
     /* Create recursive POTRF task pool */
     parsec_dpotrf = dplasma_dpotrf_New(params_tlr->uplo, (parsec_tiled_matrix_t *)small_descT, &this_task->locals.info.value);
 
+    params_tlr->decisions_storage_final[k*descA->lmt+k] = DENSE_DP;
+
     /* Execute recursive call asynchronously */
     parsec_recursivecall((parsec_task_t*)this_task,
             parsec_dpotrf, dplasma_dpotrf_Destruct,
@@ -337,6 +339,7 @@ BODY [type=CUDA]
 {
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
     if( params_tlr->decisions_send[k*params_tlr->NT+k] != DENSE_DP ) {
+        hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(cuda_device, cuda_stream));
         double2float_GPU( descA->mb, descA->nb, T0, descA->mb, T, descA->mb, cuda_stream->cuda_stream );
         this_task->data._f_T.data_out->original->nb_elts = descA->mb * descA->nb * sizeof(float);
     }
@@ -348,6 +351,7 @@ BODY [type=HIP]
 {
 #if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
     if( params_tlr->decisions_send[k*params_tlr->NT+k] != DENSE_DP ) {
+        hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(cuda_device, cuda_stream));
         double2float_GPU( descA->mb, descA->nb, T0, descA->mb, T, descA->mb, cuda_stream->cuda_stream );
         this_task->data._f_T.data_out->original->nb_elts = descA->mb * descA->nb * sizeof(float);
     } 
@@ -359,6 +363,7 @@ END
 BODY
 {
     if( params_tlr->decisions_send[k*params_tlr->NT+k] != DENSE_DP ) {
+        hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
         LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, T0, descA->mb, T, descA->mb );
         this_task->data._f_T.data_out->original->nb_elts = descA->mb * descA->nb * sizeof(float);
     }
@@ -445,7 +450,9 @@ BODY [type=CUDA]
 
     //printf("TRSM GPU: %d %d ; mb %d, nb: %d, band_size_dense: %d\n", m, k, descA->mb, descA->nb, params_tlr->band_size_dense);
 
-    hicma_parsec_core_trsm_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream, T, C, m, k );
+    parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, ws_gpu);
+    cublasSetStream( stream_found->handle_cublas, cuda_stream->cuda_stream );
+    hicma_parsec_core_trsm_gpu( descA, params_tlr, stream_found, cuda_device, gpu_task, cuda_stream, T, C, m, k );
 
     /* Update send size, how many bytes */
     if( DENSE_DP == params_tlr->decisions[k*descA->lmt+m] ) {
@@ -467,7 +474,9 @@ BODY [type=HIP]
 
     //printf("TRSM GPU HIP: %d %d ; mb %d, nb: %d, band_size_dense: %d\n", m, k, descA->mb, descA->nb, params_tlr->band_size_dense);
 
-    hicma_parsec_core_trsm_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream, T, C, m, k );
+    parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, ws_gpu);
+    cublasSetStream( stream_found->handle_cublas, cuda_stream->cuda_stream );
+    hicma_parsec_core_trsm_gpu( descA, params_tlr, stream_found, cuda_device, gpu_task, cuda_stream, T, C, m, k );
 
     /* Update send size, how many bytes */
     if( DENSE_DP == params_tlr->decisions[k*descA->lmt+m] ) {
@@ -506,6 +515,8 @@ BODY [type=RECURSIVE]
             (double)1.0,
             (parsec_tiled_matrix_t *)small_descT,
             (parsec_tiled_matrix_t *)small_descC );
+
+    params_tlr->decisions_storage_final[k*descA->lmt+m] = DENSE_DP;
 
     parsec_recursivecall((parsec_task_t*)this_task,
             parsec_dtrsm, dplasma_dtrsm_Destruct,
@@ -621,11 +632,14 @@ BODY [type=CUDA]
         this_task->data._f_C.data_out->original->nb_elts = this_task->locals.size.value;
 
         if( DENSE_SP == params_tlr->decisions_send[k*params_tlr->NT+m] && DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
+            hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(cuda_device, cuda_stream));
             double2float_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
         } else if( DENSE_HP == params_tlr->decisions_send[k*params_tlr->NT+m] ) {
             if( DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
+                hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(cuda_device, cuda_stream));
                 double2half_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
             } else {
+                hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(cuda_device, cuda_stream));
                 float2half_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
             }
         }
@@ -658,11 +672,14 @@ BODY [type=HIP]
         this_task->data._f_C.data_out->original->nb_elts = this_task->locals.size.value;
 
         if( DENSE_SP == params_tlr->decisions_send[k*params_tlr->NT+m] && DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
+            hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(cuda_device, cuda_stream));
             double2float_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
         } else if( DENSE_HP == params_tlr->decisions_send[k*params_tlr->NT+m] ) {
             if( DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
+                hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(cuda_device, cuda_stream));
                 double2half_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
             } else {
+                hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(cuda_device, cuda_stream));
                 float2half_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
             }
         }
@@ -1103,7 +1120,7 @@ BODY
         hicma_parsec_core_gemm_denseC_denseA_denseB_cpu( descA, descRank, params_tlr, es,
             p_work, p_work_full_dp, p_work_full_sp, p_work_full_hp,
             p_work_uv_dp, p_work_uv_sp, p_work_mbr, p_work_rr,
-            C, A, B, m, n, k, Crank, Arank, Brank );
+            C, A, B, m, n, k, Crank, Arank, Brank, 0, 0 );
     }
     /* C is dense, A is low-rank, B is dense */
     else if(  IS_DENSE(m, n) && !IS_DENSE(m, k) && IS_DENSE(n, k) ) 
@@ -1161,6 +1178,7 @@ BODY
             /* Convert datatype, A */
             if( LOW_RANK_SP == params_tlr->decisions[k*descA->lmt+m] ) {
                 A_d = parsec_private_memory_pop( p_work_uv_dp );
+                hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
                 LAPACKE_slag2d( LAPACK_COL_MAJOR, descA->mb, Arank * 2, A, descA->mb, A_d, descA->mb );
                 A_use = A_d;
             }
@@ -1168,6 +1186,7 @@ BODY
             /* Convert datatype, B */
             if( DENSE_SP == params_tlr->decisions[k*descA->lmt+n] || DENSE_HP == params_tlr->decisions[k*descA->lmt+n] ) {
                 B_d = parsec_private_memory_pop( p_work_full_dp );
+                hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
                 LAPACKE_slag2d( LAPACK_COL_MAJOR, descA->mb, descA->nb, B, descA->mb, B_d, descA->mb );
                 B_use = B_d;
             }
@@ -1294,6 +1313,7 @@ BODY
             /* Convert datatype, A */
             if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+m] ) {
                 A_s = parsec_private_memory_pop( p_work_uv_sp );
+                hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
                 LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, Arank * 2, A, descA->mb, A_s, descA->mb );
                 A_use = A_s;
             }
@@ -1301,6 +1321,7 @@ BODY
             /* Convert datatype, B */
             if( DENSE_DP == params_tlr->decisions[k*descA->lmt+n] ) {
                 B_s = parsec_private_memory_pop( p_work_full_sp );
+                hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
                 LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, B, descA->mb, B_s, descA->mb );
                 B_use = B_s;
             }
@@ -1477,6 +1498,7 @@ BODY
             /* Convert datatype, A */
             if( LOW_RANK_SP == params_tlr->decisions[k*descA->lmt+m] ) {
                 A_d = parsec_private_memory_pop( p_work_uv_dp );
+                hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
                 LAPACKE_slag2d( LAPACK_COL_MAJOR, descA->mb, Arank * 2, A, descA->mb, A_d, descA->mb );
                 A_use = A_d;
             }
@@ -1484,6 +1506,7 @@ BODY
             /* Convert datatype, B */
             if( LOW_RANK_SP == params_tlr->decisions[k*descA->lmt+n] ) {
                 B_d = parsec_private_memory_pop( p_work_uv_dp );
+                hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
                 LAPACKE_slag2d( LAPACK_COL_MAJOR, descA->mb, Brank * 2, B, descA->mb, B_d, descA->mb );
                 B_use = B_d;
             }
@@ -1614,6 +1637,7 @@ BODY
             /* Convert datatype, A */
             if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+m] ) {
                 A_s = parsec_private_memory_pop( p_work_uv_sp );
+                hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
                 LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, Arank * 2, A, descA->mb, A_s, descA->mb );
                 A_use = A_s;
             }
@@ -1621,6 +1645,7 @@ BODY
             /* Convert datatype, B */
             if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+n] ) {
                 B_s = parsec_private_memory_pop( p_work_uv_sp );
+                hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
                 LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, Brank * 2, B, descA->mb, B_s, descA->mb );
                 B_use = B_s;
             }

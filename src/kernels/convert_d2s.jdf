@@ -30,11 +30,14 @@ n = 0 .. m
 
 // Conditional read-write access based on decision matrix
 // Only process tiles that need conversion to single precision
-RW A <- (%{ return DENSE_SP == params_tlr->decisions[n*descA->lmt+m]; %} || %{ return DENSE_HP == params_tlr->decisions[n*descA->lmt+m]; %} || %{ return DENSE_FP8 == params_tlr->decisions[n*descA->lmt+m]; %} || %{ return LOW_RANK_SP == params_tlr->decisions[n*descA->lmt+m]; %})? descA(m, n): NULL        
-     -> (%{ return DENSE_SP == params_tlr->decisions[n*descA->lmt+m]; %} || %{ return DENSE_HP == params_tlr->decisions[n*descA->lmt+m]; %} || %{ return DENSE_FP8 == params_tlr->decisions[n*descA->lmt+m]; %} || %{ return LOW_RANK_SP == params_tlr->decisions[n*descA->lmt+m]; %})? descA(m, n)              
+//RW A <- (%{ return DENSE_SP == params_tlr->decisions[n*descA->lmt+m]; %} || %{ return DENSE_HP == params_tlr->decisions[n*descA->lmt+m]; %} || %{ return DENSE_FP8 == params_tlr->decisions[n*descA->lmt+m]; %} || %{ return LOW_RANK_SP == params_tlr->decisions[n*descA->lmt+m]; %})? descA(m, n): NULL        
+//     -> (%{ return DENSE_SP == params_tlr->decisions[n*descA->lmt+m]; %} || %{ return DENSE_HP == params_tlr->decisions[n*descA->lmt+m]; %} || %{ return DENSE_FP8 == params_tlr->decisions[n*descA->lmt+m]; %} || %{ return LOW_RANK_SP == params_tlr->decisions[n*descA->lmt+m]; %})? descA(m, n)              
+
+RW A <- descA(m, n)
+     -> descA(m, n)              
 
 // Read rank information for low-rank tiles
-READ Ar <- (%{ return LOW_RANK_SP == params_tlr->decisions[n*descA->lmt+m]; %})? descAr(m, n): NULL     [ type  = AR ]
+READ Ar <- (%{ return !IS_DENSE(m, n); %})? descAr(m, n): NULL     [ type  = AR ]
 
 // Define remote arena types for different data formats
 READ A1 <- NULL       [ type_remote = FULL_DP ]  // Full double precision
@@ -44,19 +47,27 @@ READ A4 <- NULL       [ type_remote = UV_SP ]    // Low-rank U*V single precisio
 
 BODY
 {
+    int size = descA->nb;
+    if(IS_DENSE(m, n)) {
+        this_task->data._f_A.data_out->original->nb_elts = descA->mb * size * sizeof(double);
+    } else {
+        // Calculate size based on rank (U*V format: rank * 2)
+        size = ((int *)Ar)[0] * 2;
+        this_task->data._f_A.data_out->original->nb_elts = descA->mb * size * sizeof(double);
+    }
+
     // Handle dense matrix tiles that need conversion to single precision
     if( DENSE_SP == params_tlr->decisions[n*descA->lmt+m]
             || DENSE_HP == params_tlr->decisions[n*descA->lmt+m]
             || DENSE_FP8 == params_tlr->decisions[n*descA->lmt+m] ) {
-
-        int size = descA->nb;
 
         // Check if tile is already allocated in single precision
         if( IS_ALLOCATE_DP(m, n) ) { 
             if(0) printf("(%d %d) needs D2S\n", m, n);
         } else {
             // Already in single precision, just update element count
-            this_task->data._f_A.data_out->original->nb_elts = descA->mb * size * sizeof(float);
+            //if( params_tlr->adaptive_memory )
+                this_task->data._f_A.data_out->original->nb_elts = descA->mb * size * sizeof(float);
             return PARSEC_HOOK_RETURN_DONE; 
         }
 
@@ -95,14 +106,12 @@ BODY
             this_task->data._f_A.data_out->device_private = new_memory;
         }
         // Update element count for single precision
-        this_task->data._f_A.data_out->original->nb_elts = descA->mb * size * sizeof(float);
+        //if( params_tlr->adaptive_memory )
+            this_task->data._f_A.data_out->original->nb_elts = descA->mb * size * sizeof(float);
     }
 
     // Handle low-rank matrix tiles that need conversion to single precision
     if( LOW_RANK_SP == params_tlr->decisions[n*descA->lmt+m] ) { 
-        // Calculate size based on rank (U*V format: rank * 2)
-        int size = ((int *)Ar)[0] * 2;
-        
         // Low rank does not support !adaptive_memory because of reallocation in Cholesky
         {
             // Allocate new memory and convert low-rank tile to single precision

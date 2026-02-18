@@ -253,6 +253,45 @@ void double2fp8_GPU( int nrows, int ncols,
         // Launch kernel with calculated dimensions
         double2fp8_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, S, lds, _T, ldt);
 }
+
+__global__ void double2fp8_padded_GPU_kernel( int nrows, int ncols,
+                int padded_rows, int padded_cols,
+                const double *S, int lds,
+                uint8_t *T, int ldt ) {
+        const int tx = threadIdx.x;
+        const int ty = threadIdx.y;
+        const int idx = blockIdx.x * blockDim.x + tx;
+        const int idy = blockIdx.y * blockDim.y + ty;
+
+        if( idx >= padded_rows || idy >= padded_cols ) {
+            return;
+        }
+
+        if( idx < nrows && idy < ncols ) {
+            T[idx*ldt+idy] = (uint8_t)__nv_cvt_float_to_fp8(
+                (float)S[idy*lds+idx], __NV_SATFINITE, __NV_E4M3
+            );
+        } else {
+            T[idx*ldt+idy] = 0;
+        }
+}
+
+extern "C"
+void double2fp8_padded_GPU( int nrows, int ncols,
+                const double *S, int lds,
+                void *T, int ldt,
+                int padded_rows, int padded_cols,
+                cudaStream_t stream ) {
+        int nBlockx = (padded_rows+CHUNKSIZE-1)/CHUNKSIZE;
+        int nBlocky = (padded_cols+CHUNKSIZE-1)/CHUNKSIZE;
+
+        dim3 dimBlock(CHUNKSIZE, CHUNKSIZE);
+        dim3 dimGrid(nBlockx, nBlocky);
+
+        uint8_t *_T = (uint8_t *)T;
+
+        double2fp8_padded_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, padded_rows, padded_cols, S, lds, _T, ldt);
+}
 /****************************************************************************************************/
 
 /****************************************************************************************************/
@@ -322,6 +361,45 @@ void float2fp8_GPU( int nrows, int ncols,
         
         // Launch kernel with calculated dimensions
         float2fp8_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, S, lds, _T, ldt);
+}
+
+__global__ void float2fp8_padded_GPU_kernel( int nrows, int ncols,
+                int padded_rows, int padded_cols,
+                const float *S, int lds,
+                uint8_t *T, int ldt ) {
+        const int tx = threadIdx.x;
+        const int ty = threadIdx.y;
+        const int idx = blockIdx.x * blockDim.x + tx;
+        const int idy = blockIdx.y * blockDim.y + ty;
+
+        if( idx >= padded_rows || idy >= padded_cols ) {
+            return;
+        }
+
+        if( idx < nrows && idy < ncols ) {
+            T[idx*ldt+idy] = (uint8_t)__nv_cvt_float_to_fp8(
+                S[idy*lds+idx], __NV_SATFINITE, __NV_E4M3
+            );
+        } else {
+            T[idx*ldt+idy] = 0;
+        }
+}
+
+extern "C"
+void float2fp8_padded_GPU( int nrows, int ncols,
+                const float *S, int lds,
+                void *T, int ldt,
+                int padded_rows, int padded_cols,
+                cudaStream_t stream ) {
+        int nBlockx = (padded_rows+CHUNKSIZE-1)/CHUNKSIZE;
+        int nBlocky = (padded_cols+CHUNKSIZE-1)/CHUNKSIZE;
+
+        dim3 dimBlock(CHUNKSIZE, CHUNKSIZE);
+        dim3 dimGrid(nBlockx, nBlocky);
+
+        uint8_t *_T = (uint8_t *)T;
+
+        float2fp8_padded_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, padded_rows, padded_cols, S, lds, _T, ldt);
 }
 
 /**
@@ -409,6 +487,45 @@ void half2fp8_GPU( int nrows, int ncols,
         
         // Launch kernel with calculated dimensions
         half2fp8_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, _S, lds, _T, ldt);
+}
+
+__global__ void half2fp8_padded_GPU_kernel( int nrows, int ncols,
+                int padded_rows, int padded_cols,
+                const __half *S, int lds,
+                uint8_t *T, int ldt ) {
+        const int tx = threadIdx.x;
+        const int ty = threadIdx.y;
+        const int idx = blockIdx.x * blockDim.x + tx;
+        const int idy = blockIdx.y * blockDim.y + ty;
+
+        if( idx >= padded_rows || idy >= padded_cols ) {
+            return;
+        }
+
+        if( idx < nrows && idy < ncols ) {
+            T[idx*ldt+idy] = (uint8_t)__nv_cvt_halfraw_to_fp8(
+                S[idy*lds+idx], __NV_SATFINITE, __NV_E4M3
+            );
+        } else {
+            T[idx*ldt+idy] = 0;
+        }
+}
+
+extern "C"
+void half2fp8_padded_GPU( int nrows, int ncols,
+                const __half *S, int lds,
+                void *T, int ldt,
+                int padded_rows, int padded_cols,
+                cudaStream_t stream ) {
+        int nBlockx = (padded_rows+CHUNKSIZE-1)/CHUNKSIZE;
+        int nBlocky = (padded_cols+CHUNKSIZE-1)/CHUNKSIZE;
+
+        dim3 dimBlock(CHUNKSIZE, CHUNKSIZE);
+        dim3 dimGrid(nBlockx, nBlocky);
+
+        uint8_t *_T = (uint8_t *)T;
+
+        half2fp8_padded_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, padded_rows, padded_cols, S, lds, _T, ldt);
 }
 /****************************************************************************************************/
 
@@ -1155,6 +1272,184 @@ void memcpy_half_GPU( int nrows, int ncols, void *_src, void *_dest, cudaStream_
         
         // Launch kernel with calculated dimensions
         memcpy_half_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, src, dest);
+}
+
+/****************************************************************************************************/
+
+/**
+ * @brief CUDA kernel for copying double precision matrix data
+ *
+ * Copies double precision (double) matrix data from source to destination.
+ * Each thread processes one matrix element, performing a memory copy operation.
+ *
+ * @param nrows Number of rows in the matrix
+ * @param ncols Number of columns in the matrix
+ * @param src Source matrix (double precision)
+ * @param dest Destination matrix (double precision)
+ */
+__global__ void memcpy_double_GPU_kernel( int nrows, int ncols,
+              double *src, double *dest ) {
+        const int tx = threadIdx.x;
+        const int ty = threadIdx.y;
+        const int idx = blockIdx.x * blockDim.x + tx;
+        const int idy = blockIdx.y * blockDim.y + ty;
+
+        // Bounds checking
+        if( idx >= nrows || idy >= ncols ) {
+            return;
+        }
+
+        // Copy matrix element from source to destination
+        dest[idy*nrows+idx] = src[idy*nrows+idx];
+}
+
+/**
+ * @brief GPU wrapper function for double precision matrix copy
+ *
+ * Launches the copy kernel with appropriate grid and block dimensions.
+ * Handles type casting from void pointers to double precision.
+ *
+ * @param nrows Number of rows in the matrix
+ * @param ncols Number of columns in the matrix
+ * @param _src Source matrix (double precision, void pointer)
+ * @param _dest Destination matrix (double precision, void pointer)
+ * @param stream CUDA stream for asynchronous execution
+ */
+extern "C"
+void memcpy_double_GPU( int nrows, int ncols, void *_src, void *_dest, cudaStream_t stream ) {
+        // Calculate grid dimensions based on matrix size and chunk size
+        int nBlockx = (nrows+CHUNKSIZE-1)/CHUNKSIZE;
+        int nBlocky = (ncols+CHUNKSIZE-1)/CHUNKSIZE;
+
+        // Define thread block and grid dimensions
+        dim3 dimBlock(CHUNKSIZE, CHUNKSIZE);
+        dim3 dimGrid(nBlockx, nBlocky);
+
+        // Cast void pointers to double precision
+        double *src = (double *)_src;
+        double *dest = (double *)_dest;
+
+        // Launch kernel with calculated dimensions
+        memcpy_double_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, src, dest);
+}
+
+/****************************************************************************************************/
+
+/**
+ * @brief CUDA kernel for dest(double) -= src(float)
+ *
+ * Performs element-wise subtraction:
+ *   ((double *)dest)[j*nrows+i] -= ((float *)src)[j*nrows+i]
+ *
+ * @param nrows Number of rows in the matrix
+ * @param ncols Number of columns in the matrix
+ * @param src Source matrix (single precision)
+ * @param dest Destination matrix (double precision)
+ */
+__global__ void sub_float_from_double_GPU_kernel( int nrows, int ncols,
+               float *src, double *dest ) {
+        const int tx = threadIdx.x;
+        const int ty = threadIdx.y;
+        const int idx = blockIdx.x * blockDim.x + tx;
+        const int idy = blockIdx.y * blockDim.y + ty;
+
+        // Bounds checking
+        if( idx >= nrows || idy >= ncols ) {
+            return;
+        }
+
+        // dest(j, i) -= src(j, i)
+        dest[idy*nrows+idx] -= (double)src[idy*nrows+idx];
+}
+
+/**
+ * @brief GPU wrapper for dest(double) -= src(float)
+ *
+ * Launches sub_float_from_double_GPU_kernel with grid/block geometry
+ * derived from matrix dimensions.
+ *
+ * @param nrows Number of rows in the matrix
+ * @param ncols Number of columns in the matrix
+ * @param _src Source matrix (float, void pointer)
+ * @param _dest Destination matrix (double, void pointer)
+ * @param stream CUDA stream for asynchronous execution
+ */
+extern "C"
+void sub_float_from_double_GPU( int nrows, int ncols, void *_src, void *_dest, cudaStream_t stream ) {
+        int nBlockx = (nrows+CHUNKSIZE-1)/CHUNKSIZE;
+        int nBlocky = (ncols+CHUNKSIZE-1)/CHUNKSIZE;
+
+        dim3 dimBlock(CHUNKSIZE, CHUNKSIZE);
+        dim3 dimGrid(nBlockx, nBlocky);
+
+        float *src = (float *)_src;
+        double *dest = (double *)_dest;
+
+        sub_float_from_double_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, src, dest);
+}
+
+__global__ void sub_float_from_double_ld_GPU_kernel( int nrows, int ncols,
+               const float *src, int ldsrc,
+               double *dest, int lddest ) {
+        const int tx = threadIdx.x;
+        const int ty = threadIdx.y;
+        const int idx = blockIdx.x * blockDim.x + tx;
+        const int idy = blockIdx.y * blockDim.y + ty;
+
+        if( idx >= nrows || idy >= ncols ) {
+            return;
+        }
+
+        dest[idy*lddest+idx] -= (double)src[idy*ldsrc+idx];
+}
+
+extern "C"
+void sub_float_from_double_ld_GPU( int nrows, int ncols,
+               void *_src, int ldsrc,
+               void *_dest, int lddest,
+               cudaStream_t stream ) {
+        int nBlockx = (nrows+CHUNKSIZE-1)/CHUNKSIZE;
+        int nBlocky = (ncols+CHUNKSIZE-1)/CHUNKSIZE;
+
+        dim3 dimBlock(CHUNKSIZE, CHUNKSIZE);
+        dim3 dimGrid(nBlockx, nBlocky);
+
+        float *src = (float *)_src;
+        double *dest = (double *)_dest;
+
+        sub_float_from_double_ld_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, src, ldsrc, dest, lddest);
+}
+
+__global__ void sub_float_from_float_ld_GPU_kernel( int nrows, int ncols,
+               const float *src, int ldsrc,
+               float *dest, int lddest ) {
+        const int tx = threadIdx.x;
+        const int ty = threadIdx.y;
+        const int idx = blockIdx.x * blockDim.x + tx;
+        const int idy = blockIdx.y * blockDim.y + ty;
+
+        if( idx >= nrows || idy >= ncols ) {
+            return;
+        }
+
+        dest[idy*lddest+idx] -= src[idy*ldsrc+idx];
+}
+
+extern "C"
+void sub_float_from_float_ld_GPU( int nrows, int ncols,
+               void *_src, int ldsrc,
+               void *_dest, int lddest,
+               cudaStream_t stream ) {
+        int nBlockx = (nrows+CHUNKSIZE-1)/CHUNKSIZE;
+        int nBlocky = (ncols+CHUNKSIZE-1)/CHUNKSIZE;
+
+        dim3 dimBlock(CHUNKSIZE, CHUNKSIZE);
+        dim3 dimGrid(nBlockx, nBlocky);
+
+        float *src = (float *)_src;
+        float *dest = (float *)_dest;
+
+        sub_float_from_float_ld_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, src, ldsrc, dest, lddest);
 }
 
 /****************************************************************************************************/
@@ -2450,6 +2745,50 @@ void hicma_parsec_hamming_merge_GPU(int nrows, int ncols, int *aout, int *ain, i
     // Launch kernel with calculated dimensions
     hamming_merge_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, aout, ain, lda);
 }
+/****************************************************************************************************/
+
+__global__ void store_float_as_double_kernel(double* dst, float x)
+{
+  if (threadIdx.x == 0 && blockIdx.x == 0) {
+    dst[0] = (double)x;
+  }
+}
+
+__global__ void store_double_kernel(double* dst, double x)
+{
+  if (threadIdx.x == 0 && blockIdx.x == 0) {
+    dst[0] = x;
+  }
+}
+
+__global__ void store_device_float_as_double_kernel(double* dst, const float* src)
+{
+  if (threadIdx.x == 0 && blockIdx.x == 0) {
+    dst[0] = (double)src[0];
+  }
+}
+
+// d_dst: device pointer to 1 double (cudaMalloc)
+// x: host float
+// stream: stream to enqueue the kernel (0 = default)
+extern "C" void copy_float_to_device_double(double* d_dst, float x, cudaStream_t stream)
+{
+  if (!d_dst) return;
+  store_float_as_double_kernel<<<1, 1, 0, stream>>>(d_dst, x);
+}
+
+extern "C" void set_device_double(double* d_dst, double x, cudaStream_t stream)
+{
+  if (!d_dst) return;
+  store_double_kernel<<<1, 1, 0, stream>>>(d_dst, x);
+}
+
+extern "C" void copy_device_float_to_device_double(double* d_dst, const float* d_src, cudaStream_t stream)
+{
+  if (!d_dst || !d_src) return;
+  store_device_float_as_double_kernel<<<1, 1, 0, stream>>>(d_dst, d_src);
+}
+
 /****************************************************************************************************/
 
 

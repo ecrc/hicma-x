@@ -10,11 +10,6 @@ extern "C" %{
 
 #include "hicma_parsec.h"
 
-/*void compute_norm(double *A, int nb, double *current_value){
-    for (int i=0;i<nb;i++)
-         for(int j=0;i<nb;j++)
-            *current_value = A[i+j*nb];
-}*/
 %}
 
 /** Matrix compression and low-rank approximation generation
@@ -63,11 +58,14 @@ BODY
 
     /* Allocate memory for band tiles if not using contiguous memory layout */
 #if !BAND_MEMORY_CONTIGUOUS && !GENOMICS
-    if( params_tlr->band_size_dense <= descA->nt || params_tlr->auto_band || params_tlr->adaptive_memory ) {
-        // Create new data copy for this tile
-        this_task->data._f_D.data_out = parsec_data_copy_new(data_of_descA(m, n), 0, PARSEC_matrix_compress_FULL_ADT->opaque_dtt, PARSEC_DATA_FLAG_PARSEC_MANAGED);
+    if( params_tlr->band_size_dense < params_tlr->NT || params_tlr->auto_band || params_tlr->adaptive_memory ) {
+        /* Reuse existing copy when available to avoid leaking one copy object per tile. */
+        this_task->data._f_D.data_out = parsec_data_get_copy(data_of_descA(m, n), 0);
+        if( NULL == this_task->data._f_D.data_out ) {
+            this_task->data._f_D.data_out = parsec_data_copy_new(data_of_descA(m, n), 0, PARSEC_matrix_compress_FULL_ADT->opaque_dtt, PARSEC_DATA_FLAG_PARSEC_MANAGED);
+        }
         if( params_tlr->gpus > 0 ) {
-            
+
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
             // Allocate pinned host memory for GPU operations
             if( IS_ALLOCATE_DP(m, n) ) { 
@@ -331,7 +329,10 @@ BODY
          * For off band, if send_full_tile, allocate mb * maxrank * 2,
          * else, size = mb * min(maxrank, rank) * 2
          */
-        this_task->data._f_A.data_out = parsec_data_copy_new(data_of_descA(m, n), 0, PARSEC_matrix_compress_UV_ADT->opaque_dtt, PARSEC_DATA_FLAG_PARSEC_MANAGED);
+        this_task->data._f_A.data_out = parsec_data_get_copy(data_of_descA(m, n), 0);
+        if( NULL == this_task->data._f_A.data_out ) {
+            this_task->data._f_A.data_out = parsec_data_copy_new(data_of_descA(m, n), 0, PARSEC_matrix_compress_UV_ADT->opaque_dtt, PARSEC_DATA_FLAG_PARSEC_MANAGED);
+        }
         this_task->data._f_A.data_out->device_private = calloc(size, sizeof(double));
 
         /* New nb_elts for data_of(m, n) */
@@ -463,6 +464,10 @@ void hicma_parsec_matrix_compress_Destruct(parsec_taskpool_t *taskpool)
     parsec_private_memory_fini( matrix_compress_taskpool->_g_d_work );
     parsec_private_memory_fini( matrix_compress_taskpool->_g_rsvd_work );
     parsec_private_memory_fini( matrix_compress_taskpool->_g_rsvd_iwork );
+    free(matrix_compress_taskpool->_g_uv_work);
+    free(matrix_compress_taskpool->_g_d_work);
+    free(matrix_compress_taskpool->_g_rsvd_work);
+    free(matrix_compress_taskpool->_g_rsvd_iwork);
 
     parsec_taskpool_free(taskpool);
 }

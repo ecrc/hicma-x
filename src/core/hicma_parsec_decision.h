@@ -138,6 +138,22 @@ int decision_datatype_tile_potrf_L_dense_mp_gpu(uint16_t *decisions, int m, int 
  */
 int decision_datatype_tile_potrf_L_dense_mp_gpu_fp8(uint16_t *decisions, int m, int n, int NT);
 
+
+/**
+ * @brief Get datatype for POTRF dense mixed precision GPU FP8 tile adaptive
+ * 
+ * Determines the optimal datatype for a specific tile in dense mixed precision
+ * Cholesky factorization (POTRF) operations on GPU using FP8 arithmetic.
+ * The decision optimizes for memory efficiency while maintaining numerical stability.
+ * 
+ * @param[in] decisions Decision array containing datatype choices for all tiles
+ * @param[in] m Row index of the tile
+ * @param[in] n Column index of the tile
+ * @param[in] NT Total number of tiles in the matrix
+ * @return Datatype identifier for the specified tile
+ */
+int decision_datatype_tile_potrf_L_dense_mp_gpu_fp8_adaptive(uint16_t *decisions, int m, int n, int NT);
+
 /**
  * @brief Get datatype for POTRF dense mixed precision GPU FP8 single precision tile
  * 
@@ -247,6 +263,21 @@ int decision_datatype_tile_send_potrf_L_dense_mp_gpu(uint16_t *decisions, int m,
 int decision_datatype_tile_send_potrf_L_dense_mp_gpu_fp8(uint16_t *decisions, int m, int n, int NT);
 
 /**
+ * @brief Get datatype for sending POTRF dense mixed precision GPU FP8 adaptive
+ * 
+ * Determines the optimal datatype for sending a specific tile during dense mixed
+ * precision Cholesky factorization (POTRF) operations on GPU using FP8 arithmetic.
+ * The decision optimizes for communication efficiency and memory usage.
+ * 
+ * @param[in] decisions Decision array containing datatype choices for all tiles
+ * @param[in] m Row index of the tile
+ * @param[in] n Column index of the tile
+ * @param[in] NT Total number of tiles in the matrix
+ * @return Datatype identifier for the specified tile
+ */
+int decision_datatype_tile_send_potrf_L_dense_mp_gpu_fp8_adaptive(uint16_t *decisions, int m, int n, int NT);
+
+/**
  * @brief Get datatype for sending POTRF dense mixed precision GPU FP8 single precision tile
  * 
  * Determines the optimal datatype for sending a specific tile during dense mixed
@@ -307,6 +338,13 @@ void hicma_parsec_decisions_gemm_gpu_init(hicma_parsec_params_t *params);
  * @param[in] params HICMA PaRSEC parameters
  */
 void print_decisions(hicma_parsec_params_t *params);
+void print_first_local_gemm_decisions(const hicma_parsec_params_t *params);
+void print_last_local_gemm_decisions(const hicma_parsec_params_t *params);
+void print_final_storage_decisions(const hicma_parsec_params_t *params);
+
+
+void get_decisions(uint16_t *decisions, size_t size,
+        parsec_tiled_matrix_t *descA );
 
 /**
  * @brief Print convert type decisions
@@ -376,6 +414,14 @@ float hicma_parsec_matrix_ssum(parsec_context_t *parsec,
                          parsec_tiled_matrix_t *A,
                          parsec_tiled_matrix_t *Ar,
                          uint16_t *decisions);
+
+/**
+ * @brief Determine the precision of that tile 
+ *
+ * @return The precision decision 
+ */
+void hicma_parsec_get_precision_tile(hicma_parsec_params_t *params_tlr,
+        hicma_parsec_decision_enum_t *new_decision, double norm_tile, int m, int n);
 
 #ifdef __cplusplus
 }

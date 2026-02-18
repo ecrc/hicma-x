@@ -201,6 +201,7 @@ extern "C" {  /**< Enable C linkage for C++ compatibility */
  * ============================================================================ */
 
 /* Matrix format types - define storage formats for different precision levels */
+#define NB_DECISIONS 6
 #define DENSE_DP    1  /**< Dense double precision (64-bit floating point) */
 #define DENSE_SP    2  /**< Dense single precision (32-bit floating point) */
 #define LOW_RANK_DP 3  /**< Low-rank double precision (compressed representation) */
@@ -210,10 +211,10 @@ extern "C" {  /**< Enable C linkage for C++ compatibility */
 
 /* Matrix format checking macros - determine tile storage format */
 #define IS_DENSE(m, n) (                                 \
-       DENSE_DP == params_tlr->decisions[n*descA->lmt+m] \
-    || DENSE_SP == params_tlr->decisions[n*descA->lmt+m] \
-    || DENSE_HP == params_tlr->decisions[n*descA->lmt+m] \
-    || DENSE_FP8 == params_tlr->decisions[n*descA->lmt+m] \
+       DENSE_DP == params_tlr->decisions[n*params_tlr->NT+m] \
+    || DENSE_SP == params_tlr->decisions[n*params_tlr->NT+m] \
+    || DENSE_HP == params_tlr->decisions[n*params_tlr->NT+m] \
+    || DENSE_FP8 == params_tlr->decisions[n*params_tlr->NT+m] \
     )  /**< Check if tile (m,n) is stored in dense format */
 
 #define IS_ALLOCATE_DP(m, n) (                           \
@@ -254,7 +255,7 @@ extern "C" {  /**< Enable C linkage for C++ compatibility */
 
 /* Conditional feature flags - enable features based on available hardware */
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
-#define HAVE_FP8 0  /**< Enable FP8 precision on CUDA (8-bit floating point) */
+#define HAVE_FP8 1  /**< Enable FP8 precision on CUDA (8-bit floating point) */
 #define HAVE_I8  1  /**< Enable INT8 precision on CUDA (8-bit integer) */
 #else
 #define HAVE_FP8 0  /**< FP8 precision not available (no CUDA support) */
@@ -353,6 +354,7 @@ typedef int64_t hicma_parsec_int64_t;  /**< Standard 64-bit integer type */
 #define SPARSE_TLR_DP_BALANCE 7  /**< Sparse TLR double precision balanced (workload-balanced sparse) */
 #define DENSE_MP_GPU_FP8      8  /**< Dense mixed precision GPU FP8 (FP8 precision on GPU) */
 #define DENSE_MP_GPU_FP8_SP   9  /**< Dense mixed precision GPU FP8 single (FP8 + SP on GPU) */
+#define DENSE_MP_GPU_FP8_ADAPTIVE   10  /**< Dense mixed precision GPU FP8 single (FP8 + SP on GPU) */
 
 /* TLR boundary conditions - control off-band computation */
 #define TLR_BOUND_WITHOUT_OFFBAND_GEMM      0  /**< Skip off-band GEMM operations */
@@ -376,7 +378,12 @@ typedef int64_t hicma_parsec_int64_t;  /**< Standard 64-bit integer type */
 #define RANK_MAP_TYPE 5  /**< Number of rank mapping types supported */
 
 /* Critical path analysis - performance analysis flags */
+#ifndef PRINT_CRITICAL_PATH_TIME
 #define PRINT_CRITICAL_PATH_TIME 0  /**< Print critical path timing information */
+#endif
+#ifndef PRINT_KERNEL_TIME
+#define PRINT_KERNEL_TIME 0  /**< Print per-kernel/task timing information */
+#endif
 
 /* ============================================================================
  * Memory and performance configuration
@@ -450,6 +457,8 @@ typedef int64_t hicma_parsec_int64_t;  /**< Standard 64-bit integer type */
 #define PASTE_CODE_FLOPS( FORMULA, PARAMS, flops ) \
     flops = FORMULA PARAMS;  /**< Calculate FLOPS using specified formula and parameters */
 
+typedef uint16_t hicma_parsec_decision_enum_t; 
+
 /* ============================================================================
  * Utility functions
  * ============================================================================ */
@@ -495,7 +504,6 @@ static inline int hicma_parsec_process_grid_calculation(int nb_process) {
     return P;
 }
 
-
 /* ============================================================================
  * Data structures
  * ============================================================================ */
@@ -507,6 +515,12 @@ static inline int hicma_parsec_process_grid_calculation(int nb_process) {
  * including system configuration, matrix properties, algorithm settings,
  * and performance tuning parameters.
  */
+typedef struct hicma_kernel_time_interval_s {
+    double start_time;
+    double end_time;
+    struct hicma_kernel_time_interval_s *next;
+} hicma_kernel_time_interval_t;
+
 typedef struct hicma_parsec_params_s {
     /* ========================================================================
      * System configuration
@@ -546,7 +560,9 @@ typedef struct hicma_parsec_params_s {
     int compmaxrank;          /**< Max rank for computation */
     int fixedrk;              /**< Fixed rank threshold for HCORE_GEMM recompression */
     int adaptive_decision;    /**< Enable adaptive tile format decisions */
+    int adaptive_decision_runtime;    /**< Enable adaptive tile format decisions during runtime */
     int adaptive_memory;      /**< Enable adaptive memory allocation: 0=memory allocated once; 1=memory reallocated per tile after precision decision */
+    int arena_pinned_memory;  /**< Use pinned host memory for arenas when GPUs are enabled */
     int lookahead;            /**< Lookahead depth */
     int kind_of_problem;      /**< Type of problem being solved */
     int send_full_tile;       /**< Send full tile instead of compressed */
@@ -618,6 +634,9 @@ typedef struct hicma_parsec_params_s {
     double nb_dense_fp8;      /**< Number of dense FP8 precision tiles */
     double nb_low_rank_dp;    /**< Number of low-rank double precision tiles */
     double nb_low_rank_sp;    /**< Number of low-rank single precision tiles */
+    uint64_t *nb_gemms;
+    uint64_t *nb_datatype_conversions;
+    int counter_stride;
 
     /* ========================================================================
      * Performance metrics
@@ -644,6 +663,9 @@ typedef struct hicma_parsec_params_s {
      * Decision arrays for tile precision and operations
      * ======================================================================== */
     uint16_t *decisions;      /**< Precision decisions for each tile */
+    uint16_t *decisions_gemm_last; /**< A*B precision of the last local GEMM for each tile */
+    uint16_t *decisions_gemm_first; /**< A*B precision of the GEMM at k == 0 for each tile */
+    uint16_t *decisions_storage_final; /**< Final stored precision after POTRF/TRSM for each tile */
     uint16_t *decisions_send; /**< Data conversion decisions for each tile */
     uint16_t *decisions_gemm_gpu; /**< GPU GEMM type decisions for each tile */
 
@@ -743,6 +765,14 @@ typedef struct hicma_parsec_params_s {
     double start_time_kernel_sqr_sum_vec; /**< Start time for kernel square sum vector */
     double *gather_time;          /**< Array to gather timing information */
     double *gather_time_tmp;      /**< Temporary array for timing information */
+    double *kernel_time_cpu;      /**< Per-CPU-worker GEMM timing accumulator */
+    double *kernel_time_gpu;      /**< Per-GPU-device GEMM timing accumulator */
+    double *kernel_time_gpu_event; /**< Per-GPU CUDA-event GEMM timing accumulator */
+    hicma_kernel_time_interval_t **kernel_time_cpu_intervals; /**< Per-CPU-worker GEMM timing intervals */
+    hicma_kernel_time_interval_t **kernel_time_gpu_intervals; /**< Per-GPU-device GEMM timing intervals */
+    int kernel_time_cpu_count;    /**< Number of CPU timing accumulator entries */
+    int kernel_time_gpu_count;    /**< Number of GPU timing accumulator entries */
+    int kernel_time_gpu_event_count; /**< Number of CUDA-event GPU timing accumulator entries */
     double potrf_time;            /**< Total POTRF execution time */
     double trsm_time;             /**< Total TRSM execution time */
     double syrk_time;             /**< Total SYRK execution time */
@@ -810,6 +840,7 @@ typedef struct parsec_potrf_stream_workspace_s {
     /* CUDA handles */
     cusolverDnHandle_t handle_cusolver;     /**< cuSolver handle */
     cublasHandle_t handle_cublas;           /**< cuBLAS handle */
+    cublasHandle_t handle_cublas_deviceptr; /**< cuBLAS handle deviceptr */
     cublasHandle_t handle_cublas_tensor;    /**< cuBLAS tensor core handle */
     
     /* GPU memory buffers */
@@ -827,7 +858,8 @@ typedef struct parsec_potrf_stream_workspace_s {
     cublasLtMatmulDesc_t matmulDesc;        /**< Matrix multiplication descriptor */
     cublasLtMatrixLayout_t Adesc;           /**< Matrix A layout */
     cublasLtMatrixLayout_t Bdesc;           /**< Matrix B layout */
-    cublasLtMatrixLayout_t Cdesc;           /**< Matrix C layout */
+    cublasLtMatrixLayout_t Cdesc;           /**< Matrix C layout, FP16 */
+    int fp8_ld;                             /**< 16-aligned leading dimension for FP8 cuBLASLt */
     void *workspace;                        /**< FP8 workspace */
     size_t workspaceSize;                   /**< FP8 workspace size */
     cublasLtMatmulHeuristicResult_t heuristicResultsArray; /**< Heuristic results */
@@ -874,6 +906,7 @@ typedef struct hicma_parsec_data_s {
     parsec_matrix_sym_block_cyclic_t dcAcpy;     /**< Copy of dense mixed-precision matrix */
     parsec_matrix_sym_block_cyclic_band_t dcA;        /**< Main matrix for TLR or mixed-precision+TLR */
     parsec_matrix_sym_block_cyclic_band_t dcAr;       /**< Rank matrix */
+    parsec_matrix_sym_block_cyclic_band_t dcNorm;     /**< Norm matrix */
     parsec_matrix_sym_block_cyclic_band_t dcDist;     /**< Distribution matrix for kernel execution */
     parsec_matrix_sym_block_cyclic_band_t dcRank;     /**< Rank information matrix (if PRINT_RANK enabled) */
     parsec_matrix_block_cyclic_t dcFake;              /**< Fake matrix for auto-band distribution */
@@ -1445,6 +1478,22 @@ int potrf_L_dense_tlr_dp( parsec_context_t *parsec,
  * @return 0 on success, non-zero on failure
  */
 int potrf_L_dense_mp_gpu( parsec_context_t *parsec,
+        hicma_parsec_data_t *data,
+        hicma_parsec_params_t *params );
+
+/**
+ * @brief GPU implementation of mixed-precision dense Cholesky factorization
+ *        Adaptively change precision during runtime
+ * 
+ * Performs mixed-precision dense Cholesky factorization on GPU using
+ * optimized cuBLAS and cuSOLVER kernels.
+ * 
+ * @param[in] parsec PaRSEC context
+ * @param[in] data HICMA PaRSEC data structure
+ * @param[in] params HICMA PaRSEC parameters
+ * @return 0 on success, non-zero on failure
+ */
+int potrf_L_dense_mp_gpu_fp8_adaptive( parsec_context_t *parsec,
         hicma_parsec_data_t *data,
         hicma_parsec_params_t *params );
 

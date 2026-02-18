@@ -85,7 +85,9 @@ parsec_context_t * hicma_parsec_init( int argc, char ** argv,
     hicma_parsec_params_init(params, argv);
 
     /* Step 4: Initialize STARSH kernels for efficient matrix operations */
-    hicma_parsec_kernel_init(params_kernel, params);
+    if( hicma_parsec_kernel_init(params_kernel, params) != 0 ) {
+        return NULL;
+    }
 
     /* Step 5: Validate and adjust parameters based on system constraints */
     hicma_parsec_params_check(params);
@@ -258,6 +260,7 @@ int hicma_parsec_matrix_pre_analysis( parsec_context_t *parsec,
             || params->kind_of_cholesky == DENSE_TLR_MP
             || params->kind_of_cholesky == DENSE_MP_GPU
             || params->kind_of_cholesky == DENSE_MP_GPU_FP8
+            || params->kind_of_cholesky == DENSE_MP_GPU_FP8_ADAPTIVE
             || params->kind_of_cholesky == DENSE_MP_GPU_FP8_SP
       ) {
         SYNC_TIME_START();
@@ -269,6 +272,7 @@ int hicma_parsec_matrix_pre_analysis( parsec_context_t *parsec,
     if( params->verbose > 2 && (DENSE_TLR_MP == params->kind_of_cholesky
                 || DENSE_MP_GPU == params->kind_of_cholesky
                 || DENSE_MP_GPU_FP8 == params->kind_of_cholesky
+                || DENSE_MP_GPU_FP8_ADAPTIVE == params->kind_of_cholesky
                 || DENSE_MP_GPU_FP8_SP == params->kind_of_cholesky)
             && params->band_size_dense >= params->NT ) {
         hicma_parsec_matrix_check_norm_diff( parsec, data, params, params_kernel );
@@ -277,9 +281,13 @@ int hicma_parsec_matrix_pre_analysis( parsec_context_t *parsec,
 
     /* Step 13: GPU warmup to ensure optimal performance if GPUs are available */
     if(params->gpus > 0) {
+        parsec_tiled_matrix_t *A = (parsec_tiled_matrix_t *)&data->dcA;
+        if( params->band_size_dense >= params->NT && params->auto_band == 0 && !params->adaptive_memory ) {
+            A = (parsec_tiled_matrix_t *)&data->dcAd;
+        }
         SYNC_TIME_START();
         //hicma_parsec_warmup_potrf(params->rank, params->uplo, 3872, parsec);
-        //hicma_parsec_potrf_L_warmup( parsec, (parsec_tiled_matrix_t *)&data->dcA, params, 1);
+        hicma_parsec_potrf_L_warmup( parsec, A, params, 1);
         SYNC_TIME_PRINT(params->rank, ("Warmup\n"));
     }
 
@@ -299,6 +307,7 @@ int hicma_parsec_matrix_pre_analysis( parsec_context_t *parsec,
  * - DENSE_SP_HP_BAND: Single precision high precision band Cholesky
  * - DENSE_MP_GPU: Mixed precision GPU-accelerated Cholesky
  * - DENSE_MP_GPU_FP8: Mixed precision GPU with FP8 support
+ * - DENSE_MP_GPU_FP8_ADAPTIVE: Mixed precision GPU with FP8 support during runtime
  * - DENSE_MP_GPU_FP8_SP: Mixed precision GPU with FP8 and single precision
  * 
  * Performance optimizations include:
@@ -355,6 +364,11 @@ int hicma_parsec_potrf( parsec_context_t *parsec,
     gettimeofday(&tstart, NULL);
     params->start_time_potrf = tstart.tv_sec + tstart.tv_usec / 1.0e6;
 
+    /* Seed skipped/zero-rank tiles; POTRF and TRSM overwrite executed tiles
+     * with the precision of their final physical representation. */
+    memcpy(params->decisions_storage_final, params->decisions,
+            (size_t)params->MT * params->NT * sizeof(uint16_t));
+
     /* Execute the appropriate Cholesky factorization algorithm based on configuration */
     switch( params->kind_of_cholesky ) {
         case DENSE_TLR_MP:
@@ -402,6 +416,11 @@ int hicma_parsec_potrf( parsec_context_t *parsec,
             potrf_L_dense_mp_gpu_fp8_sp( parsec, data, params );
             break;
 
+        case DENSE_MP_GPU_FP8_ADAPTIVE: 
+            /* Mixed precision GPU-accelerated Cholesky with FP8 */
+            potrf_L_dense_mp_gpu_fp8_adaptive( parsec, data, params );
+            break;
+
         default:
             /* Invalid Cholesky type specified */
             if( 0 == params->rank ) {
@@ -426,11 +445,11 @@ int hicma_parsec_potrf( parsec_context_t *parsec,
                 "lookahead= %d kind_of_problem= %d HNB= %d PxQ= %3d %-3d "
                 "nb_gpus= %d NB= %4d N= %7d kind_of_cholesky= %d sparse= %d left_looking= %d "
                 "nb_dense_dp= %.0lf nb_dense_sp= %.0lf nb_dense_hp= %.0lf nb_dense_fp8= %.0lf nb_low_rank_dp= %.0lf nb_low_rank_sp= %.0lf "
-                "adaptive_memory %d: %14f gflops\n",
+                "adaptive_memory %d: %14f Tflops\n",
                 params->band_size_dense, params->band_size_dist, params->lookahead, params->kind_of_problem,
                 params->HNB, params->P, params->Q, params->gpus, params->NB, params->N, params->kind_of_cholesky, params->sparse, params->left_looking,
                 params->nb_dense_dp, params->nb_dense_sp, params->nb_dense_hp, params->nb_dense_fp8, params->nb_low_rank_dp, params->nb_low_rank_sp,
-                params->adaptive_memory, params->gflops=(params->flops/1e9)/params->time_hicma));
+                params->adaptive_memory, params->gflops=(params->flops/1e12)/params->time_hicma));
 
 #if PRINT_PROCESS_EXE_TIME
     /* Calculate per-process execution time statistics */
@@ -484,6 +503,27 @@ int hicma_parsec_potrf( parsec_context_t *parsec,
     }
 #endif
 
+
+    /* Statistics for number of GEMMs in different precision */
+    if(params->verbose > 1) {
+        int counter_stride = params->counter_stride;
+        for( int i = 0; i < NB_DECISIONS+1; i++ ) {
+            for( int j = 1; j < counter_stride; j++ ) {
+                params->nb_gemms[i*counter_stride] += params->nb_gemms[i*counter_stride+j];
+            }
+        }
+        MPI_Allreduce(MPI_IN_PLACE, params->nb_gemms, (NB_DECISIONS+1)*counter_stride, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
+        for( int j = 1; j < counter_stride; j++ ) {
+            params->nb_datatype_conversions[0] += params->nb_datatype_conversions[j];
+        }
+        MPI_Allreduce(MPI_IN_PLACE, params->nb_datatype_conversions, counter_stride, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
+        if( 0 == params->rank ) {
+            fprintf(stderr, GRN"Number_of_GEMMs: DENSE_DP= %lu DENSE_SP= %lu DENSE_HP= %lu DENSE_FP8= %lu LOW_RANK_DP= %lu LOW_RANK_SP= %lu Number_of_Datatype_Conversions= %lu\n"RESET,
+                    params->nb_gemms[DENSE_DP*counter_stride], params->nb_gemms[DENSE_SP*counter_stride], params->nb_gemms[DENSE_HP*counter_stride],
+                    params->nb_gemms[DENSE_FP8*counter_stride], params->nb_gemms[LOW_RANK_DP*counter_stride], params->nb_gemms[LOW_RANK_SP*counter_stride], params->nb_datatype_conversions[0]);
+        }
+    }
+
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
     if( params->gpus > 0) {
         /* Process GPU error information and map to global error index */
@@ -499,6 +539,7 @@ int hicma_parsec_potrf( parsec_context_t *parsec,
 #endif
 
     params->info = ginfo;
+
     return ginfo;
 }
 
@@ -526,16 +567,40 @@ int hicma_parsec_matrix_post_analysis( parsec_context_t *parsec,
         hicma_parsec_matrix_analysis_t *analysis ) {
 
     /* Convert single precision results back to double precision for validation */
-    if( params->kind_of_cholesky == DENSE_MP_BAND
+    if( params->check
+            && (params->kind_of_cholesky == DENSE_MP_BAND
             || params->kind_of_cholesky == DENSE_SP_HP_BAND
             || params->kind_of_cholesky == DENSE_TLR_MP
             || params->kind_of_cholesky == DENSE_MP_GPU
             || params->kind_of_cholesky == DENSE_MP_GPU_FP8
-            || params->kind_of_cholesky == DENSE_MP_GPU_FP8_SP
+            || params->kind_of_cholesky == DENSE_MP_GPU_FP8_ADAPTIVE
+            || params->kind_of_cholesky == DENSE_MP_GPU_FP8_SP)
       ) {
         SYNC_TIME_START();
         hicma_parsec_convert_s2d( parsec, data, params);
         SYNC_TIME_PRINT(params->rank, ("Convert S2D\n"));
+    }
+
+    if(params->verbose > 9) {
+        parsec_tiled_matrix_t *decision_desc = (parsec_tiled_matrix_t *)&data->dcA;
+        if( params->band_size_dense >= params->NT &&
+                params->auto_band == 0 && !params->adaptive_memory ) {
+            decision_desc = (parsec_tiled_matrix_t *)&data->dcAd;
+        }
+        get_decisions(params->decisions, (size_t)params->MT * params->NT,
+                decision_desc);
+        //print_decisions(params);
+        if(params->adaptive_decision_runtime) {
+            get_decisions(params->decisions_gemm_first,
+                    (size_t)params->MT * params->NT, decision_desc);
+            get_decisions(params->decisions_gemm_last,
+                    (size_t)params->MT * params->NT, decision_desc);
+            print_first_local_gemm_decisions(params);
+            print_last_local_gemm_decisions(params);
+        }
+        get_decisions(params->decisions_storage_final,
+                (size_t)params->MT * params->NT, decision_desc);
+        print_final_storage_decisions(params);
     }
 
 #if 0

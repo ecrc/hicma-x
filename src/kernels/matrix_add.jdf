@@ -307,7 +307,7 @@ parsec_taskpool_t* hicma_parsec_matrix_add_New(parsec_tiled_matrix_t* A,
 
 #if !GPU_BUFFER_ONCE
     /* Allocate workspace on GPU in not allocated */
-    gpu_temporay_buffer_init( data, A->mb, A->nb, storagemaxrank, params->kind_of_cholesky );
+    gpu_temporay_buffer_init( data, params, A->mb, A->nb, storagemaxrank, params->kind_of_cholesky );
 #endif
 #endif
 
