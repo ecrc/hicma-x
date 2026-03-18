@@ -248,6 +248,9 @@
 #define cudaMemGetInfo hipMemGetInfo                       // Get memory usage information
 #define cudaMemcpyAsync hipMemcpyAsync                     // Asynchronous memory copy
 #define cudaMemcpyKind hipMemcpyKind                       // Memory copy direction type
+#define cudaHostRegister hipHostRegister                   // Memory register 
+#define cudaHostUnregister hipHostUnregister               // Memory unregister 
+#define cudaHostRegisterDefault hipHostRegisterDefault     // Memory register flag 
 
 // Advanced stream operations
 #define cudaStreamCreateWithFlags hipStreamCreateWithFlags // Create stream with specific flags
