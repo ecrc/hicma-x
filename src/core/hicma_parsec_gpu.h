@@ -372,6 +372,22 @@ void double2float_GPU(int nrows, int ncols,
                 cudaStream_t stream);
 
 /**
+ * @brief Convert double precision to single precision using stochastic rounding on GPU
+ *
+ * @param[in] nrows Number of rows
+ * @param[in] ncols Number of columns
+ * @param[in] H Input double precision matrix
+ * @param[in] ldh Leading dimension of H
+ * @param[out] F Output single precision matrix
+ * @param[in] ldf Leading dimension of F
+ * @param[in] stream CUDA stream
+ */
+void double2float_round_GPU(int nrows, int ncols,
+                const double *H, int ldh,
+                float *F, int ldf,
+                cudaStream_t stream);
+
+/**
  * @brief Convert single precision to half precision on GPU
  * 
  * Converts a single precision matrix to half precision format on GPU.
@@ -385,6 +401,22 @@ void double2float_GPU(int nrows, int ncols,
  * @param[in] stream CUDA stream
  */
 void float2half_GPU( int nrows, int ncols,
+                const float *F, int ldf,
+                void *H, int ldh,
+                cudaStream_t stream );
+
+/**
+ * @brief Convert single precision to half precision using stochastic rounding on GPU
+ *
+ * @param[in] nrows Number of rows
+ * @param[in] ncols Number of columns
+ * @param[in] F Input single precision matrix
+ * @param[in] ldf Leading dimension of F
+ * @param[out] H Output half precision matrix
+ * @param[in] ldh Leading dimension of H
+ * @param[in] stream CUDA stream
+ */
+void float2half_round_GPU( int nrows, int ncols,
                 const float *F, int ldf,
                 void *H, int ldh,
                 cudaStream_t stream );
@@ -449,6 +481,22 @@ void half2double_GPU( int nrows, int ncols,
  * @param[in] stream CUDA stream
  */
 void double2half_GPU( int nrows, int ncols,
+                const double *F, int ldf,
+                void *_H, int ldh,
+                cudaStream_t stream );
+
+/**
+ * @brief Convert double precision to half precision using stochastic rounding on GPU
+ *
+ * @param[in] nrows Number of rows
+ * @param[in] ncols Number of columns
+ * @param[in] F Input double precision matrix
+ * @param[in] ldf Leading dimension of F
+ * @param[out] H Output half precision matrix
+ * @param[in] ldh Leading dimension of H
+ * @param[in] stream CUDA stream
+ */
+void double2half_round_GPU( int nrows, int ncols,
                 const double *F, int ldf,
                 void *_H, int ldh,
                 cudaStream_t stream );

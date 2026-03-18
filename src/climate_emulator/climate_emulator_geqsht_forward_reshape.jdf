@@ -366,11 +366,11 @@ double norm_flmT = 0.0;
     parsec_redistribute(parsec, &gb->desc_flmT.super, &gb->desc_A.super, gb->A_M, gb->A_N, 0, 0, 0, 0);
     
     // Compute the norm of the original flmT matrix for verification
-    norm_flmT = hicma_parsec_matrix_norm_get(parsec, dplasmaUpperLower, &gb->desc_flmT.super, params, "double");
+    norm_flmT = hicma_parsec_matrix_norm_get(parsec, dplasmaUpperLower, &gb->desc_flmT.super, params, params->norm_tile, &params->norm_global, "double");
 #endif
 
     // Compute the norm of the final A matrix
-    double norm_A = hicma_parsec_matrix_norm_get(parsec, dplasmaUpperLower, &gb->desc_A.super, params, "double");
+    double norm_A = hicma_parsec_matrix_norm_get(parsec, dplasmaUpperLower, &gb->desc_A.super, params, params->norm_tile, &params->norm_global, "double");
 
     // Print norms for verification (only on rank 0)
     if( 0 == params->rank ) {

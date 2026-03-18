@@ -70,8 +70,12 @@ int hicma_parsec_decision_init(hicma_parsec_params_t *params);
  * @return 0 on success, non-zero on failure
  */
 int hicma_parsec_decision_make_comp(parsec_context_t *parsec,
-                         parsec_tiled_matrix_t *A,
-                         hicma_parsec_params_t *params);
+        dplasma_enum_t uplo,
+        parsec_tiled_matrix_t *A,
+        hicma_parsec_params_t *params,
+        double *norm_tile,
+        double norm_global,
+        uint16_t *decisions);
 
 /**
  * @brief Make decisions about datatype sending
@@ -337,7 +341,7 @@ void hicma_parsec_decisions_gemm_gpu_init(hicma_parsec_params_t *params);
  * 
  * @param[in] params HICMA PaRSEC parameters
  */
-void print_decisions(hicma_parsec_params_t *params);
+void print_decisions(hicma_parsec_params_t *params, uint16_t *decisions, int uplo, int m, int n);
 void print_first_local_gemm_decisions(const hicma_parsec_params_t *params);
 void print_last_local_gemm_decisions(const hicma_parsec_params_t *params);
 void print_final_storage_decisions(const hicma_parsec_params_t *params);
@@ -422,6 +426,8 @@ float hicma_parsec_matrix_ssum(parsec_context_t *parsec,
  */
 void hicma_parsec_get_precision_tile(hicma_parsec_params_t *params_tlr,
         hicma_parsec_decision_enum_t *new_decision, double norm_tile, int m, int n);
+
+int decision_datatype_tile_trmm_mp_LLN(uint16_t *decisions, int m, int n, int NT);
 
 #ifdef __cplusplus
 }

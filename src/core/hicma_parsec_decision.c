@@ -13,6 +13,7 @@
 #include "potrf_L_dense_mp_gpu_fp8.h"
 #include "potrf_L_dense_mp_gpu_fp8_adaptive.h"
 #include "potrf_L_dense_mp_gpu_fp8_sp.h"
+#include "trmm_mp_LLN.h"
 
 /**
  * @file hicma_parsec_decision.c
@@ -43,7 +44,7 @@ void  hicma_parsec_decisions_update( parsec_context_t *parsec,
 
     /* Adaptive decision */
     if( params->adaptive_decision ) {
-        hicma_parsec_decision_make_comp( parsec, (parsec_tiled_matrix_t*)&data->dcA, params );
+        hicma_parsec_decision_make_comp( parsec, params->uplo, (parsec_tiled_matrix_t*)&data->dcA, params, params->norm_tile, params->norm_global, params->decisions );
         params->time_decision_kernel = sync_time_elapsed;
     }
 
@@ -56,7 +57,7 @@ void  hicma_parsec_decisions_update( parsec_context_t *parsec,
     params->time_decision_sender = sync_time_elapsed;
 
     if( params->verbose > 9 ) {
-        print_decisions( params );
+        print_decisions( params, params->decisions, params->uplo, params->NT, params->NT );
         //print_decisions_send( params );
         //print_decisions_gemm_gpu( params );
     }
@@ -120,7 +121,7 @@ int hicma_parsec_decision_init( hicma_parsec_params_t *params )
     }
 
     if( 0 && params->verbose > 9 ) {
-        print_decisions( params );
+        print_decisions( params, params->decisions, params->uplo, params->NT, params->NT );
     }
 
     return 0;
@@ -140,38 +141,62 @@ int hicma_parsec_decision_init( hicma_parsec_params_t *params )
  *
  * @param[in] params HICMA PaRSEC parameters
  */
-void print_decisions( hicma_parsec_params_t *params ) {
+void print_decisions( hicma_parsec_params_t *params, uint16_t *decisions, int uplo, int m, int n) {
     sleep(1);
     fflush(stdout);
+    int NT = m;
 
     /* Print decisions */
     if( 0 == params->rank ) {
         fprintf(stderr, "\ndecisions: DENSE_DP= %d DENSE_SP= %d LOW_RANK_DP= %d LOW_RANK_SP= %d DENSE_HP= %d DENSE_FP8= %d\n",
                 DENSE_DP, DENSE_SP, LOW_RANK_DP, LOW_RANK_SP, DENSE_HP, DENSE_FP8);
-        for(int i = 0; i < params->NT; i++) {
-            for(int j = 0; j <= i; j++) {
-                if( DENSE_DP == params->decisions[j*params->NT+i] )
-                    fprintf(stderr, RED "%2d " RESET, params->decisions[j*params->NT+i]);
-                else if( DENSE_SP == params->decisions[j*params->NT+i] )
-                    fprintf(stderr, BLU "%2d " RESET, params->decisions[j*params->NT+i]);
-                else if( LOW_RANK_DP == params->decisions[j*params->NT+i] )
-                    fprintf(stderr, PUR "%2d " RESET, params->decisions[j*params->NT+i]);
-                else if( LOW_RANK_SP == params->decisions[j*params->NT+i] )
-                    fprintf(stderr, YEL "%2d " RESET, params->decisions[j*params->NT+i]);
-                else if( DENSE_HP == params->decisions[j*params->NT+i] )
-                    fprintf(stderr, GRN "%2d " RESET, params->decisions[j*params->NT+i]);
-                else if( DENSE_FP8 == params->decisions[j*params->NT+i] )
-                    fprintf(stderr, CYN"%2d " RESET, params->decisions[j*params->NT+i]);
-                else
-                    fprintf(stderr, WHT"E" RESET);
+        if( uplo == dplasmaLower ) {
+            for(int i = 0; i < m; i++) {
+                for(int j = 0; j <= i; j++) {
+                    if( DENSE_DP == decisions[j*NT+i] )
+                        fprintf(stderr, RED "%2u " RESET, decisions[j*NT+i]);
+                    else if( DENSE_SP == decisions[j*NT+i] )
+                        fprintf(stderr, BLU "%2u " RESET, decisions[j*NT+i]);
+                    else if( LOW_RANK_DP == decisions[j*NT+i] )
+                        fprintf(stderr, PUR "%2u " RESET, decisions[j*NT+i]);
+                    else if( LOW_RANK_SP == decisions[j*NT+i] )
+                        fprintf(stderr, YEL "%2u " RESET, decisions[j*NT+i]);
+                    else if( DENSE_HP == decisions[j*NT+i] )
+                        fprintf(stderr, GRN "%2u " RESET, decisions[j*NT+i]);
+                    else if( DENSE_FP8 == decisions[j*NT+i] )
+                        fprintf(stderr, CYN"%2u " RESET, decisions[j*NT+i]);
+                    else
+                        fprintf(stderr, WHT"E" RESET);
+                }
+                fprintf(stderr, "\n");
             }
+            fprintf(stderr, "\n");
+        } else if(uplo == dplasmaUpperLower) {
+            for(int i = 0; i < m; i++) {
+                for(int j = 0; j < n; j++) {
+                    if( DENSE_DP == decisions[j*NT+i] )
+                        fprintf(stderr, RED "%2d " RESET, decisions[j*NT+i]);
+                    else if( DENSE_SP == decisions[j*NT+i] )
+                        fprintf(stderr, BLU "%2d " RESET, decisions[j*NT+i]);
+                    else if( LOW_RANK_DP == decisions[j*NT+i] )
+                        fprintf(stderr, PUR "%2d " RESET, decisions[j*NT+i]);
+                    else if( LOW_RANK_SP == decisions[j*NT+i] )
+                        fprintf(stderr, YEL "%2d " RESET, decisions[j*NT+i]);
+                    else if( DENSE_HP == decisions[j*NT+i] )
+                        fprintf(stderr, GRN "%2d " RESET, decisions[j*NT+i]);
+                    else if( DENSE_FP8 == decisions[j*NT+i] )
+                        fprintf(stderr, CYN"%2d " RESET, decisions[j*NT+i]);
+                    else
+                        fprintf(stderr, WHT"E" RESET);
+                }
                 fprintf(stderr, "\n");
             }
             fprintf(stderr, "\n");
         }
+    }
 
-        fflush(stdout);
-        sleep(1);
+    fflush(stdout);
+    sleep(1);
 }
 
 static void print_runtime_decisions(const hicma_parsec_params_t *params,
@@ -697,6 +722,20 @@ int decision_datatype_tile_send_potrf_L_dense_mp_gpu_fp8_sp(uint16_t *decisions,
     }
 }
 
+
+int decision_datatype_tile_trmm_mp_LLN(uint16_t *decisions, int m, int n, int NT) {
+    switch( decisions[n*NT+m] ) {
+        case DENSE_DP:
+            return PARSEC_trmm_mp_LLN_FULL_DP_ADT_IDX;
+        case DENSE_SP:
+            return PARSEC_trmm_mp_LLN_FULL_SP_ADT_IDX;
+        case DENSE_HP:
+            return PARSEC_trmm_mp_LLN_FULL_HP_ADT_IDX;
+        default:
+            fprintf(stderr, "The decision is not correct! \n");
+            return -1;
+    }
+}
 
 /**
  * @brief Determine the precision of that tile 

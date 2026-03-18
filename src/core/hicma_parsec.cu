@@ -1657,6 +1657,7 @@ void memcpy_float_GPU( int nrows, int ncols, void *_src, void *_dest, cudaStream
         memcpy_float_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, src, dest);
 }
 
+
 /****************************************************************************************************/
 
 

@@ -1,0 +1,341 @@
+extern "C" %{
+/*
+ * Copyright (c) 2010-2022 The University of Tennessee and The University
+ *                         of Tennessee Research Foundation. All rights
+ *                         reserved.
+ * Copyright (c) 2013      Inria. All rights reserved.
+ *
+ * @generated d Wed Mar 18 15:52:06 2026
+ *
+ */
+
+#include "hicma_parsec.h"
+
+%}
+
+side      [type = "dplasma_enum_t"]
+uplo      [type = "dplasma_enum_t"]
+trans     [type = "dplasma_enum_t"]
+diag      [type = "dplasma_enum_t"]
+alpha     [type = "double"]
+
+descA     [type = "const parsec_tiled_matrix_t*"]
+descB     [type = "parsec_tiled_matrix_t*" ] 
+
+params_tlr   [ type = "hicma_parsec_params_t *" ]
+
+/* Process-grid columns used to rotate the lightweight A-panel credits. */
+Q            [ type = "int" hidden = on default = "params_tlr->Q" ]
+
+p_work_full_dp        [ type = "parsec_memory_pool_t *" hidden = on default = NULL ]  /* Double precision full matrix memory pool - allocates memory for dense double precision matrices */
+p_work_full_sp        [ type = "parsec_memory_pool_t *" hidden = on default = NULL ]  /* Single precision full matrix memory pool - allocates memory for dense single precision matrices */       
+p_work_full_hp        [ type = "parsec_memory_pool_t *" hidden = on default = NULL ]  /* Half precision full matrix memory pool - allocates memory for dense half precision matrices */
+
+/* GPU-related variables */
+ws_gpu       [ type = "void *" hidden = on default = NULL ]  /* GPU workspace memory - shared workspace for GPU computations across all tasks */
+nb_cuda_devices      [ type = "int"   hidden = on default = 0 ]  /* Number of available CUDA devices - tracks how many GPUs are available for computation */
+cuda_device_index    [ type = "int *" hidden = on default = "NULL"]  /* Array of CUDA device indices for load balancing - maps tasks to specific GPU devices for optimal load distribution */
+
+
+
+/**************************************************
+ *               Define Arena                     *
+ **************************************************/
+/**
+ * Arena Definition:
+ * The arena defines the data types and memory layouts used throughout the task graph.
+ * This arena supports multiple precision formats for mixed precision computation.
+ *
+ * Memory Layout Strategy:
+ * The arena is designed to support seamless precision conversion and efficient
+ * memory management across different computational phases of the Cholesky factorization.
+ */
+my_arena(k)
+
+// Execution space - single iteration for arena initialization
+k = 0 .. 0
+
+// Parallel partitioning - uses the main matrix descriptor for data distribution
+:descA(0, 0)
+
+// Parameters - Define data types for different precision formats and operations
+READ A1 <- NULL       [ type = FULL_DP ]    /* Double precision full matrix data type - used for critical diagonal computations */
+READ A2 <- NULL       [ type = FULL_SP ]    /* Single precision full matrix data type - primary computation format */
+READ A3 <- NULL       [ type = FULL_HP ]    /* Half precision full matrix data type - memory-efficient storage */
+
+BODY
+{
+    /* Arena initialization - no specific initialization needed for this arena
+     * The arena serves as a type registry for the PaRSEC runtime to understand
+     * the different data types used throughout the task graph execution */
+}
+END
+
+
+read_A(m, k) [profile = off]
+  /* Execution Space */
+  m = 0..(descB->mt-1)
+  k = 0..(descB->mt-m-1)
+
+//loc_A = %{ return LOC(descA, (descB->mt-1)-m, k); %}
+
+  /* Locality */
+  : descA((descB->mt-1)-m, k)
+
+  READ  A    <- descA((descB->mt-1)-m, k) 
+             -> (k == (descB->mt-1-m)) ? A dtrmm(m, 0..(descB->nt-1))    [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr->decisions, (descB->mt-1)-m, k, descA->lmt)]; %} ]
+             -> (k != (descB->mt-1-m)) ? A dgemm(m, 0..(descB->nt-1), k) [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr->decisions, (descB->mt-1)-m, k, descA->lmt)]; %} ]
+
+  /* Each C chain visits k = i-1, ..., 0, where i = descB->mt-1-m.
+   * Leave the diagonal and the first trmm_window off-diagonal tiles ready;
+   * a later tile k receives its credit from the earlier GEMM at k+window.
+   * The in-place C flow already orders every (m,n) reduction chain.  Use one
+   * rotating chain as a soft credit for the next A broadcast instead of
+   * gathering completion from every n.  Choosing n from the future panel
+   * index normally places the credit on that panel's A-owner process column,
+   * avoiding a remote control message as well as the distributed fan-in. */
+  CTL   window_A <- (params_tlr->trmm_window > 0 &&
+                   k + params_tlr->trmm_window < descB->mt-1-m) ?
+                  window_A dgemm(m,
+                                 k % (Q < descB->nt ? Q : descB->nt),
+                                 k+params_tlr->trmm_window)
+
+BODY
+{
+    /* nothing */
+}
+END
+
+read_B(n, k) [profile = off]
+  /* Execution Space */
+  n = 0..(descB->nt-1)
+  k = 0..(descB->mt-2)
+
+//loc_B = %{ return LOC(descB, k, n); %}
+
+  /* Locality */
+  : descB(k,n)
+
+  READ  B    <- descB(k,n)
+             -> B dgemm(0..(descB->mt-k-2), n, k)  [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr->decisionsB, k, n, descB->lmt)]; %} ] 
+
+BODY
+{
+    /* nothing */
+}
+END
+
+dtrmm(m, n) [ flops = inline_c %{ return FLOPS_DTRMM(side, CLEAN_MB(descB, m), CLEAN_NB(descB, n)); %} ]
+  /* Execution Space */
+  m = 0..(descB->mt-1)
+  n = 0..(descB->nt-1)
+
+//loc_A = %{ return LOC(descA, (descB->mt-1)-m, (descB->mt-1)-m); %}
+//loc_B = %{ return LOC(descB, (descB->mt-1)-m, n); %}
+
+  /* Locality */
+  : descB((descB->mt-1)-m,n)
+
+  READ  A    <- A read_A(m, descB->mt-1-m)                      [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr->decisions, (descB->mt-1)-m, (descB->mt-1)-m, descA->lmt)]; %} ]
+  RW    B    <- descB((descB->mt-1)-m,n)                        
+             -> (m <  (descB->mt-1)) ? C dgemm(m, n, descB->mt-m-2) [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr->decisionsB, (descB->mt-1)-m, n, descB->lmt)]; %} ]
+             -> (m == (descB->mt-1)) ? descB((descB->mt-1)-m,n) 
+
+  /* Preserve the original B(i,n) until every lower row has consumed it. */
+  CTL   ctl0 <- ctl0 dgemm(0..(m-1), n, descB->mt-m-1)
+
+
+BODY [ type = CUDA ]
+{
+    int tempmm = (((descB->mt-1)-m)==(descB->mt-1)) ? (descB->m-(((descB->mt-1)-m)*descB->mb)) : descB->mb;
+    int tempnn = ((n)==(descB->nt-1)) ? (descB->n-(n*descB->nb)) : descB->nb;
+    int lda = BLKLDD(descA, A);
+    int ldb = BLKLDD(descB, B);
+
+    printlog("CORE_dtrmm(%d, %d)\n"
+            "\t(side, uplo, trans, diag, tempmm, tempnn, alpha, A(%d,%d)[%p], lda, B(%d,%d)[%p], ldb)\n",
+            m, n, (descB->mt-1)-m, (descB->mt-1)-m, A, (descB->mt-1)-m, n, B);
+
+    hicma_parsec_trmm_core_trmm_lln_gpu(
+            params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream,
+            side, uplo, trans,
+            diag, tempmm, tempnn,
+            alpha, A /* descA((descB->mt-1)-m,(descB->mt-1)-m) */, lda,
+            B /* descB((descB->mt-1)-m,n) */, ldb,
+            m, n );
+}
+END
+
+BODY [ type = HIP ]
+{
+    int tempmm = (((descB->mt-1)-m)==(descB->mt-1)) ? (descB->m-(((descB->mt-1)-m)*descB->mb)) : descB->mb;
+    int tempnn = ((n)==(descB->nt-1)) ? (descB->n-(n*descB->nb)) : descB->nb;
+    int lda = BLKLDD(descA, A);
+    int ldb = BLKLDD(descB, B);
+
+    printlog("CORE_dtrmm(%d, %d)\n"
+            "\t(side, uplo, trans, diag, tempmm, tempnn, alpha, A(%d,%d)[%p], lda, B(%d,%d)[%p], ldb)\n",
+            m, n, (descB->mt-1)-m, (descB->mt-1)-m, A, (descB->mt-1)-m, n, B);
+
+    hicma_parsec_trmm_core_trmm_lln_gpu(
+            params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream,
+            side, uplo, trans,
+            diag, tempmm, tempnn,
+            alpha, A /* descA((descB->mt-1)-m,(descB->mt-1)-m) */, lda,
+            B /* descB((descB->mt-1)-m,n) */, ldb,
+            m, n );
+}
+END
+
+BODY
+{
+    int tempmm = (((descB->mt-1)-m)==(descB->mt-1)) ? (descB->m-(((descB->mt-1)-m)*descB->mb)) : descB->mb;
+    int tempnn = ((n)==(descB->nt-1)) ? (descB->n-(n*descB->nb)) : descB->nb;
+    int lda = BLKLDD(descA, A);
+    int ldb = BLKLDD(descB, B);
+
+    printlog("CORE_dtrmm(%d, %d)\n"
+            "\t(side, uplo, trans, diag, tempmm, tempnn, alpha, A(%d,%d)[%p], lda, B(%d,%d)[%p], ldb)\n",
+            m, n, (descB->mt-1)-m, (descB->mt-1)-m, A, (descB->mt-1)-m, n, B);
+#if 1
+    hicma_parsec_trmm_core_trmm_lln_cpu(params_tlr, es,
+            p_work_full_dp, p_work_full_sp, p_work_full_hp,
+            side, uplo, trans,
+            diag, tempmm, tempnn,
+            alpha, A /* descA((descB->mt-1)-m,(descB->mt-1)-m) */, lda,
+            B /* descB((descB->mt-1)-m,n) */, ldb,
+            m, n );
+#else
+    CORE_dtrmm(side, uplo, trans,
+            diag, tempmm, tempnn,
+            alpha, A /* descA((descB->mt-1)-m,(descB->mt-1)-m) */, lda,
+            B /* descB((descB->mt-1)-m,n) */, ldb );
+#endif
+}
+END
+
+
+dgemm(m, n, k) [ flops = inline_c %{ return FLOPS_DGEMM(CLEAN_MB(descB, m), CLEAN_NB(descB, n), descB->mb); %} ]
+  /* Execution Space */
+  m = 0..(descB->mt-2)
+  n = 0..(descB->nt-1)
+  k = 0..(descB->mt-m-2)
+
+//loc_A = %{ return LOC(descA, (descB->mt-1)-m,k); %}
+//loc_B = %{ return LOC(descB, k, n); %}
+//loc_C = %{ return LOC(descB, (descB->mt-1)-m, n); %}
+
+  /* Locality */
+  : descB((descB->mt-1)-m,n)
+
+  READ  A    <- A read_A(m, k)                                      [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr->decisions, (descB->mt-1)-m, k, descA->lmt)]; %} ]
+  READ  B    <- B read_B(n, k)                                      [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr->decisionsB, k, n, descB->lmt)]; %} ] 
+  /* Consume the nearest preceding B row first, releasing its overwrite
+   * dependency early so different output rows can progress concurrently.
+   * Keep a single writer for C; descending k changes the summation order. */
+  RW    C    <- ((k+m) == (descB->mt-2)) ? B dtrmm(m, n)             [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr->decisionsB, (descB->mt-1)-m, n, descB->lmt)]; %} ]
+             <- ((k+m) <  (descB->mt-2)) ? C dgemm(m, n, k+1)
+             -> (k >  0) ? C dgemm(m, n, k-1)
+             -> (k == 0) ? descB((descB->mt-1)-m,n)
+
+  CTL   ctl0 -> ctl0 dtrmm(descB->mt-k-1, n)
+
+  CTL   window_A -> (params_tlr->trmm_window > 0 &&
+                     k >= params_tlr->trmm_window &&
+                     n == ((k - params_tlr->trmm_window) %
+                           (Q < descB->nt ? Q : descB->nt))) ?
+                    window_A read_A(m, k-params_tlr->trmm_window)
+
+BODY [type=CUDA]
+{
+    double lalpha = alpha;
+    double lbeta = 1.0;
+    int tempmm = (((descB->mt-1)-m)==(descB->mt-1)) ? (descB->m-(((descB->mt-1)-m)*descB->mb)) : descB->mb;
+    int tempnn = ((n)==(descB->nt-1)) ? (descB->n-(n*descB->nb)) : descB->nb;
+    int lda = BLKLDD(descA, A);
+    int ldb = BLKLDD(descB, B);
+    int ldc = BLKLDD(descB, C);
+
+#if 1
+    hicma_parsec_trmm_core_gemm_lln_gpu(
+            params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream,
+            trans, dplasmaNoTrans,
+            tempmm, tempnn, descB->mb,
+            lalpha, A, lda,
+            B, ldb, lbeta, C, ldc,
+            m, n, k);
+#else
+    cublasStatus_t status;
+    cublasSetKernelStream( parsec_body.stream );
+    cublasDgemm( dplasma_lapack_const(trans), 'N', 
+                 tempmm, tempnn, descB->mb,
+                 lalpha, (double*)A, lda,
+                         (double*)B, ldb,
+                 lbeta,  (double*)C, ldc );
+    status = cublasGetError();
+    PARSEC_CUDA_CHECK_ERROR( "cublasDgemm ", status, {return PARSEC_HOOK_RETURN_ERROR;} );
+#endif
+}
+END
+
+BODY [type=HIP]
+{
+    double lalpha = alpha;
+    double lbeta = 1.0;
+    int tempmm = (((descB->mt-1)-m)==(descB->mt-1)) ? (descB->m-(((descB->mt-1)-m)*descB->mb)) : descB->mb;
+    int tempnn = ((n)==(descB->nt-1)) ? (descB->n-(n*descB->nb)) : descB->nb;
+    int lda = BLKLDD(descA, A);
+    int ldb = BLKLDD(descB, B);
+    int ldc = BLKLDD(descB, C);
+
+#if 1
+    hicma_parsec_trmm_core_gemm_lln_gpu(
+            params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream, 
+            trans, dplasmaNoTrans, tempmm, tempnn, descB->mb,
+            lalpha, A, lda,
+            B, ldb, lbeta, C, ldc,
+            m, n, k);
+
+#else
+    hipblasStatus_t status;
+    dplasma_hip_handles_t *handles = parsec_info_get(&gpu_stream->infos, hip_handles_infokey);
+    assert(NULL != handles);
+    status = hipblasDgemm( handles->hipblas_handle, dplasma_hipblas_op(trans), HIPBLAS_OP_N,
+                 tempmm, tempnn, descB->mb,
+                 &lalpha, (double*)A, lda,
+                         (double*)B, ldb,
+                 &lbeta,  (double*)C, ldc );
+    DPLASMA_HIPBLAS_CHECK_ERROR( "hipblasDgemm ", status, {return PARSEC_HOOK_RETURN_ERROR;} );
+#endif
+}
+END
+
+BODY
+{
+    int tempmm = (((descB->mt-1)-m)==(descB->mt-1)) ? (descB->m-(((descB->mt-1)-m)*descB->mb)) : descB->mb;
+    int tempnn = ((n)==(descB->nt-1)) ? (descB->n-(n*descB->nb)) : descB->nb;
+    int lda = BLKLDD(descA, A);
+    int ldb = BLKLDD(descB, B);
+    int ldc = BLKLDD(descB, C);
+
+    printlog("CORE_dgemm(%d, %d, %d)\n"
+             "\t(trans, dplasmaNoTrans, tempmm, tempnn, descB->mb, alpha, A(%d,%d)[%p], lda, B(%d,%d)[%p], descB->mb, 1.000000, B(%d,%d)[%p], ldb)\n",
+             m, n, k, (descB->mt-1)-m, k, A, k, n, B, (descB->mt-1)-m, n, C);
+
+#if 1
+    hicma_parsec_trmm_core_gemm_lln_cpu(params_tlr, es,
+            p_work_full_dp, p_work_full_sp, p_work_full_hp,
+            trans, dplasmaNoTrans, tempmm, tempnn, descB->mb,
+            alpha, A /* descA((descB->mt-1)-m,k) */, lda,
+            B /* descB(k,n) */,               ldb,
+            1.0,   C /* descB((descB->mt-1)-m,n) */, ldc,
+            m, n, k );
+
+#else
+    CORE_dgemm(trans, dplasmaNoTrans, tempmm, tempnn, descB->mb,
+               alpha, A /* descA((descB->mt-1)-m,k) */, lda,
+                      B /* descB(k,n) */,               ldb,
+               1.0,   C /* descB((descB->mt-1)-m,n) */, ldc );
+#endif
+}
+END

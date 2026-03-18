@@ -33,6 +33,7 @@ extern "C" %{
 uplo            [ type = "dplasma_enum_t" ]
 descA           [ type = "parsec_tiled_matrix_t*" ]
 params_tlr      [ type = "hicma_parsec_params_t *" ]
+norm_tile       [ type = "double *" ]
 datatype_str    [ type = "char *"]
 norm            [ type = "double *" ]
 
@@ -82,10 +83,11 @@ BODY
     norm[tid] += norm_squared; 
     
     // Store per-tile norm for analysis/debugging
-    params_tlr->norm_tile[n*params_tlr->NT+m] = sqrt(norm_squared);
+    norm_tile[n*params_tlr->NT+m] = sqrt(norm_squared);
+    //printf("%d %d %lf\n", m, n, norm_tile[n*params_tlr->NT+m]);
     
 #if DEBUG_INFO_CLIMATE_EMULATOR
-    printf("norm_tile %d %d : %lf\n", m, n, params_tlr->norm_tile[n*params_tlr->NT+m]);
+    printf("norm_tile %d %d : %lf\n", m, n, norm_tile[n*params_tlr->NT+m]);
 #endif
 
     // Reset thread norm accumulation periodically to prevent overflow
@@ -119,6 +121,7 @@ hicma_parsec_matrix_norm_get_New( parsec_context_t *parsec,
         dplasma_enum_t uplo,
         parsec_tiled_matrix_t *A,
         hicma_parsec_params_t *params_tlr,
+        double *norm_tile,
         char *datatype_str,
         double *norm_tmp)
 {
@@ -129,7 +132,7 @@ hicma_parsec_matrix_norm_get_New( parsec_context_t *parsec,
     }
 
     // Create the taskpool with the specified parameters
-    parsec_matrix_norm_get_taskpool_t *starsh_gen = parsec_matrix_norm_get_new(uplo, A, params_tlr, datatype_str, norm_tmp);
+    parsec_matrix_norm_get_taskpool_t *starsh_gen = parsec_matrix_norm_get_new(uplo, A, params_tlr, norm_tile, datatype_str, norm_tmp);
 
     return (parsec_taskpool_t*)starsh_gen;
 }
@@ -164,6 +167,8 @@ double hicma_parsec_matrix_norm_get( parsec_context_t *parsec,
         dplasma_enum_t uplo,
         parsec_tiled_matrix_t *A,
         hicma_parsec_params_t *params_tlr,
+        double *norm_tile,
+        double *norm_global,
         char *datatype_str)
 {
     parsec_taskpool_t *parsec_matrix_norm_get = NULL;
@@ -176,11 +181,11 @@ double hicma_parsec_matrix_norm_get( parsec_context_t *parsec,
     double *norm_tmp = (double *)calloc(sizeof(double), nb_threads);
 
     /* Initialize norm storage arrays */
-    params_tlr->norm_global = 0.0;
-    memset( params_tlr->norm_tile, 0, params_tlr->NT * params_tlr->NT * sizeof(double) );
+    *norm_global = 0.0;
+    memset( norm_tile, 0, A->lmt * A->lnt * sizeof(double) );
 
     // Create and execute the norm computation taskpool
-    parsec_matrix_norm_get = hicma_parsec_matrix_norm_get_New( parsec, uplo, A, params_tlr, datatype_str, norm_tmp ); 
+    parsec_matrix_norm_get = hicma_parsec_matrix_norm_get_New( parsec, uplo, A, params_tlr, norm_tile, datatype_str, norm_tmp ); 
 
     parsec_context_add_taskpool(parsec, parsec_matrix_norm_get);
     parsec_context_start(parsec);
@@ -195,15 +200,15 @@ double hicma_parsec_matrix_norm_get( parsec_context_t *parsec,
 
     /* Perform MPI reduction to get global norm across all processes */
     // Reduce per-tile norms (for analysis/debugging)
-    MPI_Allreduce(MPI_IN_PLACE, params_tlr->norm_tile, params_tlr->NT * params_tlr->NT, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, norm_tile, A->lmt * A->lnt, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     // Reduce global norm
-    MPI_Allreduce(&norm_process, &params_tlr->norm_global, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-    params_tlr->norm_global = sqrt(params_tlr->norm_global);
+    MPI_Allreduce(&norm_process, norm_global, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    *norm_global = sqrt(*norm_global);
 
     // Clean up temporary storage
     free( norm_tmp );
 
-    return params_tlr->norm_global;
+    return *norm_global;
 }
 
 %}

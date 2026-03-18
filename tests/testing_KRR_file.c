@@ -164,9 +164,9 @@ int main(int argc, char **argv)
     
     // Compute matrix norms for numerical stability analysis
     if (params.band_size_dense >= params.NT && params.auto_band == 0 && !params.adaptive_memory) {
-        hicma_parsec_matrix_norm_get(parsec, dplasmaLower, (parsec_tiled_matrix_t *)&data.dcAd, &params, "double");
+        hicma_parsec_matrix_norm_get(parsec, dplasmaLower, (parsec_tiled_matrix_t *)&data.dcAd, &params, params.norm_tile, &params.norm_global, "double");
     } else {
-        hicma_parsec_matrix_norm_get(parsec, dplasmaLower, (parsec_tiled_matrix_t *)&data.dcA, &params, "double");
+        hicma_parsec_matrix_norm_get(parsec, dplasmaLower, (parsec_tiled_matrix_t *)&data.dcA, &params, params.norm_tile, &params.norm_global, "double");
     }
     
     printf("Performing matrix pre-analysis...\n");

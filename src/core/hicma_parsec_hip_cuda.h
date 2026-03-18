@@ -75,6 +75,8 @@
 #define cublasZgemv hipblasZgemv    // Complex double precision matrix-vector multiplication
 #define cublasZdotu hipblasZdotu    // Complex double precision dot product (unconjugated)
 #define cublasDaxpy hipblasDaxpy    // Double precision axpy operation
+#define cublasDtrmm hipblasDtrmm
+#define cublasStrmm hipblasStrmm 
 
 /* ============================================================================
  * CUDA to HIP type mappings
@@ -100,6 +102,9 @@
 #define cudaGetDevice hipGetDevice                        // Get current active device
 #define cudaGetDeviceProperties hipGetDeviceProperties    // Get device properties
 #define cudaSetDevice hipSetDevice                        // Set active device
+#define cudaHostRegister hipHostRegister
+#define cudaHostUnregister hipHostUnregister
+#define cudaHostRegisterDefault hipHostRegisterDefault
 
 // Event synchronization functions
 #define cudaEventCreate hipEventCreate                    // Create event object
@@ -131,6 +136,12 @@
 #define cudaGetErrorName hipGetErrorName                  // Get error name from error code
 #define cudaGetErrorString hipGetErrorString              // Get error description from error code
 #define cudaGetLastError hipGetLastError                  // Get last error from device
+#define PARSEC_CUDA_CHECK_ERROR DPLASMA_HIPBLAS_CHECK_ERROR
+
+// CUDA Func
+#define curand_uniform hiprand_uniform
+#define curandState hiprandState 
+#define curand_init hiprand_init
 
 /* ============================================================================
  * CUDA to HIP enum value mappings
@@ -221,6 +232,10 @@
 #define CUBLAS_OP_N HIPBLAS_OP_N                           // No transpose operation
 #define CUBLAS_FILL_MODE_LOWER HIPBLAS_FILL_MODE_LOWER     // Lower triangular fill mode
 #define CUBLAS_SIDE_RIGHT HIPBLAS_SIDE_RIGHT               // Right side operation
+#define dplasma_cublas_op dplasma_hipblas_op               
+#define dplasma_cublas_side dplasma_hipblas_side
+#define dplasma_cublas_fill dplasma_hipblas_fill
+#define dplasma_cublas_diag dplasma_hipblas_diag
 
 /* ============================================================================
  * CUDA to HIP datatype mappings

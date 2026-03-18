@@ -631,6 +631,13 @@ void convert_d2h_binary_CPU(__fp16 *_target, double *_source, int mb, int nb) {
              target[j*mb+i] = (__fp16)source[j*mb+i];
 }
 
+void convert_d2h_unary_CPU(double *data, int mb, int nb) {
+    __fp16 *data_h = (__fp16*)data;
+    for( int j = 0; j < nb; j++ )
+        for( int i = 0; i < mb; i++ )
+            data_h[j*mb+i] = (float)data[j*mb+i];
+}
+
 /**
  * @brief Converts half precision to double precision (non-destructive)
  * 
@@ -649,6 +656,13 @@ void convert_h2d_binary_CPU(double *_target, __fp16 *_source, int mb, int nb) {
      for( int j = 0; j < nb; j++ )
          for( int i = 0; i < mb; i++ )
              target[j*mb+i] = (double)source[j*mb+i];
+}
+
+void convert_h2d_unary_CPU(__fp16 *data, int mb, int nb) {
+    double *data_d = (double *)data;
+    for( int j = nb-1; j >= 0; j-- )
+        for( int i = mb-1; i >= 0; i-- )
+            data_d[j*mb+i] = (double)data[j*mb+i];
 }
 
 /**
@@ -2152,6 +2166,53 @@ void float2half_CPU( int nrows, int ncols,
              target[j*ld_t+i] = float32_to_float16( source[j*ld_s+i] ); 
 }
 
+
+int convert_datatype_adaptive_unary_CPU(void *A, int mb, int nb, int lda, uint16_t decision, int convert_direction, int enable_stochastic_rounding, size_t *size) {
+    /* Validate input parameters */
+    if (!A || !size) {
+        return -1;
+    }
+
+    /* High precision -> low precision */
+    if(0 == convert_direction) {
+        /* Handle different conversion types with appropriate function calls */
+        if (DENSE_SP == decision) {
+            /* Double to Single precision conversion */
+            if(enable_stochastic_rounding) {
+                double2float_round_CPU(mb, nb, (double*)A, mb, (float*)A, mb);
+            } else {
+                convert_d2s_unary_CPU((double*)A, mb, nb);
+            }
+            *size = mb * nb * sizeof(float);
+        }
+#if HAVE_HP_CPU
+        else if (DENSE_HP == decision) {
+            /* Double to Half precision conversion */
+            convert_d2h_binary_CPU((double*)A, mb, nb);
+            *size = mb * nb * sizeof(__fp16);
+            return 0;
+        }
+#endif
+    } else { /* Low precision -> high precision */
+        if (DENSE_SP == decision) {
+            /* Double to Single precision conversion */
+            convert_s2d_unary_CPU((float*)A, mb, nb);
+            *size = mb * nb * sizeof(double);
+        }
+#if HAVE_HP_CPU
+        else if (DENSE_HP == decision) {
+            /* Half to Double precision conversion */
+            convert_h2d_unary_CPU((__fp16*)A, mb, nb);
+            *size = mb * nb * sizeof(double);
+            return 0;
+        }
+#endif
+    }
+
+    return 0;
+}
+
+
 /**
  * @brief Checks whether to convert datatype in TRSM operation
  * 
@@ -2172,4 +2233,64 @@ bool hicma_parsec_convert_in_trsm( hicma_parsec_params_t *params_tlr, int m, int
                 || DENSE_FP8 == params_tlr->decisions_send[n*params_tlr->NT+m]
                )
            );
-} 
+}
+
+
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+int convert_datatype_adaptive_unary_GPU(parsec_potrf_workspace_t *ws_gpu,
+        parsec_device_cuda_module_t *cuda_device,
+        parsec_gpu_task_t *gpu_task,
+        parsec_cuda_exec_stream_t *cuda_stream,
+        void *A, int mb, int nb, int lda,
+        uint16_t decision, int convert_direction, int enable_stochastic_rounding, size_t *size) {
+
+    /* Validate input parameters */
+    if (!A || !size) {
+        return -1; 
+    }
+
+    /* Find workspace */
+    parsec_potrf_workspace_t *_ws_gpu = (parsec_potrf_workspace_t *)ws_gpu;
+    parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, _ws_gpu);
+    void *A_tmp = stream_found->gpu_buffer_A;
+
+    //cublasSetStream( handle, cuda_stream->cuda_stream );
+    
+    /* High precision -> low precision */
+    if(0 == convert_direction) {
+        /* Handle different conversion types with appropriate function calls */
+        if (DENSE_SP == decision) {
+            if(enable_stochastic_rounding) {
+                double2float_round_GPU(mb, nb, A, mb, A_tmp, mb, cuda_stream->cuda_stream);
+            } else {
+                double2float_GPU(mb, nb, A, mb, A_tmp, mb, cuda_stream->cuda_stream);
+            }
+            memcpy_float_GPU(mb, nb, A_tmp, A, cuda_stream->cuda_stream);
+            *size = mb * nb * sizeof(float);
+        } 
+        else if (DENSE_HP == decision) { 
+            if(enable_stochastic_rounding) {
+                double2half_round_GPU(mb, nb, A, mb, A_tmp, mb, cuda_stream->cuda_stream);
+            } else {
+                double2half_GPU(mb, nb, A, mb, A_tmp, mb, cuda_stream->cuda_stream);
+            }
+            memcpy_half_GPU(mb, nb, A_tmp, A, cuda_stream->cuda_stream);
+            *size = mb * nb * sizeof(float) / 2;
+        }
+    } else { /* Low precision -> high precision */
+        if (DENSE_SP == decision) {
+            float2double_GPU(mb, nb, A, mb, A_tmp, mb, cuda_stream->cuda_stream);
+            memcpy_double_GPU(mb, nb, A_tmp, A, cuda_stream->cuda_stream);
+            *size = mb * nb * sizeof(double);
+        }
+        else if (DENSE_HP == decision) {
+            half2double_GPU(mb, nb, A, mb, A_tmp, mb, cuda_stream->cuda_stream);
+            memcpy_double_GPU(mb, nb, A_tmp, A, cuda_stream->cuda_stream);
+            *size = mb * nb * sizeof(double);
+        }
+    }
+
+    return 0;
+}
+
+#endif

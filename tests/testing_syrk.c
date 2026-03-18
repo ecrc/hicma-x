@@ -55,7 +55,7 @@ void hicma_parsec_syrk_performance(int argc, char **argv,
     hicma_parsec_params_init(params, argv);
     
     /* Initialize PaRSEC */
-    parsec = setup_parsec(argc, argv, params);
+    parsec = hicma_parsec_setup_parsec(argc, argv, params);
     
     /* Print initial parameters */
     hicma_parsec_params_print_initial(params);
@@ -200,7 +200,7 @@ void hicma_parsec_syrk_performance(int argc, char **argv,
     SYNC_TIME_PRINT(params->rank, ("Resource cleanup completed in %.6f seconds\n", sync_time_elapsed));
 
     /* Clean up PaRSEC */
-    cleanup_parsec(parsec, params);
+    hicma_parsec_cleanup_parsec(parsec, params);
 }
 
 /**

@@ -717,6 +717,8 @@ void convert_d2s_binary_CPU(float *_target, double *_source, int mb, int nb);
  */
 void convert_d2h_binary_CPU(__fp16 *_target, double *_source, int mb, int nb);
 
+void convert_d2h_unary_CPU(double *data, int mb, int nb);
+
 /**
  * @brief Convert double precision to half precision (unary version)
  *
@@ -740,6 +742,8 @@ void convert_d2h_unary_CPU(double *data, int mb, int nb);
  * @param[in] nb Number of columns
  */
 void convert_h2d_binary_CPU(double *_target, __fp16 *_source, int mb, int nb);
+
+void convert_h2d_unary_CPU(__fp16 *data, int mb, int nb);
 
 /**
  * @brief Convert half precision to double precision (unary version)
@@ -1340,6 +1344,51 @@ void hicma_parsec_convert_2h_bit(void *A, float *A_use, int mb, int nb, uint16_t
  * @see convert_s2h_binary_CPU() for binary conversion
  */
 void float2half_CPU(int nrows, int ncols, const float *_source, int ld_s, void *_target, int ld_t);
+
+int convert_datatype_adaptive_unary_CPU(void *A, int mb, int nb, int lda, uint16_t decision, int convert_direction, int enable_stochastic_rounding, size_t *size);
+
+/**
+ * @brief Convert double precision to single precision on CPU
+ *
+ * @param[in] nrows Number of rows
+ * @param[in] ncols Number of columns
+ * @param[in] H Input double precision matrix
+ * @param[in] ldh Leading dimension of H
+ * @param[out] F Output single precision matrix
+ * @param[in] ldf Leading dimension of F
+ */
+void double2float_round_CPU(int nrows, int ncols,
+                const double *H, int ldh,
+                float *F, int ldf);
+
+/**
+ * @brief Perform datatype conversion on a dense matrix
+ *
+ * @param [in] parsec: The PaRSEC context
+ * @param [in] uplo: Upper or lower triangular part to convert
+ * @param [inout] A: The matrix to convert, already distributed and allocated
+ * @param [in] decisions: Type of conversion to perform
+ * @param [in] convert_direction: 0: high->low; 1: low->high
+ * @return 0 on success
+ */
+int parsec_datatype_convert_dense_adaptive(parsec_context_t *parsec,
+        hicma_parsec_data_t *data,
+        hicma_parsec_params_t *params,
+        dplasma_enum_t uplo,
+        parsec_tiled_matrix_t *A,
+        uint16_t *decisions,
+        int convert_direction);
+
+
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+int convert_datatype_adaptive_unary_GPU(parsec_potrf_workspace_t *ws_gpu,
+        parsec_device_cuda_module_t *cuda_device,
+        parsec_gpu_task_t *gpu_task,
+        parsec_cuda_exec_stream_t *cuda_stream,
+        void *A, int mb, int nb, int lda,
+        uint16_t decision, int convert_direction, int enable_stochastic_rounding, size_t *size);
+#endif
+
 
 #ifdef __cplusplus
 }

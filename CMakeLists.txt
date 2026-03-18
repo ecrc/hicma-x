@@ -9,12 +9,9 @@ cmake_minimum_required (VERSION 3.16)
 # Fix for CMake regeneration issues with Ninja
 # This prevents system includes from being treated as dependencies
 if (CMAKE_GENERATOR MATCHES "Ninja")
-    file(
-        WRITE "${CMAKE_BINARY_DIR}/GNUMakeRulesOverwrite.cmake" 
-            "STRING(REPLACE \"-MD\" \"-MMD\" CMAKE_DEPFILE_FLAGS_C \"\${CMAKE_DEPFILE_FLAGS_C}\")\n"
-            "STRING(REPLACE \"-MD\" \"-MMD\" CMAKE_DEPFILE_FLAGS_CXX \"\${CMAKE_DEPFILE_FLAGS_CXX}\")\n"
-    )
-    set(CMAKE_USER_MAKE_RULES_OVERRIDE "${CMAKE_BINARY_DIR}/GNUMakeRulesOverwrite.cmake" CACHE INTERNAL "")
+    set(CMAKE_USER_MAKE_RULES_OVERRIDE
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake_modules/GNUMakeRulesOverwrite.cmake"
+        CACHE FILEPATH "Ninja dependency-file flags" FORCE)
 endif()
 
 project (HICMA_PARSEC LANGUAGES C CXX Fortran)
@@ -172,13 +169,30 @@ if(NOT EXISTS "${PROJECT_SOURCE_DIR}/dplasma/CMakeLists.txt" OR NOT EXISTS "${PR
     endif()
 endif()
 
+# CMake 3.31's FindMPI Cray fallback interrogates the MPI wrapper while also
+# setting MPICH_CXX to that same wrapper.  On Frontier this recursively invokes
+# mpic++ forever.  The compilers are already explicit MPI wrappers, so suppress
+# the Cray fallback while MPI is discovered here and by the bundled projects.
+set(_restore_pe_env FALSE)
+if(DEFINED ENV{PE_ENV} AND
+   CMAKE_CXX_COMPILER MATCHES "(mpic\\+\\+|mpicxx|/CC)$")
+    set(_saved_pe_env "$ENV{PE_ENV}")
+    unset(ENV{PE_ENV})
+    set(_restore_pe_env TRUE)
+endif()
+
 # Find MPI C++ if not already found
 if(NOT MPI_CXX_FOUND)
     find_package(MPI COMPONENTS CXX)
 endif()
 
-# Add subdirectories
+# PaRSEC performs its own MPI discovery while configuring DPLASMA.
 add_subdirectory(dplasma)
+
+if(_restore_pe_env)
+    set(ENV{PE_ENV} "${_saved_pe_env}")
+endif()
+
 add_subdirectory(stars-h)
 add_subdirectory(hcore)
 

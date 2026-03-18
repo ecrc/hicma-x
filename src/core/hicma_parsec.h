@@ -317,7 +317,33 @@ double hicma_parsec_matrix_norm_get( parsec_context_t *parsec,
         dplasma_enum_t uplo,
         parsec_tiled_matrix_t *A,
         hicma_parsec_params_t *params_tlr,
+        double *norm_tile,
+        double *norm_global,
         char *datatype_str);
+
+/**
+ * @brief Triangular matrix-matrix multiply (TRMM) for LLN path.
+ *
+ * Current implementation supports Left/Lower/NoTrans with Unit or NonUnit diagonal.
+ *
+ * @param[in] parsec PaRSEC context
+ * @param[in] side Matrix side (must be dplasmaLeft)
+ * @param[in] uplo Triangle selection (must be dplasmaLower)
+ * @param[in] trans Transpose mode (must be dplasmaNoTrans)
+ * @param[in] diag Diagonal type (dplasmaUnit or dplasmaNonUnit)
+ * @param[in] alpha Scalar multiplier
+ * @param[in] A Triangular matrix descriptor
+ * @param[in,out] B Right-hand side matrix descriptor
+ * @return 0 on success, non-zero on error
+ */
+int hicma_parsec_trmm(parsec_context_t *parsec,
+                      dplasma_enum_t side, dplasma_enum_t uplo,
+                      dplasma_enum_t trans, dplasma_enum_t diag,
+                      double alpha,
+                      const parsec_tiled_matrix_t *A,
+                      parsec_tiled_matrix_t *B,
+                      hicma_parsec_data_t *data,
+                      hicma_parsec_params_t *params);
 
 #ifdef __cplusplus
 }
