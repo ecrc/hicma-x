@@ -433,3 +433,34 @@ int hicma_kernel_time_gpu_event_take(const void *task,
     return 0;
 #endif
 }
+
+void hicma_kernel_time_report(parsec_task_t *task,
+                              hicma_parsec_params_t *params_tlr,
+                              parsec_tiled_matrix_t *descA,
+                              int th_id,
+                              const char *name,
+                              int i, int j, int k,
+                              double start_time,
+                              double end_time)
+{
+    const char *sum_time_scope;
+    int sum_time_id;
+    double sum_time = hicma_kernel_time_accumulate(task, params_tlr, th_id,
+                                                  start_time, end_time, &sum_time_scope, &sum_time_id);
+    int gpu_time_id = -1;
+    double gpu_exe_time = 0.0;
+    double gpu_sum_time = 0.0;
+    int has_gpu_time = hicma_kernel_time_gpu_event_take(task, params_tlr,
+                                                        &gpu_time_id, &gpu_exe_time, &gpu_sum_time);
+    if( 0 == strcmp(name, "GEMM") ) {
+        hicma_kernel_time_print_gemm(params_tlr->band_size_dense, descA->super.nodes, descA->lm,
+                                     i, j, k, end_time, start_time, end_time - start_time,
+                                     sum_time_scope, sum_time_id, sum_time,
+                                     has_gpu_time, gpu_time_id, gpu_exe_time, gpu_sum_time);
+    } else {
+        hicma_kernel_time_print_task(name, params_tlr->band_size_dense, descA->super.nodes, descA->lm,
+                                     i, j, k, end_time, start_time, end_time - start_time,
+                                     sum_time_scope, sum_time_id, sum_time,
+                                     has_gpu_time, gpu_time_id, gpu_exe_time, gpu_sum_time);
+    }
+}

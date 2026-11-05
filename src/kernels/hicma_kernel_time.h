@@ -29,6 +29,18 @@
  */
 void hicma_kernel_time_record(const void *task, double start_time);
 double hicma_kernel_time_take(const void *task, double fallback_start_time);
+/* Per-task timing report shared by all Cholesky wrappers (PRINT_KERNEL_TIME):
+ * accumulates the task's time per device, takes its GPU event time if any and
+ * prints one line. name "GEMM" prints with the GEMM format, other names with
+ * the generic task format; i, j, k are the task's indices (-1 if unused). */
+void hicma_kernel_time_report(parsec_task_t *task,
+                              hicma_parsec_params_t *params_tlr,
+                              parsec_tiled_matrix_t *descA,
+                              int th_id,
+                              const char *name,
+                              int i, int j, int k,
+                              double start_time,
+                              double end_time);
 double hicma_kernel_time_accumulate(const parsec_task_t *task,
                                     hicma_parsec_params_t *params_tlr,
                                     int cpu_id,

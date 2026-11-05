@@ -97,21 +97,8 @@ static int wrap_potrf_complete(parsec_execution_stream_t * es,
 #endif
 
 #if PRINT_KERNEL_TIME
-    double start_time = hicma_kernel_time_take(this_task, end_time);
-    double elapsed_time = end_time - start_time;
-    const char *sum_time_scope;
-    int sum_time_id;
-    double sum_time = hicma_kernel_time_accumulate((parsec_task_t *)this_task, parsec_tp->_g_params_tlr, es->th_id,
-                                                  start_time, end_time, &sum_time_scope, &sum_time_id);
-    int gpu_time_id = -1;
-    double gpu_exe_time = 0.0;
-    double gpu_sum_time = 0.0;
-    int has_gpu_time = hicma_kernel_time_gpu_event_take((parsec_task_t *)this_task, parsec_tp->_g_params_tlr,
-                                                        &gpu_time_id, &gpu_exe_time, &gpu_sum_time);
-    hicma_kernel_time_print_task("POTRF", parsec_tp->_g_params_tlr->band_size_dense, parsec_tp->_g_descA->super.nodes,
-                                 parsec_tp->_g_descA->lm, this_task->locals.k.value, -1, -1,
-                                 end_time, start_time, elapsed_time, sum_time_scope, sum_time_id, sum_time,
-                                 has_gpu_time, gpu_time_id, gpu_exe_time, gpu_sum_time);
+    hicma_kernel_time_report((parsec_task_t *)this_task, parsec_tp->_g_params_tlr, parsec_tp->_g_descA, es->th_id,
+                             "POTRF", this_task->locals.k.value, -1, -1, hicma_kernel_time_take(this_task, end_time), end_time);
 #endif
 
     return val;
@@ -197,21 +184,8 @@ static int wrap_trsm_complete(parsec_execution_stream_t * es,
     /* Update thread-level timing statistics */
     parsec_tp->_g_params_tlr->gather_time[es->th_id] += end_time - parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id];
 #if PRINT_KERNEL_TIME
-    double start_time = hicma_kernel_time_take(this_task, end_time);
-    double elapsed_time = end_time - start_time;
-    const char *sum_time_scope;
-    int sum_time_id;
-    double sum_time = hicma_kernel_time_accumulate((parsec_task_t *)this_task, parsec_tp->_g_params_tlr, es->th_id,
-                                                  start_time, end_time, &sum_time_scope, &sum_time_id);
-    int gpu_time_id = -1;
-    double gpu_exe_time = 0.0;
-    double gpu_sum_time = 0.0;
-    int has_gpu_time = hicma_kernel_time_gpu_event_take((parsec_task_t *)this_task, parsec_tp->_g_params_tlr,
-                                                        &gpu_time_id, &gpu_exe_time, &gpu_sum_time);
-    hicma_kernel_time_print_task("TRSM", parsec_tp->_g_params_tlr->band_size_dense, parsec_tp->_g_descA->super.nodes,
-                                 parsec_tp->_g_descA->lm, this_task->locals.m.value, this_task->locals.k.value, -1,
-                                 end_time, start_time, elapsed_time, sum_time_scope, sum_time_id, sum_time,
-                                 has_gpu_time, gpu_time_id, gpu_exe_time, gpu_sum_time);
+    hicma_kernel_time_report((parsec_task_t *)this_task, parsec_tp->_g_params_tlr, parsec_tp->_g_descA, es->th_id,
+                             "TRSM", this_task->locals.m.value, this_task->locals.k.value, -1, hicma_kernel_time_take(this_task, end_time), end_time);
 #endif
 
     return val;
@@ -297,21 +271,8 @@ static int wrap_syrk_complete(parsec_execution_stream_t * es,
     /* Update thread-level timing statistics */
     parsec_tp->_g_params_tlr->gather_time[es->th_id] += end_time - parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id];
 #if PRINT_KERNEL_TIME
-    double start_time = hicma_kernel_time_take(this_task, end_time);
-    double elapsed_time = end_time - start_time;
-    const char *sum_time_scope;
-    int sum_time_id;
-    double sum_time = hicma_kernel_time_accumulate((parsec_task_t *)this_task, parsec_tp->_g_params_tlr, es->th_id,
-                                                  start_time, end_time, &sum_time_scope, &sum_time_id);
-    int gpu_time_id = -1;
-    double gpu_exe_time = 0.0;
-    double gpu_sum_time = 0.0;
-    int has_gpu_time = hicma_kernel_time_gpu_event_take((parsec_task_t *)this_task, parsec_tp->_g_params_tlr,
-                                                        &gpu_time_id, &gpu_exe_time, &gpu_sum_time);
-    hicma_kernel_time_print_task("SYRK", parsec_tp->_g_params_tlr->band_size_dense, parsec_tp->_g_descA->super.nodes,
-                                 parsec_tp->_g_descA->lm, this_task->locals.m.value, this_task->locals.k.value, -1,
-                                 end_time, start_time, elapsed_time, sum_time_scope, sum_time_id, sum_time,
-                                 has_gpu_time, gpu_time_id, gpu_exe_time, gpu_sum_time);
+    hicma_kernel_time_report((parsec_task_t *)this_task, parsec_tp->_g_params_tlr, parsec_tp->_g_descA, es->th_id,
+                             "SYRK", this_task->locals.m.value, this_task->locals.k.value, -1, hicma_kernel_time_take(this_task, end_time), end_time);
 #endif
 
     return val;
@@ -368,20 +329,8 @@ static int wrap_gemm_complete(parsec_execution_stream_t * es,
 
     /* Log GEMM timing information if enabled */
 #if PRINT_KERNEL_TIME
-    const char *sum_time_scope;
-    int sum_time_id;
-    double sum_time = hicma_kernel_time_accumulate((parsec_task_t *)this_task, parsec_tp->_g_params_tlr, es->th_id,
-                                                  start_time, end_time, &sum_time_scope, &sum_time_id);
-    int gpu_time_id = -1;
-    double gpu_exe_time = 0.0;
-    double gpu_sum_time = 0.0;
-    int has_gpu_time = hicma_kernel_time_gpu_event_take((parsec_task_t *)this_task, parsec_tp->_g_params_tlr,
-                                                        &gpu_time_id, &gpu_exe_time, &gpu_sum_time);
-    hicma_kernel_time_print_gemm(parsec_tp->_g_params_tlr->band_size_dense, parsec_tp->_g_descA->super.nodes,
-                                 parsec_tp->_g_descA->lm, this_task->locals.m.value,
-                                 this_task->locals.n.value, this_task->locals.k.value,
-                                 end_time, start_time, elapsed_time, sum_time_scope, sum_time_id, sum_time,
-                                 has_gpu_time, gpu_time_id, gpu_exe_time, gpu_sum_time);
+    hicma_kernel_time_report((parsec_task_t *)this_task, parsec_tp->_g_params_tlr, parsec_tp->_g_descA, es->th_id,
+                             "GEMM", this_task->locals.m.value, this_task->locals.n.value, this_task->locals.k.value, start_time, end_time);
 #endif
     return val;
 }
