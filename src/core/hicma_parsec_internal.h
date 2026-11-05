@@ -960,7 +960,6 @@ typedef struct hicma_parsec_data_s {
     parsec_matrix_sym_block_cyclic_t dcAcpy;     /**< Copy of dense mixed-precision matrix */
     parsec_matrix_sym_block_cyclic_band_t dcA;        /**< Main matrix for TLR or mixed-precision+TLR */
     parsec_matrix_sym_block_cyclic_band_t dcAr;       /**< Rank matrix */
-    parsec_matrix_sym_block_cyclic_band_t dcNorm;     /**< Norm matrix */
     parsec_matrix_sym_block_cyclic_band_t dcDist;     /**< Distribution matrix for kernel execution */
     parsec_matrix_sym_block_cyclic_band_t dcRank;     /**< Rank information matrix (if PRINT_RANK enabled) */
     parsec_matrix_block_cyclic_t dcFake;              /**< Fake matrix for auto-band distribution */
