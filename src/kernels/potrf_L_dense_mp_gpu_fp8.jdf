@@ -442,6 +442,7 @@ RW    C <- (k == 0 && m-k < params_tlr->band_size_dense) ? A potrf_bind_A(m, k) 
 READ  Cr <- (k == 0 && m-k >= params_tlr->band_size_dense) ? descAr(m, k)  
          <- (k != 0 && m-k >= params_tlr->band_size_dense) ? Cr potrf_dgemm(m, k, k-1): NULL   [ type_remote = AR ]
          -> (m-k >= params_tlr->band_size_dense) ? Ar potrf_dsyrk(k, m)                        [ type_remote = AR ]
+         -> (m-k >= params_tlr->band_size_dense) ? Cr potrf_dtrsm_send(m, k)                   [ type_remote = AR ]
          -> (m-k >= params_tlr->band_size_dense) ? Ar potrf_dgemm(m, k+1..m-1, k)              [ type_remote = AR ]
          -> (m-k >= params_tlr->band_size_dense) ? Br potrf_dgemm(m+1..descA->mt-1, m, k)      [ type_remote = AR ]
          -> (m-k >= params_tlr->band_size_dense) ? descAr(m, k)               
@@ -617,6 +618,9 @@ RW    C <- (%{ return hicma_parsec_convert_in_trsm(params_tlr, m, k); %})? NEW: 
         -> (%{ return hicma_parsec_convert_in_trsm(params_tlr, m, k); %})? A potrf_dgemm(m, k+1..m-1, k)           [ type_remote = BYTE layout_remote = MPI_BYTE count_remote = size ]
         -> (%{ return hicma_parsec_convert_in_trsm(params_tlr, m, k); %})? B potrf_dgemm(m+1..descA->mt-1, m, k)   [ type_remote = BYTE layout_remote = MPI_BYTE count_remote = size ]
 
+/* Input: rank of a low-rank tile, to size the forwarded U and V */
+READ  Cr <- (m-k >= params_tlr->band_size_dense) ? Cr potrf_dtrsm(m, k) : NULL                       [ type_remote = AR ]
+
 ; (m >= (descA->mt - PRI_CHANGE)) ? (descA->mt - m) * (descA->mt - m) * (descA->mt - m) + 3 * ((2 * descA->mt) - k - m - 1) * (m - k) : PRI_MAX
 
 
@@ -732,6 +736,11 @@ BODY
     if( hicma_parsec_convert_in_trsm(params_tlr, m, k) ) {
         printf("%d %d You can not reach here !!!\n", m, k);
     }
+
+    /* The CPU path forwards C0 as TRSM left it (dense at its storage precision,
+     * low-rank as U and V at the current rank): send exactly those bytes */
+    this_task->locals.size.value = hicma_tile_trsm_bytes( params_tlr, descA->mb, m, k,
+            IS_DENSE(m, k) ? 0 : ((int *)Cr)[0] );
 }
 END
 

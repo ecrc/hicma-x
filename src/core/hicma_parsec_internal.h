@@ -851,6 +851,22 @@ static inline size_t hicma_tile_idx(const hicma_parsec_params_t *params, int m, 
     return (size_t)n * params->NT + m;
 }
 
+/**
+ * Bytes of tile (m, k) as the CPU TRSM leaves it, i.e. what a send of that
+ * tile must carry: dense DP tiles in FP64, other dense tiles in FP32 (SP, HP
+ * and FP8 tiles are kept in FP32 on the CPU), and low-rank tiles as U and V
+ * packed back to back at the tile's current rank.
+ */
+static inline int hicma_tile_trsm_bytes(const hicma_parsec_params_t *params, int mb, int m, int k, int rank)
+{
+    switch( params->decisions[hicma_tile_idx(params, m, k)] ) {
+        case DENSE_DP:    return mb * mb * (int)sizeof(double);
+        case LOW_RANK_DP: return mb * rank * 2 * (int)sizeof(double);
+        case LOW_RANK_SP: return mb * rank * 2 * (int)sizeof(float);
+        default:          return mb * mb * (int)sizeof(float);
+    }
+}
+
 /* ============================================================================
  * GPU workspace configuration
  * ============================================================================ */
