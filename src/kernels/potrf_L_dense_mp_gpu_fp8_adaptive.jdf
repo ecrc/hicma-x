@@ -19,7 +19,9 @@ extern "C" %{
  * tile's precision before the factorization, precisions are decided while it
  * runs:
  * - TRSM(m, k) computes ||L(m, k)||_F and sends it with its storage precision
- *   to SYRK/GEMM through the NORM flow (descNorm: 2 doubles {norm, precision}).
+ *   to SYRK/GEMM through the NORM flow (a NEW buffer of 2 doubles
+ *   {norm, precision}), and sends L(m, k) to the GEMMs directly
+ *   (potrf_dtrsm_send is only used without runtime decisions).
  * - GEMM(m, n, k) picks its compute precision (DP, SP, HP, FP8) from
  *   ||A||*||B|| and stores C in DP or SP; the first GEMM (k == 0) and the
  *   column-0 TRSM decide C's storage precision from ||C|| when
@@ -71,7 +73,6 @@ static parsec_key_t my_make_key_potrf_dgemm(const parsec_taskpool_t * tp, const 
 descA        [ type = "parsec_tiled_matrix_t*" ]        /* Main matrix descriptor for the input matrix A */
 descAr       [ type = "parsec_tiled_matrix_t*" aligned = descA ]  /* Rank matrix descriptor for low-rank compression */
 descRank     [ type = "parsec_tiled_matrix_t*" aligned = descA ]  /* Matrix descriptor for rank information storage */
-descNorm     [ type = "parsec_tiled_matrix_t*" aligned = descA ]        /* Norm descriptor used for norm */
 descFake     [ type = "parsec_tiled_matrix_t*" ]        /* Fake descriptor used for termination tasks */
 params_tlr   [ type = "hicma_parsec_params_t *" ]       /* TLR (Tile Low-Rank) parameters and configuration */
 
@@ -432,11 +433,15 @@ band_size_dense_local = params_tlr->band_size_dense
 READ  T <- (%{ return params_tlr->decisions_send[k*params_tlr->NT+k] == DENSE_DP; %})? T0 potrf_dpotrf_send(k)  [ type_remote = FULL_DP ] 
         <- T potrf_dpotrf_send(k)                                                                                 [ type_remote = FULL_SP ]
 
+// In runtime mode TRSM_SEND would never convert (hicma_parsec_convert_in_trsm
+// is false), so C goes to the GEMMs directly instead of through it.
 RW    C <- (k == 0 && m-k < params_tlr->band_size_dense) ? A potrf_bind_A(m, k) [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_potrf_L_dense_mp_gpu_fp8_adaptive(params_tlr->decisions, m, k, descA->lmt)]; %} ]
         <- (k == 0 && m-k >= params_tlr->band_size_dense) ? descA(m, k)         
         <- C potrf_dgemm(m, k, k-1)                                             [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_potrf_L_dense_mp_gpu_fp8_adaptive(params_tlr->decisions, m, k, descA->lmt)]; %} ]
         -> A potrf_dsyrk(k, m)                                                  [ type_remote = BYTE layout_remote = MPI_BYTE count_remote = size ]
-        -> C0 potrf_dtrsm_send(m, k)                                            [ type_remote = BYTE layout_remote = MPI_BYTE count_remote = size ]  
+        -> (params_tlr->adaptive_decision_runtime) ? A potrf_dgemm(m, k+1..m-1, k)         [ type_remote = BYTE layout_remote = MPI_BYTE count_remote = size ]
+        -> (params_tlr->adaptive_decision_runtime) ? B potrf_dgemm(m+1..descA->mt-1, m, k) [ type_remote = BYTE layout_remote = MPI_BYTE count_remote = size ]
+        -> (!params_tlr->adaptive_decision_runtime) ? C0 potrf_dtrsm_send(m, k)            [ type_remote = BYTE layout_remote = MPI_BYTE count_remote = size ]
         -> descA(m, k)                                                         
 
 READ  Cr <- (k == 0 && m-k >= params_tlr->band_size_dense) ? descAr(m, k)  
@@ -446,11 +451,13 @@ READ  Cr <- (k == 0 && m-k >= params_tlr->band_size_dense) ? descAr(m, k)
          -> (m-k >= params_tlr->band_size_dense) ? Br potrf_dgemm(m+1..descA->mt-1, m, k)      [ type_remote = AR ]
          -> (m-k >= params_tlr->band_size_dense) ? descAr(m, k)               
 
-RW  C_norm <- (params_tlr->adaptive_decision_runtime) ? descNorm(m, k): NULL
+// {norm, precision} of this tile, produced here and only read by SYRK/GEMM:
+// a NEW buffer is neither copied host-to-device before a GPU TRSM nor written
+// back to a collection afterwards (nothing reads it after the factorization).
+RW  C_norm <- (params_tlr->adaptive_decision_runtime) ? NEW : NULL                              [ type = NORM ]
            -> (params_tlr->adaptive_decision_runtime) ? A_norm potrf_dsyrk(k, m)                       [ type_remote = NORM ]
            -> (params_tlr->adaptive_decision_runtime) ? A_norm potrf_dgemm(m, k+1..m-1, k)              [ type_remote = NORM ]
            -> (params_tlr->adaptive_decision_runtime) ? B_norm potrf_dgemm(m+1..descA->mt-1, m, k)      [ type_remote = NORM ]
-           -> (params_tlr->adaptive_decision_runtime) ? descNorm(m, k)
 
 CTL ctl  <- (params_tlr->lookahead == 1 && m > params_tlr->lookahead+k)? ctl potrf_dsyrk(k, k+1)
 CTL ctl1 <- (params_tlr->lookahead > 1 && m > params_tlr->lookahead+k)? ctl2 potrf_dtrsm(k+2, k)
@@ -518,6 +525,15 @@ BODY [type=CUDA]
             copy_device_float_to_device_double((double *)C_norm, norm_sp_device, cuda_stream->cuda_stream);
             set_device_double(((double *)C_norm) + 1, C_precision_sp, cuda_stream->cuda_stream);
         }
+        /* C_norm is a NEW buffer with no write-back to a collection, so PaRSEC
+         * would not copy it back to the host after this task; remote ranks and
+         * CPU consumers read the host copy, so request that copy explicitly. */
+        for( int f = 0; f < this_task->task_class->nb_flows; f++ ) {
+            if( NULL != gpu_task->flow[f] && 0 == strcmp(gpu_task->flow[f]->name, "C_norm") ) {
+                gpu_task->pushout |= (1U << f);
+                break;
+            }
+        }
     }
     this_task->locals.size.value = tile_elems * ((DENSE_DP == decision) ? sizeof(double) : sizeof(float));
 #endif
@@ -580,6 +596,15 @@ BODY [type=HIP]
             cublasSnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, norm_sp_device);
             copy_device_float_to_device_double((double *)C_norm, norm_sp_device, cuda_stream->cuda_stream);
             set_device_double(((double *)C_norm) + 1, C_precision_sp, cuda_stream->cuda_stream);
+        }
+        /* C_norm is a NEW buffer with no write-back to a collection, so PaRSEC
+         * would not copy it back to the host after this task; remote ranks and
+         * CPU consumers read the host copy, so request that copy explicitly. */
+        for( int f = 0; f < this_task->task_class->nb_flows; f++ ) {
+            if( NULL != gpu_task->flow[f] && 0 == strcmp(gpu_task->flow[f]->name, "C_norm") ) {
+                gpu_task->pushout |= (1U << f);
+                break;
+            }
         }
     }
     this_task->locals.size.value = tile_elems * ((DENSE_DP == decision) ? sizeof(double) : sizeof(float));
@@ -693,8 +718,9 @@ END
  */
 potrf_dtrsm_send(m, k) [high_priority = on]
 
-// Execution space - off-diagonal blocks below the diagonal
-m = 1 .. descA->mt-1
+// Execution space - off-diagonal blocks below the diagonal; empty in runtime
+// mode, where TRSM sends its output to the GEMMs directly
+m = 1 .. %{ return params_tlr->adaptive_decision_runtime ? 0 : descA->mt-1; %}
 k = 0 .. m-1
 
 // Communication size must be valid even when conversion is disabled and this
@@ -875,6 +901,11 @@ m = k+1 .. descA->mt-1
 : descA(m, m)
 
 // Data dependencies and flow
+// TRSM sends L(m, k) as raw bytes in its current precision (FP64 or SP) into
+// an FP64-sized buffer. This relies on PaRSEC short (eager) messages being off
+// in runtime mode (runtime_comm_short_limit = 0, see setup_parsec): with eager
+// data in the same activation, PaRSEC resizes the receive to payload-bytes x
+// FULL_DP elements and the allocation fails.
 READ  A <- C potrf_dtrsm(m, k)                                                   [ type_remote = FULL_DP ] 
 READ  Ar <- (m-k >= params_tlr->band_size_dense) ? Cr potrf_dtrsm(m, k): NULL    [ type_remote = AR ]
 READ  A_norm <- (params_tlr->adaptive_decision_runtime) ? C_norm potrf_dtrsm(m, k): NULL    [ type_remote = NORM ]
@@ -1031,11 +1062,13 @@ band_size_dense_local = params_tlr->band_size_dense
 : descA(m, n)
 
 // Parameters
-READ   A <- (%{ return !hicma_parsec_convert_in_trsm(params_tlr, m, k); %})? C0 potrf_dtrsm_send(m, k)  [ type_remote = FULL_DP ] 
+READ   A <- (params_tlr->adaptive_decision_runtime) ? C potrf_dtrsm(m, k)                               [ type_remote = FULL_DP ]
+         <- (%{ return !hicma_parsec_convert_in_trsm(params_tlr, m, k); %})? C0 potrf_dtrsm_send(m, k)  [ type_remote = FULL_DP ] 
          <- C potrf_dtrsm_send(m, k)                                                                    [ type_remote = FULL_DP ] 
 READ  Ar <- (m-k >= params_tlr->band_size_dense) ? Cr potrf_dtrsm(m, k): NULL                [ type_remote = AR ]
 
-READ   B <- (%{ return !hicma_parsec_convert_in_trsm(params_tlr, n, k); %})? C0 potrf_dtrsm_send(n, k)  [ type_remote = FULL_DP ] 
+READ   B <- (params_tlr->adaptive_decision_runtime) ? C potrf_dtrsm(n, k)                               [ type_remote = FULL_DP ]
+         <- (%{ return !hicma_parsec_convert_in_trsm(params_tlr, n, k); %})? C0 potrf_dtrsm_send(n, k)  [ type_remote = FULL_DP ] 
          <- C potrf_dtrsm_send(n, k)                                                                    [ type_remote = FULL_DP ] 
 READ  Br <- (n-k >= params_tlr->band_size_dense) ? Cr potrf_dtrsm(n, k): NULL                [ type_remote = AR ]
 

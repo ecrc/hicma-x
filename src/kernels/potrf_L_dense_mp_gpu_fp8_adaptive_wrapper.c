@@ -555,28 +555,6 @@ potrf_L_dense_mp_gpu_fp8_adaptive_New( parsec_context_t *parsec,
     parsec_tiled_matrix_t *Ar = (parsec_tiled_matrix_t *)&data->dcAr;
     parsec_tiled_matrix_t *Rank = (parsec_tiled_matrix_t *)&data->dcRank;
     parsec_tiled_matrix_t *Fake = (parsec_tiled_matrix_t *)&data->dcFake;
-    parsec_tiled_matrix_t *Norm = (parsec_tiled_matrix_t *)&data->dcNorm;
-
-    /* descNorm is declared `aligned = descA` in the JDF: TRSM reads/writes
-     * descNorm(m, k) on the rank owning descA(m, k). dcNorm follows dcA's band
-     * distribution while the dense path runs on dcAd (2D block cyclic), so the
-     * two differ when band_size_dist > 0 (NT <= P or --band_dist). Refuse that
-     * instead of touching norm storage this rank does not own. Every rank
-     * evaluates the same mapping, so all ranks stop together. */
-    if( params->adaptive_decision_runtime ) {
-        for( int n = 0; n < A->nt; n++ ) {
-            for( int m = n; m < A->mt; m++ ) {
-                if( A->super.rank_of(&A->super, m, n) != Norm->super.rank_of(&Norm->super, m, n) ) {
-                    if( 0 == rank ) {
-                        fprintf(stderr, "potrf_L_dense_mp_gpu_fp8_adaptive: norm descriptor is not distributed like "
-                                "the matrix (tile (%d, %d), band_size_dist= %d); run without band distribution\n",
-                                m, n, params->band_size_dist);
-                    }
-                    MPI_Abort(MPI_COMM_WORLD, 1);
-                }
-            }
-        }
-    }
 
     // Validate input parameters
     if ((uplo != PlasmaLower)) {
@@ -611,7 +589,7 @@ potrf_L_dense_mp_gpu_fp8_adaptive_New( parsec_context_t *parsec,
     // Initialize error status and create the main taskpool
     params->info = 0;
     parsec_potrf_L_dense_mp_gpu_fp8_adaptive_taskpool_t *hicma_dpotrf =
-        parsec_potrf_L_dense_mp_gpu_fp8_adaptive_new( A, Ar, Rank, Norm, Fake, params ); 
+        parsec_potrf_L_dense_mp_gpu_fp8_adaptive_new( A, Ar, Rank, Fake, params ); 
 
     // Identify task class IDs for different kernel types
     int potrf_id, trsm_id, trsm_send_id, syrk_id, gemm_id;
