@@ -339,16 +339,19 @@ void workspace_memory_free( parsec_potrf_workspace_t *ws)
             /* FP8 */
             /*******************************/
 #if HAVE_FP8
-            cublasLtDestroy(ws->gpu_workspace[i].stream_workspace[j].lightHandle);
-            cublasLtMatmulDescDestroy(ws->gpu_workspace[i].stream_workspace[j].matmulDesc);
-            cublasLtMatrixLayoutDestroy(ws->gpu_workspace[i].stream_workspace[j].Adesc);
-            cublasLtMatrixLayoutDestroy(ws->gpu_workspace[i].stream_workspace[j].Bdesc);
-            cublasLtMatrixLayoutDestroy(ws->gpu_workspace[i].stream_workspace[j].Cdesc);
-            cudaFree(ws->gpu_workspace[i].stream_workspace[j].workspace);
-            //cudaFree(ws->gpu_workspace[i].stream_workspace[j].heuristicResultsArray);
-            cublasLtMatmulPreferenceDestroy(ws->gpu_workspace[i].stream_workspace[j].pref);
-            cublasLtMatmulDescDestroy(ws->gpu_workspace[i].stream_workspace[j].matmulDesc_scaled);
-            cudaFree(ws->gpu_workspace[i].stream_workspace[j].fp8_scale);
+            /* Created only when FP8 GEMMs run (gpu_temporay_buffer_init) */
+            if( NULL != ws->gpu_workspace[i].stream_workspace[j].lightHandle ) {
+                cublasLtDestroy(ws->gpu_workspace[i].stream_workspace[j].lightHandle);
+                cublasLtMatmulDescDestroy(ws->gpu_workspace[i].stream_workspace[j].matmulDesc);
+                cublasLtMatrixLayoutDestroy(ws->gpu_workspace[i].stream_workspace[j].Adesc);
+                cublasLtMatrixLayoutDestroy(ws->gpu_workspace[i].stream_workspace[j].Bdesc);
+                cublasLtMatrixLayoutDestroy(ws->gpu_workspace[i].stream_workspace[j].Cdesc);
+                cudaFree(ws->gpu_workspace[i].stream_workspace[j].workspace);
+                //cudaFree(ws->gpu_workspace[i].stream_workspace[j].heuristicResultsArray);
+                cublasLtMatmulPreferenceDestroy(ws->gpu_workspace[i].stream_workspace[j].pref);
+                cublasLtMatmulDescDestroy(ws->gpu_workspace[i].stream_workspace[j].matmulDesc_scaled);
+                cudaFree(ws->gpu_workspace[i].stream_workspace[j].fp8_scale);
+            }
 #endif
             /*******************************/
 
@@ -641,101 +644,104 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t 
 
 #if HAVE_FP8
             /****************************************************************************/
-            /* FP8 */
-            // lightHandle
-            cublasLtHandle_t lightHandle;
-            cublasLtCreate(&lightHandle);
-            data->ws_gpu->gpu_workspace[i].stream_workspace[j].lightHandle = lightHandle;
+            /* FP8: only when FP8 GEMMs will run (fp8_enabled); otherwise the
+             * handles stay NULL and the 32 MB cuBLASLt workspace per stream is
+             * not allocated */
+            if( params->fp8_enabled ) {
+                // lightHandle
+                cublasLtHandle_t lightHandle;
+                cublasLtCreate(&lightHandle);
+                data->ws_gpu->gpu_workspace[i].stream_workspace[j].lightHandle = lightHandle;
 
-            // matmulDesc
-            cublasLtMatmulDesc_t matmulDesc;
-            cublasLtMatmulDescCreate(&matmulDesc, CUBLAS_COMPUTE_32F, CUDA_R_32F);
-            const cublasOperation_t transa = CUBLAS_OP_T, transb = CUBLAS_OP_N;
-            cublasLtMatmulDescSetAttribute(
-                    matmulDesc, CUBLASLT_MATMUL_DESC_TRANSA, &transa,
-                    sizeof(transa));
-            cublasLtMatmulDescSetAttribute(
-                    matmulDesc, CUBLASLT_MATMUL_DESC_TRANSB, &transb,
-                    sizeof(transb));
-            data->ws_gpu->gpu_workspace[i].stream_workspace[j].matmulDesc= matmulDesc;
+                // matmulDesc
+                cublasLtMatmulDesc_t matmulDesc;
+                cublasLtMatmulDescCreate(&matmulDesc, CUBLAS_COMPUTE_32F, CUDA_R_32F);
+                const cublasOperation_t transa = CUBLAS_OP_T, transb = CUBLAS_OP_N;
+                cublasLtMatmulDescSetAttribute(
+                        matmulDesc, CUBLASLT_MATMUL_DESC_TRANSA, &transa,
+                        sizeof(transa));
+                cublasLtMatmulDescSetAttribute(
+                        matmulDesc, CUBLASLT_MATMUL_DESC_TRANSB, &transb,
+                        sizeof(transb));
+                data->ws_gpu->gpu_workspace[i].stream_workspace[j].matmulDesc= matmulDesc;
 
-            // Adesc Bdesc Cdesc
-            cublasLtMatrixLayout_t Adesc;
-            cublasLtMatrixLayout_t Bdesc;
-            cublasLtMatrixLayout_t Cdesc;
-            int fp8_ld = hicma_fp8_ld(mb);
-            cublasLtMatrixLayoutCreate(&Adesc, CUDA_R_8F_E4M3, fp8_ld, fp8_ld, fp8_ld);
-            cublasLtMatrixLayoutCreate(&Bdesc, CUDA_R_8F_E4M3, fp8_ld, fp8_ld, fp8_ld);
-            //cublasLtMatrixLayoutCreate(&Cdesc, CUDA_R_16F, mb, mb, mb);
-            cublasLtMatrixLayoutCreate(&Cdesc, CUDA_R_32F, fp8_ld, fp8_ld, fp8_ld);
-            data->ws_gpu->gpu_workspace[i].stream_workspace[j].Adesc = Adesc;
-            data->ws_gpu->gpu_workspace[i].stream_workspace[j].Bdesc = Bdesc;
-            data->ws_gpu->gpu_workspace[i].stream_workspace[j].Cdesc = Cdesc;
-            data->ws_gpu->gpu_workspace[i].stream_workspace[j].fp8_ld = fp8_ld;
+                // Adesc Bdesc Cdesc
+                cublasLtMatrixLayout_t Adesc;
+                cublasLtMatrixLayout_t Bdesc;
+                cublasLtMatrixLayout_t Cdesc;
+                int fp8_ld = hicma_fp8_ld(mb);
+                cublasLtMatrixLayoutCreate(&Adesc, CUDA_R_8F_E4M3, fp8_ld, fp8_ld, fp8_ld);
+                cublasLtMatrixLayoutCreate(&Bdesc, CUDA_R_8F_E4M3, fp8_ld, fp8_ld, fp8_ld);
+                //cublasLtMatrixLayoutCreate(&Cdesc, CUDA_R_16F, mb, mb, mb);
+                cublasLtMatrixLayoutCreate(&Cdesc, CUDA_R_32F, fp8_ld, fp8_ld, fp8_ld);
+                data->ws_gpu->gpu_workspace[i].stream_workspace[j].Adesc = Adesc;
+                data->ws_gpu->gpu_workspace[i].stream_workspace[j].Bdesc = Bdesc;
+                data->ws_gpu->gpu_workspace[i].stream_workspace[j].Cdesc = Cdesc;
+                data->ws_gpu->gpu_workspace[i].stream_workspace[j].fp8_ld = fp8_ld;
 
-            // workspace
-            size_t workspaceSize = 32 * 1024 * 1024;
-            void *workspace;
-            cudaMalloc(&workspace, workspaceSize);
-            data->ws_gpu->gpu_workspace[i].stream_workspace[j].workspaceSize = workspaceSize;
-            data->ws_gpu->gpu_workspace[i].stream_workspace[j].workspace = workspace;
+                // workspace
+                size_t workspaceSize = 32 * 1024 * 1024;
+                void *workspace;
+                cudaMalloc(&workspace, workspaceSize);
+                data->ws_gpu->gpu_workspace[i].stream_workspace[j].workspaceSize = workspaceSize;
+                data->ws_gpu->gpu_workspace[i].stream_workspace[j].workspace = workspace;
 
-            // heuristicResultsArray 
-            cublasLtMatmulPreference_t pref;
-            cublasLtMatmulPreferenceCreate(&pref);
-            cublasLtMatmulPreferenceSetAttribute(
-                    pref, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES,
-                    &workspaceSize, sizeof(workspaceSize));
+                // heuristicResultsArray 
+                cublasLtMatmulPreference_t pref;
+                cublasLtMatmulPreferenceCreate(&pref);
+                cublasLtMatmulPreferenceSetAttribute(
+                        pref, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES,
+                        &workspaceSize, sizeof(workspaceSize));
 
-            int requestedAlgoCount = 1;
-            int returnAlgoCount = 0;
-            cublasLtMatmulHeuristicResult_t heuristicResultsArray;
-            memset(&heuristicResultsArray, 0, sizeof(heuristicResultsArray));
+                int requestedAlgoCount = 1;
+                int returnAlgoCount = 0;
+                cublasLtMatmulHeuristicResult_t heuristicResultsArray;
+                memset(&heuristicResultsArray, 0, sizeof(heuristicResultsArray));
 
-            cublasStatus_t heuristic_status = cublasLtMatmulAlgoGetHeuristic(
-                    lightHandle, matmulDesc, Adesc, Bdesc,
-                    Cdesc, Cdesc, pref, requestedAlgoCount,
-                    &heuristicResultsArray, &returnAlgoCount);
-            /* Expected on GPUs without FP8 GEMM (CC < 8.9), where FP8 tiles are
-             * disabled; anywhere else an FP8 GEMM would now abort. */
-            if( (CUBLAS_STATUS_SUCCESS != heuristic_status || 0 == returnAlgoCount) && params->fp8_enabled ) {
-                fprintf(stderr, "Warning: no cuBLASLt FP8 GEMM algorithm on device %d (status %d)\n",
-                        i, (int)heuristic_status);
+                cublasStatus_t heuristic_status = cublasLtMatmulAlgoGetHeuristic(
+                        lightHandle, matmulDesc, Adesc, Bdesc,
+                        Cdesc, Cdesc, pref, requestedAlgoCount,
+                        &heuristicResultsArray, &returnAlgoCount);
+                /* FP8 GEMMs abort without an algorithm */
+                if( CUBLAS_STATUS_SUCCESS != heuristic_status || 0 == returnAlgoCount ) {
+                    fprintf(stderr, "Warning: no cuBLASLt FP8 GEMM algorithm on device %d (status %d)\n",
+                            i, (int)heuristic_status);
+                }
+
+                data->ws_gpu->gpu_workspace[i].stream_workspace[j].heuristicResultsArray = heuristicResultsArray;
+                data->ws_gpu->gpu_workspace[i].stream_workspace[j].pref = pref;
+
+                /* FP8 GEMMs: same GEMM, with device pointers to the per-tile
+                 * scales 1/s_A and 1/s_B that hicma_fp8_scaled_convert_GPU writes,
+                 * or the GEMM copies from a tile sent in FP8, on this stream before
+                 * each GEMM (initially 1). */
+                float *fp8_scale = NULL;
+                const float fp8_scale_init[8] = { 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f };
+                HICMA_GPU_HANDLE_CHECK(cudaSuccess == cudaMalloc((void **)&fp8_scale, sizeof(fp8_scale_init)), "FP8 scale buffer");
+                HICMA_GPU_HANDLE_CHECK(cudaSuccess == cudaMemcpy(fp8_scale, fp8_scale_init, sizeof(fp8_scale_init), cudaMemcpyHostToDevice), "FP8 scale buffer");
+                const float *a_scale = fp8_scale + 2, *b_scale = fp8_scale + 6;
+                cublasLtMatmulDesc_t matmulDesc_scaled;
+                cublasLtMatmulDescCreate(&matmulDesc_scaled, CUBLAS_COMPUTE_32F, CUDA_R_32F);
+                cublasLtMatmulDescSetAttribute(matmulDesc_scaled, CUBLASLT_MATMUL_DESC_TRANSA, &transa, sizeof(transa));
+                cublasLtMatmulDescSetAttribute(matmulDesc_scaled, CUBLASLT_MATMUL_DESC_TRANSB, &transb, sizeof(transb));
+                cublasLtMatmulDescSetAttribute(matmulDesc_scaled, CUBLASLT_MATMUL_DESC_A_SCALE_POINTER, &a_scale, sizeof(a_scale));
+                cublasLtMatmulDescSetAttribute(matmulDesc_scaled, CUBLASLT_MATMUL_DESC_B_SCALE_POINTER, &b_scale, sizeof(b_scale));
+
+                cublasLtMatmulHeuristicResult_t heuristic_scaled;
+                memset(&heuristic_scaled, 0, sizeof(heuristic_scaled));
+                returnAlgoCount = 0;
+                heuristic_status = cublasLtMatmulAlgoGetHeuristic(
+                        lightHandle, matmulDesc_scaled, Adesc, Bdesc,
+                        Cdesc, Cdesc, pref, requestedAlgoCount,
+                        &heuristic_scaled, &returnAlgoCount);
+                if( CUBLAS_STATUS_SUCCESS != heuristic_status || 0 == returnAlgoCount ) {
+                    fprintf(stderr, "Warning: no cuBLASLt scaled FP8 GEMM algorithm on device %d (status %d)\n",
+                            i, (int)heuristic_status);
+                }
+                data->ws_gpu->gpu_workspace[i].stream_workspace[j].matmulDesc_scaled = matmulDesc_scaled;
+                data->ws_gpu->gpu_workspace[i].stream_workspace[j].heuristic_scaled = heuristic_scaled;
+                data->ws_gpu->gpu_workspace[i].stream_workspace[j].fp8_scale = fp8_scale;
             }
-
-            data->ws_gpu->gpu_workspace[i].stream_workspace[j].heuristicResultsArray = heuristicResultsArray;
-            data->ws_gpu->gpu_workspace[i].stream_workspace[j].pref = pref;
-
-            /* FP8 GEMMs: same GEMM, with device pointers to the per-tile
-             * scales 1/s_A and 1/s_B that hicma_fp8_scaled_convert_GPU writes,
-             * or the GEMM copies from a tile sent in FP8, on this stream before
-             * each GEMM (initially 1). */
-            float *fp8_scale = NULL;
-            const float fp8_scale_init[8] = { 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f };
-            HICMA_GPU_HANDLE_CHECK(cudaSuccess == cudaMalloc((void **)&fp8_scale, sizeof(fp8_scale_init)), "FP8 scale buffer");
-            HICMA_GPU_HANDLE_CHECK(cudaSuccess == cudaMemcpy(fp8_scale, fp8_scale_init, sizeof(fp8_scale_init), cudaMemcpyHostToDevice), "FP8 scale buffer");
-            const float *a_scale = fp8_scale + 2, *b_scale = fp8_scale + 6;
-            cublasLtMatmulDesc_t matmulDesc_scaled;
-            cublasLtMatmulDescCreate(&matmulDesc_scaled, CUBLAS_COMPUTE_32F, CUDA_R_32F);
-            cublasLtMatmulDescSetAttribute(matmulDesc_scaled, CUBLASLT_MATMUL_DESC_TRANSA, &transa, sizeof(transa));
-            cublasLtMatmulDescSetAttribute(matmulDesc_scaled, CUBLASLT_MATMUL_DESC_TRANSB, &transb, sizeof(transb));
-            cublasLtMatmulDescSetAttribute(matmulDesc_scaled, CUBLASLT_MATMUL_DESC_A_SCALE_POINTER, &a_scale, sizeof(a_scale));
-            cublasLtMatmulDescSetAttribute(matmulDesc_scaled, CUBLASLT_MATMUL_DESC_B_SCALE_POINTER, &b_scale, sizeof(b_scale));
-
-            cublasLtMatmulHeuristicResult_t heuristic_scaled;
-            memset(&heuristic_scaled, 0, sizeof(heuristic_scaled));
-            returnAlgoCount = 0;
-            heuristic_status = cublasLtMatmulAlgoGetHeuristic(
-                    lightHandle, matmulDesc_scaled, Adesc, Bdesc,
-                    Cdesc, Cdesc, pref, requestedAlgoCount,
-                    &heuristic_scaled, &returnAlgoCount);
-            if( (CUBLAS_STATUS_SUCCESS != heuristic_status || 0 == returnAlgoCount) && params->fp8_enabled ) {
-                fprintf(stderr, "Warning: no cuBLASLt scaled FP8 GEMM algorithm on device %d (status %d)\n",
-                        i, (int)heuristic_status);
-            }
-            data->ws_gpu->gpu_workspace[i].stream_workspace[j].matmulDesc_scaled = matmulDesc_scaled;
-            data->ws_gpu->gpu_workspace[i].stream_workspace[j].heuristic_scaled = heuristic_scaled;
-            data->ws_gpu->gpu_workspace[i].stream_workspace[j].fp8_scale = fp8_scale;
             /****************************************************************************/
 #endif
 

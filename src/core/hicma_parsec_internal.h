@@ -255,13 +255,11 @@ extern "C" {  /**< Enable C linkage for C++ compatibility */
 
 /* Conditional feature flags - enable features based on available hardware */
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
-/* FP8 (E4M3) GEMMs are built with -DHICMA_PARSEC_HAVE_FP8=ON; at runtime they
- * are used only if every GPU has compute capability >= 8.9 (fp8_enabled). */
-#if defined(HICMA_PARSEC_HAVE_FP8)
-#define HAVE_FP8 1  /**< Enable FP8 precision on CUDA (8-bit floating point) */
-#else
-#define HAVE_FP8 0  /**< Enable FP8 precision on CUDA (8-bit floating point) */
-#endif
+/* FP8 (E4M3) GEMMs are built into every CUDA build, which includes
+ * cuda_fp8.h anyway. At runtime they are used only in kinds 8, 9 and 10, if
+ * every GPU on every rank has compute capability >= 8.9 and --fp8 is not 0
+ * (fp8_enabled). */
+#define HAVE_FP8 1  /**< FP8 (8-bit floating point) GEMMs built on CUDA */
 #define HAVE_I8  1  /**< Enable INT8 precision on CUDA (8-bit integer) */
 #else
 #define HAVE_FP8 0  /**< FP8 precision not available (no CUDA support) */
@@ -644,7 +642,8 @@ typedef struct hicma_parsec_params_s {
     uint64_t *nb_datatype_conversions;
     int counter_stride;       /**< Slots per counter row: CPU threads + GPU streams */
     int counter_gpu_offset;   /**< First GPU-stream slot in a counter row */
-    int fp8_enabled;          /**< HAVE_FP8 and every GPU supports FP8 GEMM (CC >= 8.9) */
+    int fp8;                  /**< --fp8: 1 (default) use FP8 GEMMs where the GPUs support them; 0: never */
+    int fp8_enabled;          /**< HAVE_FP8, --fp8, kind 8, 9 or 10, and every GPU supports FP8 GEMM (CC >= 8.9) */
     int fp8_scaling;          /**< FP8 GEMMs: scale each operand tile by a power of two from its amax */
 
     /* ========================================================================

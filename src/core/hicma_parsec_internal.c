@@ -321,6 +321,7 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         {"adaptive_decision", "0: disabled; ~0: adaptive_decision of each tile's format using norm approach", 0, &params->adaptive_decision},
         {"adaptive_decision_runtime", "0: disabled; ~0: adaptive_decision of each tile's format using norm approach during runtime", 0, &params->adaptive_decision_runtime},
         {"adaptive_memory", "0: memory allocated once; 1: memory reallocated per tile after precision decision", 0, &params->adaptive_memory},
+        {"fp8", "FP8 GEMMs in kinds 8, 9 and 10: 1 (default) use them when every GPU has compute capability >= 8.9; 0: never (those tiles use HP)", 0, &params->fp8},
         {"fp8_scaling", "FP8 GEMMs: 1 (default) scale each operand tile by a power of two from its max entry; 0: unscaled", 0, &params->fp8_scaling},
         {"arena_pinned_memory", "Use pinned host memory for taskpool arenas when GPUs are enabled", 3, &params->arena_pinned_memory},
         {"adaptive_maxrank", "In -D 6, adaptively set the maxrank used in Cholesky based on the generation", 0, &params->adaptive_maxrank},
@@ -621,7 +622,8 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     // Hardware configuration - these control resource utilization
     params->cores = -1;         // Number of cores per node (-1 = auto-detect from system)
     params->gpus  = 0;          // Number of GPUs to use (0 = CPU only, >0 enables GPU acceleration)
-    params->fp8_enabled = HAVE_FP8;  // Refined in setup_parsec() from the GPUs' compute capability
+    params->fp8 = 1;                 // Use FP8 GEMMs where the GPUs support them (0=never)
+    params->fp8_enabled = 0;         // Set in setup_parsec() from --fp8, the kind and the GPUs' compute capability
     params->kernel_time_cpu = NULL;
     params->kernel_time_gpu = NULL;
     params->kernel_time_gpu_event = NULL;
@@ -1054,22 +1056,40 @@ parsec_context_t* setup_parsec(int argc, char **argv, hicma_parsec_params_t * pa
 
     /* FP8 GEMMs go through cuBLASLt E4M3, which needs compute capability
      * >= 8.9 (Ada/Hopper and newer). On V100/A100 the matmul fails with
-     * CUBLAS_STATUS_ARCH_MISMATCH, so tiles that would be FP8 use HP instead.
+     * CUBLAS_STATUS_ARCH_MISMATCH, so tiles that would be FP8 use HP instead,
+     * as they do with --fp8 0, without GPUs, and in kinds other than 8-10.
      * Agree across ranks: every rank computes the same decision arrays. */
-    params->fp8_enabled = HAVE_FP8;
+    int fp8_gpus_ok = HAVE_FP8 && params->gpus > 0;
 #if HAVE_FP8 && defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
-    for( int d = 0; d < params->gpus && params->fp8_enabled; d++ ) {
+    for( int d = 0; d < params->gpus && fp8_gpus_ok; d++ ) {
         struct cudaDeviceProp prop;
         if( cudaSuccess != cudaGetDeviceProperties(&prop, d)
             || prop.major * 10 + prop.minor < 89 ) {
-            params->fp8_enabled = 0;
+            fp8_gpus_ok = 0;
         }
     }
 #endif
-    MPI_Allreduce(MPI_IN_PLACE, &params->fp8_enabled, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
-    if( 0 == params->rank && HAVE_FP8 && !params->fp8_enabled ) {
+    MPI_Allreduce(MPI_IN_PLACE, &fp8_gpus_ok, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+    /* Only kinds 8, 9 and 10 run FP8 tiles; the precision decisions
+     * (hicma_parsec_get_precision_tile, hicma_parsec_decisions_send_analysis)
+     * are shared by every kind, so keep FP8 off for the others */
+    int fp8_kind = DENSE_MP_GPU_FP8 == params->kind_of_cholesky
+                   || DENSE_MP_GPU_FP8_SP == params->kind_of_cholesky
+                   || DENSE_MP_GPU_FP8_ADAPTIVE == params->kind_of_cholesky;
+    params->fp8_enabled = fp8_gpus_ok && params->fp8 && fp8_kind;
+    /* Every CUDA build has FP8 GEMMs: on V100/A100 warn only for kinds 8 and
+     * 9, which exist to use FP8 (hicma_parsec_params_print_initial prints
+     * fp8_enabled for every kind) */
+    if( 0 == params->rank && HAVE_FP8 && params->fp8 && params->gpus > 0 && !fp8_gpus_ok
+        && (DENSE_MP_GPU_FP8 == params->kind_of_cholesky
+            || DENSE_MP_GPU_FP8_SP == params->kind_of_cholesky) ) {
         fprintf(stderr, RED "FP8 GEMM requires compute capability >= 8.9 on every GPU: "
                 "tiles that would use FP8 use HP instead\n" RESET);
+    }
+    /* Without FP8 GEMMs the static dense band has no FP8 part: those tiles
+     * are HP (hicma_parsec_decision_init) */
+    if( !params->fp8_enabled ) {
+        params->band_size_dense_hp = params->band_size_dense;
     }
 
     /* With adaptive_memory, convert_d2s gives SP tiles an SP-sized host buffer.
@@ -1420,6 +1440,7 @@ void hicma_parsec_params_print_initial( hicma_parsec_params_t *params )
         printf("band_size_auto_tuning_termination= %lf band_size_dense_gpu_memory_max= %d exe_file_path= %s\n", params->band_size_auto_tuning_termination, params->band_size_dense_gpu_memory_max, params->exe_file_path);
         printf("max_rank=%d gen=%d comp=%d\n", params->maxrank, params->genmaxrank, params->compmaxrank);
         printf("auto_band=%d sparse=%d kind_of_cholesky=%d tensor_gemm=%d datatype_convert=%d left_looking=%d\n", params->auto_band, params->sparse, params->kind_of_cholesky, params->tensor_gemm, params->datatype_convert, params->left_looking);
+        printf("fp8= %d fp8_enabled= %d fp8_scaling= %d\n", params->fp8, params->fp8_enabled, params->fp8_scaling);
         if( 6 == params->kind_of_problem) printf("mesh_file=%s, rbf_kernel=%d, numobj=%d, order=%d, radius=%f, density=%f\n", params->mesh_file, params->rbf_kernel, params->numobj, params->order, params->radius, params->density);
         printf("time_slots=%d sigma=%lf beta=%lf nu=%lf beta_time=%lf nu_time=%lf nonsep_param=%lf noise= %lf\n", params->time_slots, params->sigma, params->beta, params->nu, params->beta_time, params->nu_time, params->nonsep_param, params->noise);
         printf("numobj/L= %d gpu_rows= %d gpu_cols= %d\n\n", params->numobj, params->gpu_rows, params->gpu_cols);
@@ -2111,10 +2132,6 @@ int hicma_parsec_params_check( hicma_parsec_params_t *params )
     if( params->rank == 0 ) {
         fprintf(stderr, RED "Disable recursive now !!!\n" RESET);
     }
-#endif
-
-#if !HAVE_FP8
-    params->band_size_dense_hp = params->band_size_dense; 
 #endif
 
     return 0; 

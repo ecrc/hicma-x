@@ -105,9 +105,8 @@ ctest --preset=release
 | Option | Default | Description |
 |--------|---------|-------------|
 | `CMAKE_BUILD_TYPE` | `RelWithDebInfo` | Build type (Debug, Release, RelWithDebInfo, MinSizeRel) |
-| `HICMA_PARSEC_HAVE_CUDA` | `OFF` | Enable CUDA support |
+| `HICMA_PARSEC_HAVE_CUDA` | `OFF` | Enable CUDA support. Also builds the FP8 (E4M3) GEMMs, which kinds 8, 9 and 10 use only when every GPU has compute capability >= 8.9; `--fp8 0` turns them off at runtime |
 | `HICMA_PARSEC_HAVE_HIP` | `OFF` | Enable HIP support |
-| `HICMA_PARSEC_HAVE_FP8` | `OFF` | Build the FP8 (E4M3) GEMMs (requires CUDA); used only when every GPU has compute capability >= 8.9 |
 | `ENABLE_SANITIZER` | `OFF` | Enable AddressSanitizer instrumentation |
 | `HICMA_ASAN_RUNTIME_LIBRARY` | empty | Optional absolute path to `libasan.so` when sanitizer link probe fails |
 | `ENABLE_CUTLASS` | `OFF` | Enable CUTLASS support (requires CUDA) |
