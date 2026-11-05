@@ -434,8 +434,32 @@ static parsec_hook_return_t evaluate_gpu_trsm(parsec_task_t* task) {
 }
 
 /**
+ * @brief GPU evaluation function for TRSM_SEND operation
+ *
+ * Uses the same dense-band criterion as TRSM. The CUDA/HIP body of
+ * potrf_dtrsm_send returns PARSEC_HOOK_RETURN_NEXT for low-rank tiles, and
+ * PaRSEC re-queues a GPU task that returns NEXT on the same GPU stream
+ * instead of falling back to the CPU chore, so low-rank tiles must be
+ * kept off the GPU here or the factorization hangs.
+ *
+ * @param task TRSM_SEND task to evaluate
+ * @return PARSEC_HOOK_RETURN_DONE for GPU execution, PARSEC_HOOK_RETURN_NEXT for CPU
+ */
+static parsec_hook_return_t evaluate_gpu_trsm_send(parsec_task_t* task) {
+    int m = ((__parsec_potrf_L_dense_mp_gpu_potrf_dtrsm_send_task_t *)task)->locals.m.value;
+    int k = ((__parsec_potrf_L_dense_mp_gpu_potrf_dtrsm_send_task_t *)task)->locals.k.value;
+    int band_size_dense = ((__parsec_potrf_L_dense_mp_gpu_potrf_dtrsm_send_task_t *)task)->locals.band_size_dense_local.value;
+
+    /* Execute on GPU if within the dense band */
+    if( m-k < band_size_dense )
+        return PARSEC_HOOK_RETURN_DONE;
+    else
+        return PARSEC_HOOK_RETURN_NEXT;
+}
+
+/**
  * @brief GPU evaluation function for SYRK operation
- * 
+ *
  * Currently always executes SYRK on GPU when available.
  * This could be extended to include size-based heuristics.
  * 
@@ -506,6 +530,7 @@ potrf_L_dense_mp_gpu_New( parsec_context_t *parsec,
     void** hook;
     void** eval_gpu_potrf;
     void** eval_gpu_trsm;
+    void** eval_gpu_trsm_send;
     void** eval_gpu_syrk;
     void** eval_gpu_gemm;
 
@@ -565,12 +590,14 @@ potrf_L_dense_mp_gpu_New( parsec_context_t *parsec,
         parsec_potrf_L_dense_mp_gpu_new( A, Ar, Rank, Fake, params ); 
 
     /* Identify task class IDs for hook installation */
-    int potrf_id, trsm_id, syrk_id, gemm_id;
+    int potrf_id, trsm_id, trsm_send_id, syrk_id, gemm_id;
     for( int i = 0; i < hicma_dpotrf->super.nb_task_classes; i++ ) {
         if( !strcmp(hicma_dpotrf->super.task_classes_array[i]->name, "potrf_dpotrf") )
             potrf_id = hicma_dpotrf->super.task_classes_array[i]->task_class_id;
         else if( !strcmp(hicma_dpotrf->super.task_classes_array[i]->name, "potrf_dtrsm") )
             trsm_id = hicma_dpotrf->super.task_classes_array[i]->task_class_id;
+        else if( !strcmp(hicma_dpotrf->super.task_classes_array[i]->name, "potrf_dtrsm_send") )
+            trsm_send_id = hicma_dpotrf->super.task_classes_array[i]->task_class_id;
         else if( !strcmp(hicma_dpotrf->super.task_classes_array[i]->name, "potrf_dsyrk") )
             syrk_id = hicma_dpotrf->super.task_classes_array[i]->task_class_id;
         else if( !strcmp(hicma_dpotrf->super.task_classes_array[i]->name, "potrf_dgemm") )
@@ -625,10 +652,12 @@ potrf_L_dense_mp_gpu_New( parsec_context_t *parsec,
         /* Install GPU evaluation functions for kernel selection */
         eval_gpu_potrf = (void *)&hicma_dpotrf->super.task_classes_array[potrf_id]->incarnations[gpu_id].evaluate;
         eval_gpu_trsm  = (void *)&hicma_dpotrf->super.task_classes_array[trsm_id]->incarnations[gpu_id].evaluate;
+        eval_gpu_trsm_send = (void *)&hicma_dpotrf->super.task_classes_array[trsm_send_id]->incarnations[gpu_id].evaluate;
         eval_gpu_syrk  = (void *)&hicma_dpotrf->super.task_classes_array[syrk_id]->incarnations[gpu_id].evaluate;
         eval_gpu_gemm  = (void *)&hicma_dpotrf->super.task_classes_array[gemm_id]->incarnations[gpu_id].evaluate;
         *eval_gpu_potrf = &evaluate_gpu_potrf;
         *eval_gpu_trsm  = &evaluate_gpu_trsm;
+        *eval_gpu_trsm_send = &evaluate_gpu_trsm_send;
         *eval_gpu_syrk  = &evaluate_gpu_syrk;
         *eval_gpu_gemm  = &evaluate_gpu_gemm;
 #endif
