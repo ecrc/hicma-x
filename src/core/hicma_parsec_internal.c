@@ -946,16 +946,6 @@ parsec_context_t* setup_parsec(int argc, char **argv, hicma_parsec_params_t * pa
 				parsec_argv[parsec_argc] = argv[idx], parsec_argc++, idx++);
 	}
 
-	/* Runtime decision sends tiles whose size depends on their current
-	 * precision into FP64-sized receive buffers. When an activation also
-	 * carries short (eager) data, e.g. the 16-byte tile norm, PaRSEC resizes
-	 * that receive to payload-bytes x FULL_DP elements and the allocation
-	 * fails (seen with 4 ranks). Disable short messages for this mode unless
-	 * the user set the parameter explicitly. */
-	if( params->adaptive_decision_runtime && NULL == getenv("PARSEC_MCA_runtime_comm_short_limit") ) {
-		parsec_setenv_mca_param( "runtime_comm_short_limit", "0", &environ );
-	}
-
 	// Initialize PaRSEC runtime with specified number of cores
 	parsec_context_t* ctx = parsec_init(params->cores,
 			&parsec_argc, &parsec_argv);
