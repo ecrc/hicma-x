@@ -1330,15 +1330,11 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
     params->decisions_storage_final = (uint16_t *)calloc(params->MT * params->NT, sizeof(uint16_t));
     params->decisionsB = (uint16_t *)calloc(params->NT * params->KT, sizeof(uint16_t));      // Main matrix decisions
     // Set to DENSE_DP by default
-    for(int j = 0; j < params->NT; j++) {
-        for(int i = 0; i < params->NT; i++) {
-            params->decisions[j*params->NT+i] = DENSE_DP;
-        }
+    for(size_t i = 0; i < (size_t)params->MT * params->NT; i++) {
+        params->decisions[i] = DENSE_DP;
     }
-    for(int j = 0; j < params->KT; j++) {
-        for(int i = 0; i < params->NT; i++) {
-            params->decisionsB[j*params->NT+i] = DENSE_DP;
-        }
+    for(size_t i = 0; i < (size_t)params->NT * params->KT; i++) {
+        params->decisionsB[i] = DENSE_DP;
     }
 
     // Data type conversion decisions
