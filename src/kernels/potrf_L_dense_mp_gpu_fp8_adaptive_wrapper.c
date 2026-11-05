@@ -401,6 +401,32 @@ static int wrap_gemm_complete(parsec_execution_stream_t * es,
  * @param task POTRF task structure
  * @return PARSEC_HOOK_RETURN_DONE to use GPU kernel
  */
+/**
+ * @brief Size a remote operand's GPU stage-in by its stored precision
+ *
+ * Distributed memory: a tile received from a TRSM on another rank lands in
+ * an FP64-sized buffer (FULL_DP receive type) whatever precision it was sent
+ * in, so its element count says FP64 and a GPU stage-in would copy, and
+ * allocate on the GPU, twice the bytes of an SP tile. The tile's
+ * {norm, precision} record arrives with it, so trim the received copy's
+ * element count to SP before PaRSEC sizes the transfer (the GPU hook reads
+ * original->nb_elts after this evaluate runs). Tiles owned by a data
+ * collection (local TRSM output) are skipped: TRSM already sets their count.
+ */
+static void hicma_trim_remote_operand(parsec_data_copy_t *tile,
+                                      parsec_data_copy_t *meta,
+                                      size_t sp_bytes)
+{
+    if( NULL == tile || NULL == meta ) return;   /* no runtime decision flow */
+    parsec_data_t *original = tile->original;
+    if( NULL == original || NULL != original->dc ) return;
+    const double *tile_meta = (const double *)PARSEC_DATA_COPY_GET_PTR(meta);
+    if( NULL == tile_meta ) return;
+    if( DENSE_SP == (uint16_t)tile_meta[1] && original->nb_elts > sp_bytes ) {
+        original->nb_elts = sp_bytes;
+    }
+}
+
 static parsec_hook_return_t evaluate_gpu_potrf(parsec_task_t* task) {
     return PARSEC_HOOK_RETURN_DONE;
 }
@@ -463,7 +489,12 @@ static parsec_hook_return_t evaluate_gpu_trsm_send(parsec_task_t* task) {
  * @return PARSEC_HOOK_RETURN_DONE to use GPU kernel
  */
 static parsec_hook_return_t evaluate_gpu_syrk(parsec_task_t* task) {
-        return PARSEC_HOOK_RETURN_DONE;
+    __parsec_potrf_L_dense_mp_gpu_fp8_adaptive_potrf_dsyrk_task_t *t =
+        (__parsec_potrf_L_dense_mp_gpu_fp8_adaptive_potrf_dsyrk_task_t *)task;
+    parsec_tiled_matrix_t *descA = ((parsec_potrf_L_dense_mp_gpu_fp8_adaptive_taskpool_t *)task->taskpool)->_g_descA;
+    hicma_trim_remote_operand(t->data._f_A.data_in, t->data._f_A_norm.data_in,
+                              (size_t)descA->mb * descA->nb * sizeof(float));
+    return PARSEC_HOOK_RETURN_DONE;
 }
 
 /**
@@ -482,12 +513,19 @@ static parsec_hook_return_t evaluate_gpu_gemm(parsec_task_t* task) {
     int n = ((__parsec_potrf_L_dense_mp_gpu_fp8_adaptive_potrf_dgemm_task_t *)task)->locals.n.value;
     int k = ((__parsec_potrf_L_dense_mp_gpu_fp8_adaptive_potrf_dgemm_task_t *)task)->locals.k.value;
     int band_size_dense = ((__parsec_potrf_L_dense_mp_gpu_fp8_adaptive_potrf_dgemm_task_t *)task)->locals.band_size_dense_local.value;
-    
+    (void)k;
+
     // Use GPU for operations within the dense band region
-    if( m-n < band_size_dense )
+    if( m-n < band_size_dense ) {
+        __parsec_potrf_L_dense_mp_gpu_fp8_adaptive_potrf_dgemm_task_t *t =
+            (__parsec_potrf_L_dense_mp_gpu_fp8_adaptive_potrf_dgemm_task_t *)task;
+        parsec_tiled_matrix_t *descA = ((parsec_potrf_L_dense_mp_gpu_fp8_adaptive_taskpool_t *)task->taskpool)->_g_descA;
+        size_t sp_bytes = (size_t)descA->mb * descA->nb * sizeof(float);
+        hicma_trim_remote_operand(t->data._f_A.data_in, t->data._f_A_norm.data_in, sp_bytes);
+        hicma_trim_remote_operand(t->data._f_B.data_in, t->data._f_B_norm.data_in, sp_bytes);
         return PARSEC_HOOK_RETURN_DONE;
-    else
-        return PARSEC_HOOK_RETURN_NEXT;
+    }
+    return PARSEC_HOOK_RETURN_NEXT;
 }
 
 #endif /* PARSEC_HAVE_DEV_CUDA_SUPPORT */
