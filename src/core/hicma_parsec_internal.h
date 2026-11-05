@@ -645,7 +645,7 @@ typedef struct hicma_parsec_params_s {
     int counter_stride;       /**< Slots per counter row: CPU threads + GPU streams */
     int counter_gpu_offset;   /**< First GPU-stream slot in a counter row */
     int fp8_enabled;          /**< HAVE_FP8 and every GPU supports FP8 GEMM (CC >= 8.9) */
-    int fp8_scaling;          /**< Runtime-decision FP8 GEMM: scale each operand tile by a power of two from its amax */
+    int fp8_scaling;          /**< FP8 GEMMs: scale each operand tile by a power of two from its amax */
 
     /* ========================================================================
      * Performance metrics
@@ -874,6 +874,33 @@ static inline int hicma_tile_trsm_bytes(const hicma_parsec_params_t *params, int
     }
 }
 
+/**
+ * Layout of an FP8 (E4M3) tile that potrf_dtrsm_send sends to FP8 GEMMs: the
+ * operand cublasLtMatmul takes (transposed, zero padded to a square of side
+ * hicma_fp8_ld(mb)), followed by the HICMA_FP8_SCALE_FLOATS floats
+ * {amax, s, 1/s, 0} of its per-tile scale (see hicma_fp8_scaled_convert_GPU),
+ * so the scale travels with the tile.
+ */
+#define HICMA_FP8_SCALE_FLOATS 4
+
+/** Leading dimension of FP8 GEMM operands: cuBLASLt needs a multiple of 16 */
+static inline int hicma_fp8_ld(int mb)
+{
+    return (mb + 15) / 16 * 16;
+}
+
+/** Bytes of an FP8 tile as potrf_dtrsm_send sends it, scale included */
+static inline int hicma_fp8_tile_bytes(int mb)
+{
+    return hicma_fp8_ld(mb) * hicma_fp8_ld(mb) + HICMA_FP8_SCALE_FLOATS * (int)sizeof(float);
+}
+
+/** Scale {amax, s, 1/s, 0} after the entries of an FP8 tile */
+static inline float *hicma_fp8_tile_scale(void *tile, int mb)
+{
+    return (float *)((char *)tile + (size_t)hicma_fp8_ld(mb) * hicma_fp8_ld(mb));
+}
+
 /* ============================================================================
  * GPU workspace configuration
  * ============================================================================ */
@@ -925,9 +952,9 @@ typedef struct parsec_potrf_stream_workspace_s {
     size_t workspaceSize;                   /**< FP8 workspace size */
     cublasLtMatmulHeuristicResult_t heuristicResultsArray; /**< Heuristic results */
     cublasLtMatmulPreference_t pref;        /**< Matrix multiplication preferences */
-    /* Runtime-decision FP8 GEMM: operands scaled per tile by
-     * hicma_fp8_scaled_convert_GPU; matmulDesc_scaled reads 1/s_A and 1/s_B
-     * from fp8_scale[2] and fp8_scale[6] */
+    /* FP8 GEMMs: operands scaled per tile by hicma_fp8_scaled_convert_GPU
+     * (or sent so by potrf_dtrsm_send); matmulDesc_scaled reads 1/s_A and
+     * 1/s_B from fp8_scale[2] and fp8_scale[6] */
     cublasLtMatmulDesc_t matmulDesc_scaled; /**< matmulDesc with A/B scale pointers */
     cublasLtMatmulHeuristicResult_t heuristic_scaled; /**< Heuristic result for matmulDesc_scaled */
     float *fp8_scale;                       /**< Device, 8 floats: A {amax, s, 1/s, -}, B {amax, s, 1/s, -} */

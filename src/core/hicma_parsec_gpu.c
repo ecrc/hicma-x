@@ -663,7 +663,7 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t 
             cublasLtMatrixLayout_t Adesc;
             cublasLtMatrixLayout_t Bdesc;
             cublasLtMatrixLayout_t Cdesc;
-            int fp8_ld = ((mb + 15) / 16) * 16;
+            int fp8_ld = hicma_fp8_ld(mb);
             cublasLtMatrixLayoutCreate(&Adesc, CUDA_R_8F_E4M3, fp8_ld, fp8_ld, fp8_ld);
             cublasLtMatrixLayoutCreate(&Bdesc, CUDA_R_8F_E4M3, fp8_ld, fp8_ld, fp8_ld);
             //cublasLtMatrixLayoutCreate(&Cdesc, CUDA_R_16F, mb, mb, mb);
@@ -706,9 +706,10 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t 
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].heuristicResultsArray = heuristicResultsArray;
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].pref = pref;
 
-            /* Runtime-decision FP8 GEMM: same GEMM, with device pointers to the
-             * per-tile scales 1/s_A and 1/s_B that hicma_fp8_scaled_convert_GPU
-             * writes on this stream before each GEMM (initially 1). */
+            /* FP8 GEMMs: same GEMM, with device pointers to the per-tile
+             * scales 1/s_A and 1/s_B that hicma_fp8_scaled_convert_GPU writes,
+             * or the GEMM copies from a tile sent in FP8, on this stream before
+             * each GEMM (initially 1). */
             float *fp8_scale = NULL;
             const float fp8_scale_init[8] = { 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f };
             HICMA_GPU_HANDLE_CHECK(cudaSuccess == cudaMalloc((void **)&fp8_scale, sizeof(fp8_scale_init)), "FP8 scale buffer");

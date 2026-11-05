@@ -321,7 +321,7 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         {"adaptive_decision", "0: disabled; ~0: adaptive_decision of each tile's format using norm approach", 0, &params->adaptive_decision},
         {"adaptive_decision_runtime", "0: disabled; ~0: adaptive_decision of each tile's format using norm approach during runtime", 0, &params->adaptive_decision_runtime},
         {"adaptive_memory", "0: memory allocated once; 1: memory reallocated per tile after precision decision", 0, &params->adaptive_memory},
-        {"fp8_scaling", "FP8 GEMMs in runtime decision: 1 (default) scale each operand tile by a power of two from its max entry; 0: unscaled", 0, &params->fp8_scaling},
+        {"fp8_scaling", "FP8 GEMMs: 1 (default) scale each operand tile by a power of two from its max entry; 0: unscaled", 0, &params->fp8_scaling},
         {"arena_pinned_memory", "Use pinned host memory for taskpool arenas when GPUs are enabled", 3, &params->arena_pinned_memory},
         {"adaptive_maxrank", "In -D 6, adaptively set the maxrank used in Cholesky based on the generation", 0, &params->adaptive_maxrank},
         {"kind_of_cholesky", "Cholesky type", 0, &params->kind_of_cholesky},
@@ -644,7 +644,7 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     // Adaptive computation settings - control dynamic behavior
     params->adaptive_decision = 0;          // Disable adaptive tile format decision (0=disabled, >0=enabled)
     params->adaptive_decision_runtime = 0;  // Disable adaptive tile format decision during runtime (0=disabled, >0=enabled)
-    params->fp8_scaling = 1;                // Scale FP8 GEMM operands per tile in runtime decision (0=unscaled)
+    params->fp8_scaling = 1;                // Scale FP8 GEMM operands per tile (0=unscaled)
     // TODO: Need to test the overhead and restructure memory allocation strategy
     params->adaptive_memory = 0;            // Enable adaptive memory allocation per tile (1=enabled, 0=disabled)
     params->arena_pinned_memory = 0;         // Use the default arena allocator unless explicitly enabled

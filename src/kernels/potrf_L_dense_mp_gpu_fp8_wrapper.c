@@ -758,9 +758,10 @@ potrf_L_dense_mp_gpu_fp8_New( parsec_context_t *parsec,
             1, A->mb, A->mb*2, A->mb, 
             PARSEC_ARENA_ALIGNMENT_SSE, -1 );
 
+    /* FP8 tiles sent to FP8 GEMMs, with their per-tile scale (hicma_fp8_tile_bytes) */
     parsec_add2arena(&hicma_dpotrf->arenas_datatypes[PARSEC_potrf_L_dense_mp_gpu_fp8_FULL_FP8_ADT_IDX],
             MPI_BYTE, PARSEC_MATRIX_FULL,
-            1, A->mb, A->mb, A->mb,
+            1, hicma_fp8_tile_bytes(A->mb), 1, hicma_fp8_tile_bytes(A->mb),
             PARSEC_ARENA_ALIGNMENT_SSE, -1 );
 
     parsec_add2arena(&hicma_dpotrf->arenas_datatypes[PARSEC_potrf_L_dense_mp_gpu_fp8_AR_ADT_IDX],

@@ -640,7 +640,7 @@ BODY [type=CUDA]
     } else if( DENSE_HP == params_tlr->decisions_send[k*descA->lmt+m] ) {
         this_task->locals.size.value = descA->mb * descA->mb * 2;
     } else if( DENSE_FP8 == params_tlr->decisions_send[k*descA->lmt+m] ) {
-        this_task->locals.size.value = descA->mb * descA->mb;
+        this_task->locals.size.value = hicma_fp8_tile_bytes(descA->mb);
     }
 
     /* Perform precision conversion if needed */
@@ -662,13 +662,14 @@ BODY [type=CUDA]
             }
         } else if( DENSE_FP8 == params_tlr->decisions_send[k*params_tlr->NT+m] ) {
 #if HAVE_FP8
-            if( DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
-                hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
-                double2fp8_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
-            } else {
-                hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
-                float2fp8_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
-            }
+            /* Scaled per tile, in the FP8 GEMM operand layout; the scale
+             * follows the entries (hicma_fp8_tile_scale) */
+            int tempmm = (m == descA->mt-1) ? descA->m - m*descA->mb : descA->mb;
+            int fp8_ld = hicma_fp8_ld(descA->mb);
+            hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
+            hicma_fp8_scaled_convert_GPU( (DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m]) ? (int)sizeof(double) : (int)sizeof(float),
+                    tempmm, descA->nb, C0, descA->mb, C, fp8_ld, fp8_ld, fp8_ld,
+                    hicma_fp8_tile_scale(C, descA->mb), params_tlr->fp8_scaling, cuda_stream->cuda_stream );
 #endif
         }
     }
@@ -693,7 +694,7 @@ BODY [type=HIP]
     } else if( DENSE_HP == params_tlr->decisions_send[k*descA->lmt+m] ) {
         this_task->locals.size.value = descA->mb * descA->mb * 2;
     } else if( DENSE_FP8 == params_tlr->decisions_send[k*descA->lmt+m] ) {
-        this_task->locals.size.value = descA->mb * descA->mb;
+        this_task->locals.size.value = hicma_fp8_tile_bytes(descA->mb);
     }
 
     /* Perform precision conversion if needed */
@@ -715,13 +716,14 @@ BODY [type=HIP]
             }
         } else if( DENSE_FP8 == params_tlr->decisions_send[k*params_tlr->NT+m] ) {
 #if HAVE_FP8
-            if( DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
-                hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
-                double2fp8_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
-            } else {
-                hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
-                float2fp8_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
-            }
+            /* Scaled per tile, in the FP8 GEMM operand layout; the scale
+             * follows the entries (hicma_fp8_tile_scale) */
+            int tempmm = (m == descA->mt-1) ? descA->m - m*descA->mb : descA->mb;
+            int fp8_ld = hicma_fp8_ld(descA->mb);
+            hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
+            hicma_fp8_scaled_convert_GPU( (DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m]) ? (int)sizeof(double) : (int)sizeof(float),
+                    tempmm, descA->nb, C0, descA->mb, C, fp8_ld, fp8_ld, fp8_ld,
+                    hicma_fp8_tile_scale(C, descA->mb), params_tlr->fp8_scaling, cuda_stream->cuda_stream );
 #endif
         }
     }

@@ -763,9 +763,10 @@ potrf_L_dense_mp_gpu_fp8_sp_New( parsec_context_t *parsec,
             PARSEC_ARENA_ALIGNMENT_SSE, -1 );
 
     /* FP8 precision arena */
+    /* FP8 tiles sent to FP8 GEMMs, with their per-tile scale (hicma_fp8_tile_bytes) */
     parsec_add2arena(&hicma_dpotrf->arenas_datatypes[PARSEC_potrf_L_dense_mp_gpu_fp8_sp_FULL_FP8_ADT_IDX],
             MPI_BYTE, PARSEC_MATRIX_FULL,
-            1, A->mb, A->mb, A->mb,
+            1, hicma_fp8_tile_bytes(A->mb), 1, hicma_fp8_tile_bytes(A->mb),
             PARSEC_ARENA_ALIGNMENT_SSE, -1 );
 
     /* Integer array arena for rank information */
