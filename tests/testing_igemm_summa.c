@@ -112,7 +112,11 @@ int main(int argc, char ** argv)
     hicma_parsec_matrix_analysis_t analysis;
     
     /* Initialize HiCMA and PaRSEC */
-    parsec_context_t* parsec = hicma_parsec_init( argc, argv, &params, &params_kernel, &data ); 
+    parsec_context_t* parsec = hicma_parsec_init( argc, argv, &params, &params_kernel, &data );
+    if( NULL == parsec ) {
+        fprintf(stderr, "Failed to initialize HiCMA PaRSEC\n");
+        return EXIT_FAILURE;
+    }
 
     /* Initialize input matrix A with block-cyclic distribution */
     /* Matrix A: size params.nsnp x params.N, tile size params.NB */

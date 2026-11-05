@@ -854,6 +854,13 @@ typedef struct parsec_potrf_stream_workspace_s {
     void *gpu_buffer_mbr;   /**< Buffer for matrix-by-rank: NB * maxrank * sizeof(double) */
     void *gpu_buffer_rr;    /**< Buffer for rank-by-rank: maxrank * maxrank * sizeof(double) */
 
+    /* Runtime decision: SYRK/GEMM read the {norm, precision} metadata written
+     * by TRSM. A plain cudaMemcpy runs on the legacy default stream and waits
+     * for every (blocking) PaRSEC stream of the device; copy on a private
+     * non-blocking stream into pinned memory instead. */
+    cudaStream_t norm_meta_stream;  /**< Non-blocking stream for metadata reads (NULL if unused) */
+    double *norm_meta_host;         /**< Pinned host buffer, 4 doubles: A {norm, precision}, B {norm, precision} */
+
 #if HAVE_FP8
     /* FP8 precision support */
     cublasLtHandle_t lightHandle;           /**< cuBLASLt handle */

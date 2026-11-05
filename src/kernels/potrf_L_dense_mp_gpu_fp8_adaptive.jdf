@@ -12,24 +12,23 @@ extern "C" %{
 
 /**
  * @file potrf_L_dense_mp_gpu_fp8_adaptive.jdf
- * @brief Cholesky factorization (POTRF) task graph with FP8 precision support
- * 
- * This file implements a task-based Cholesky factorization algorithm using PaRSEC runtime
- * with enhanced support for FP8 (8-bit floating point) precision. It extends the base
- * implementation with additional precision conversion capabilities and FP8-specific optimizations.
- * 
- * Key features:
- * - Full FP8 precision support with conversion routines
- * - Mixed precision computation (DP, SP, HP, FP8)
- * - GPU acceleration with CUDA/HIP support including FP8 kernels
- * - Low-rank compression for off-diagonal blocks
- * - Enhanced memory pool management for FP8 data types
- * - Dynamic task scheduling with priority-based execution
- * 
- * FP8 Support:
- * - FP8 data type definitions and conversions
- * - GPU kernels optimized for FP8 arithmetic
- * - Memory-efficient FP8 storage and communication
+ * @brief Dense mixed-precision Cholesky (POTRF) with precision decided at runtime
+ *
+ * Selected by --adaptive_decision_runtime (kind DENSE_MP_GPU_FP8_ADAPTIVE).
+ * The whole matrix is dense (band_size_dense = NT). Instead of fixing every
+ * tile's precision before the factorization, precisions are decided while it
+ * runs:
+ * - TRSM(m, k) computes ||L(m, k)||_F and sends it with its storage precision
+ *   to SYRK/GEMM through the NORM flow (descNorm: 2 doubles {norm, precision}).
+ * - GEMM(m, n, k) picks its compute precision (DP, SP, HP, FP8) from
+ *   ||A||*||B|| and stores C in DP or SP; the first GEMM (k == 0) and the
+ *   column-0 TRSM decide C's storage precision from ||C|| when
+ *   --adaptive_decision 0.
+ * - C tiles are sent as raw bytes whose size (`size`) follows their current
+ *   storage precision; GPU and host copies are reallocated when a tile is
+ *   promoted back to DP.
+ * - FP8 GEMMs use cuBLASLt E4M3 and are only selected when every GPU has
+ *   compute capability >= 8.9 (params->fp8_enabled); otherwise HP is used.
  */
 
 /* 
@@ -475,9 +474,7 @@ BODY [type=CUDA]
     cublasSetStream( stream_found->handle_cublas, cuda_stream->cuda_stream );
 
     /* Column 0 (no GEMM updates C before this TRSM): decide from the norm
-     * of C whether to store C in SP before the solve.
-     * handle_cublas is HOST pointer mode (synchronous nrm2 result).
-     * handle_cublas_deviceptr cannot write into a host stack address. */
+     * of C whether to store C in SP before the solve. */
     const size_t tile_elems = descA->mb * descA->nb;
     const int idx_C = k * descA->lmt + m;
     uint16_t decision = params_tlr->decisions[idx_C];
@@ -485,9 +482,11 @@ BODY [type=CUDA]
      * flow; without it they would keep reading this tile as DP. */
     if( params_tlr->adaptive_decision_runtime && 0 == k && 0 == params_tlr->adaptive_decision
             && DENSE_DP == params_tlr->decisions[idx_C] ) {
-        double C_norm_host = 0.0;
+        /* Column-0 tiles are untouched since generation: reuse the norm that
+         * matrix_compress computed (all-reduced on every rank) instead of a
+         * synchronous host-pointer-mode nrm2 on the GPU manager thread. */
+        double C_norm_host = params_tlr->norm_tile[k*params_tlr->NT+m];
         float *C_s = (float *)stream_found->gpu_buffer_C;
-        cublasDnrm2(stream_found->handle_cublas, tile_elems, C, 1, &C_norm_host);
         hicma_parsec_get_precision_tile(params_tlr, &decision, C_norm_host, m, k);
         if( params_tlr->verbose > 100 ) {
             printf("m %d k %d C_norm %lf new_decision %d old_decision %d\n",
@@ -507,8 +506,6 @@ BODY [type=CUDA]
     hicma_parsec_core_trsm_gpu( descA, params_tlr, stream_found, cuda_device, gpu_task, cuda_stream, T, C, m, k );
 
     /* Update communication size and optionally compute F norm for runtime adaptation. */
-    //const int decision = params_tlr->decisions[k*descA->lmt+m];
-    //const size_t tile_elems = descA->mb * descA->mb;
     if(params_tlr->adaptive_decision_runtime) {
         if( DENSE_DP == decision ) {
             double C_precision_dp = (double)DENSE_DP;
@@ -539,9 +536,7 @@ BODY [type=HIP]
     cublasSetStream( stream_found->handle_cublas, cuda_stream->cuda_stream );
 
     /* Column 0 (no GEMM updates C before this TRSM): decide from the norm
-     * of C whether to store C in SP before the solve.
-     * handle_cublas is HOST pointer mode (synchronous nrm2 result).
-     * handle_cublas_deviceptr cannot write into a host stack address. */
+     * of C whether to store C in SP before the solve. */
     const size_t tile_elems = descA->mb * descA->nb;
     const int idx_C = k * descA->lmt + m;
     uint16_t decision = params_tlr->decisions[idx_C];
@@ -549,9 +544,11 @@ BODY [type=HIP]
      * flow; without it they would keep reading this tile as DP. */
     if( params_tlr->adaptive_decision_runtime && 0 == k && 0 == params_tlr->adaptive_decision
             && DENSE_DP == params_tlr->decisions[idx_C] ) {
-        double C_norm_host = 0.0;
+        /* Column-0 tiles are untouched since generation: reuse the norm that
+         * matrix_compress computed (all-reduced on every rank) instead of a
+         * synchronous host-pointer-mode nrm2 on the GPU manager thread. */
+        double C_norm_host = params_tlr->norm_tile[k*params_tlr->NT+m];
         float *C_s = (float *)stream_found->gpu_buffer_C;
-        cublasDnrm2(stream_found->handle_cublas, tile_elems, C, 1, &C_norm_host);
         hicma_parsec_get_precision_tile(params_tlr, &decision, C_norm_host, m, k);
         if( params_tlr->verbose > 100 ) {
             printf("m %d k %d C_norm %lf new_decision %d old_decision %d\n",
@@ -572,8 +569,6 @@ BODY [type=HIP]
     hicma_parsec_core_trsm_gpu( descA, params_tlr, stream_found, cuda_device, gpu_task, cuda_stream, T, C, m, k );
 
     /* Update communication size and optionally compute F norm for runtime adaptation. */
-    //const int decision = params_tlr->decisions[k*descA->lmt+m];
-    //const size_t tile_elems = descA->mb * descA->mb;
     if(params_tlr->adaptive_decision_runtime) {
         if( DENSE_DP == decision ) {
             double C_precision_dp = (double)DENSE_DP;
@@ -599,7 +594,11 @@ BODY [type=RECURSIVE]
     int smallnb = params_tlr->HNB;
 
     /* Use sequential CPU version for small blocks or non-dense blocks */
-    if( tempmm <= smallnb || DENSE_DP != params_tlr->decisions[k*descA->lmt+m] ) {
+    /* Runtime mode: the recursive path neither produces/consumes the C_norm
+     * flow nor sees precision changes made on other ranks, so always use
+     * the sequential CPU body (HNB < NB is not used with this kind today). */
+    if( params_tlr->adaptive_decision_runtime
+            || tempmm <= smallnb || DENSE_DP != params_tlr->decisions[k*descA->lmt+m] ) {
         return PARSEC_HOOK_RETURN_NEXT;
     }
 
@@ -933,7 +932,11 @@ BODY [type=RECURSIVE]
     int smallnb = params_tlr->HNB;
 
     /* Use sequential CPU version for small blocks or non-dense blocks */
-    if( tempmm <= smallnb || DENSE_DP != params_tlr->decisions[k*descA->lmt+m] ) {
+    /* Runtime mode: the recursive path neither produces/consumes the C_norm
+     * flow nor sees precision changes made on other ranks, so always use
+     * the sequential CPU body (HNB < NB is not used with this kind today). */
+    if( params_tlr->adaptive_decision_runtime
+            || tempmm <= smallnb || DENSE_DP != params_tlr->decisions[k*descA->lmt+m] ) {
         return PARSEC_HOOK_RETURN_NEXT;
     }
 
@@ -946,7 +949,6 @@ BODY [type=RECURSIVE]
     subtile_desc_t *small_descT;
     subtile_desc_t *small_descA;
     parsec_taskpool_t* parsec_dsyrk;
-    void *A_d;
 
     small_descT = subtile_desc_create( descA, m, m,
             smallnb, smallnb, 0, 0, tempmm, tempmm );
@@ -1065,11 +1067,6 @@ BODY [type=CUDA]
         return PARSEC_HOOK_RETURN_NEXT;
     }
 
-    /* Performance timing for debugging */
-    struct timeval tstart;
-    gettimeofday(&tstart, NULL);
-    double start_time = tstart.tv_sec + tstart.tv_usec / 1.0e6 - params_tlr->start_time_potrf;
-
     /* GPU-accelerated GEMM with different data structure combinations */
     /* Case 1: C, A, B are all dense - standard GEMM */
     if ( IS_DENSE(m, n) && IS_DENSE(m, k) && IS_DENSE(n, k) )
@@ -1134,11 +1131,6 @@ BODY [type=HIP]
     if( !IS_DENSE(m, n) ) {
         return PARSEC_HOOK_RETURN_NEXT;
     }
-
-    /* Performance timing for debugging */
-    struct timeval tstart;
-    gettimeofday(&tstart, NULL);
-    double start_time = tstart.tv_sec + tstart.tv_usec / 1.0e6 - params_tlr->start_time_potrf;
 
     /* HIP-accelerated GEMM with different data structure combinations */
     /* Case 1: C, A, B are all dense - standard GEMM */
@@ -1205,7 +1197,11 @@ BODY [type=RECURSIVE]
     int smallnb = params_tlr->HNB;
 
     /* Use sequential CPU version for small blocks or non-dense blocks */
-    if( tempmm <= smallnb
+    /* Runtime mode: the recursive path neither produces/consumes the C_norm
+     * flow nor sees precision changes made on other ranks, so always use
+     * the sequential CPU body (HNB < NB is not used with this kind today). */
+    if( params_tlr->adaptive_decision_runtime
+            || tempmm <= smallnb
             || DENSE_DP != params_tlr->decisions[k*descA->lmt+m]
             || DENSE_DP != params_tlr->decisions[k*descA->lmt+n]
             || DENSE_DP != params_tlr->decisions[n*descA->lmt+m] ) {
@@ -1282,7 +1278,7 @@ BODY
     /* Case 1: C, A, B are all dense - standard GEMM */
     if (  IS_DENSE(m, n) && IS_DENSE(m, k) && IS_DENSE(n, k) ) 
     {
-        if(1 && params_tlr->adaptive_decision_runtime) {
+        if( params_tlr->adaptive_decision_runtime ) {
             hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( descA, descRank, params_tlr, es,
                     p_work, p_work_full_dp, p_work_full_sp, p_work_full_hp,
                     p_work_uv_dp, p_work_uv_sp, p_work_mbr, p_work_rr,

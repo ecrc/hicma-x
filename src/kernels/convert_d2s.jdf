@@ -28,11 +28,8 @@ n = 0 .. m
 
 : descA(m, n)
 
-// Conditional read-write access based on decision matrix
-// Only process tiles that need conversion to single precision
-//RW A <- (%{ return DENSE_SP == params_tlr->decisions[n*descA->lmt+m]; %} || %{ return DENSE_HP == params_tlr->decisions[n*descA->lmt+m]; %} || %{ return DENSE_FP8 == params_tlr->decisions[n*descA->lmt+m]; %} || %{ return LOW_RANK_SP == params_tlr->decisions[n*descA->lmt+m]; %})? descA(m, n): NULL        
-//     -> (%{ return DENSE_SP == params_tlr->decisions[n*descA->lmt+m]; %} || %{ return DENSE_HP == params_tlr->decisions[n*descA->lmt+m]; %} || %{ return DENSE_FP8 == params_tlr->decisions[n*descA->lmt+m]; %} || %{ return LOW_RANK_SP == params_tlr->decisions[n*descA->lmt+m]; %})? descA(m, n)              
-
+// Every tile: refresh nb_elts for its current format, and convert the tiles
+// whose decision is SP/HP/FP8 (dense) or LOW_RANK_SP to single precision
 RW A <- descA(m, n)
      -> descA(m, n)              
 
@@ -72,8 +69,7 @@ BODY
             if(0) printf("(%d %d) needs D2S\n", m, n);
         } else {
             // Already in single precision, just update element count
-            //if( params_tlr->adaptive_memory )
-                this_task->data._f_A.data_out->original->nb_elts = descA->mb * size * sizeof(float);
+            this_task->data._f_A.data_out->original->nb_elts = descA->mb * size * sizeof(float);
             return PARSEC_HOOK_RETURN_DONE; 
         }
 
@@ -112,8 +108,7 @@ BODY
             this_task->data._f_A.data_out->device_private = new_memory;
         }
         // Update element count for single precision
-        //if( params_tlr->adaptive_memory )
-            this_task->data._f_A.data_out->original->nb_elts = descA->mb * size * sizeof(float);
+        this_task->data._f_A.data_out->original->nb_elts = descA->mb * size * sizeof(float);
     }
 
     // Handle low-rank matrix tiles that need conversion to single precision

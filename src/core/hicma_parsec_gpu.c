@@ -11,6 +11,19 @@
 #include "hicma_parsec_gpu.h"
 #include "parsec/utils/zone_malloc.h"
 
+/* Release builds compile assert() out, so a failed cuBLAS/cuSOLVER handle
+ * creation (for example when several ranks share one GPU and the first one
+ * reserved most of its memory) used to crash later in cublasSetStream with a
+ * segfault. Check explicitly. Used inside the (i, j) device/stream loops. */
+#define HICMA_GPU_HANDLE_CHECK(ok, what) do {                                        \
+        if( !(ok) ) {                                                                 \
+            fprintf(stderr, "Fatal: %s failed on device %d stream %d; when several "  \
+                    "processes share a GPU, lower PaRSEC's device_cuda_memory_use\n", \
+                    (what), i, j);                                                    \
+            abort();                                                                  \
+        }                                                                             \
+    } while(0)
+
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
 
 /**
@@ -344,6 +357,16 @@ void workspace_memory_free( parsec_potrf_workspace_t *ws)
                 assert(status == CUSOLVER_STATUS_SUCCESS);
             }
 
+            /* Free the norm metadata stream and pinned buffer (NULL unless created) */
+            if( NULL != ws->gpu_workspace[i].stream_workspace[j].norm_meta_stream ) {
+                cudaStreamDestroy(ws->gpu_workspace[i].stream_workspace[j].norm_meta_stream);
+                ws->gpu_workspace[i].stream_workspace[j].norm_meta_stream = NULL;
+            }
+            if( NULL != ws->gpu_workspace[i].stream_workspace[j].norm_meta_host ) {
+                cudaFreeHost(ws->gpu_workspace[i].stream_workspace[j].norm_meta_host);
+                ws->gpu_workspace[i].stream_workspace[j].norm_meta_host = NULL;
+            }
+
             /* Free GPU handle_cublas */
             if( NULL != ws->gpu_workspace[i].stream_workspace[j].handle_cublas ) {
                 cublasHandle_t handle_cublas = ws->gpu_workspace[i].stream_workspace[j].handle_cublas;
@@ -463,15 +486,17 @@ void gpu_handle_init( hicma_parsec_data_t *data ) {
 
             /* Create handle_cublas_gpu */
             status = cublasCreate(&handle_cublas_gpu);
+            HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cublasCreate");
             cublasSetStream( handle_cublas_gpu, cuda_stream->cuda_stream );
-            assert(CUBLAS_STATUS_SUCCESS == status);
+            HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cuBLAS handle setup");
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].handle_cublas = handle_cublas_gpu;
 
             /* Create handle_cublas_gpu_deviceptr */
             status = cublasCreate(&handle_cublas_gpu_deviceptr);
+            HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cublasCreate");
             cublasSetStream( handle_cublas_gpu_deviceptr, cuda_stream->cuda_stream );
             status = cublasSetPointerMode(handle_cublas_gpu_deviceptr, CUBLAS_POINTER_MODE_DEVICE);
-            assert(CUBLAS_STATUS_SUCCESS == status);
+            HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cuBLAS handle setup");
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].handle_cublas_deviceptr = handle_cublas_gpu_deviceptr;
         }
     }
@@ -495,6 +520,16 @@ void gpu_handle_fini( hicma_parsec_data_t *data ) {
         for(int j = 0; j < ws->gpu_workspace[i].cuda_device->super.max_exec_streams; j++) {
             /* j 0, h2d; j 1, d2h */
             if( j <= 1 ) continue;
+
+            /* Free the norm metadata stream and pinned buffer (NULL unless created) */
+            if( NULL != ws->gpu_workspace[i].stream_workspace[j].norm_meta_stream ) {
+                cudaStreamDestroy(ws->gpu_workspace[i].stream_workspace[j].norm_meta_stream);
+                ws->gpu_workspace[i].stream_workspace[j].norm_meta_stream = NULL;
+            }
+            if( NULL != ws->gpu_workspace[i].stream_workspace[j].norm_meta_host ) {
+                cudaFreeHost(ws->gpu_workspace[i].stream_workspace[j].norm_meta_host);
+                ws->gpu_workspace[i].stream_workspace[j].norm_meta_host = NULL;
+            }
 
             /* Free GPU handle_cublas */
             if( NULL != ws->gpu_workspace[i].stream_workspace[j].handle_cublas ) {
@@ -586,6 +621,22 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t 
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_mbr = NULL;
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_rr = NULL;
 
+            /* Private non-blocking stream + pinned buffer for reading the
+             * runtime-decision {norm, precision} metadata (see the struct). */
+            {
+                parsec_potrf_stream_workspace_t *sw = &data->ws_gpu->gpu_workspace[i].stream_workspace[j];
+                int meta_ok = (cudaSuccess == cudaStreamCreateWithFlags(&sw->norm_meta_stream, cudaStreamNonBlocking));
+#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+                meta_ok = meta_ok && (hipSuccess == hipHostMalloc((void **)&sw->norm_meta_host, 4 * sizeof(double), hipHostMallocDefault));
+#else
+                meta_ok = meta_ok && (cudaSuccess == cudaMallocHost((void **)&sw->norm_meta_host, 4 * sizeof(double)));
+#endif
+                if( !meta_ok ) {
+                    fprintf(stderr, "Failed to create the norm metadata stream/buffer on GPU %d stream %d\n", i, j);
+                    abort();
+                }
+            }
+
 #if HAVE_FP8
             /****************************************************************************/
             /* FP8 */
@@ -657,16 +708,16 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t 
 
             /* Create handle_cusolver */
             status_cusolver = cusolverDnCreate(&handle_cusolver);
-            assert(CUSOLVER_STATUS_SUCCESS == status_cusolver);
+            HICMA_GPU_HANDLE_CHECK(CUSOLVER_STATUS_SUCCESS == status_cusolver, "cuSOLVER handle setup");
             status_cusolver = cusolverDnSetStream(handle_cusolver, cuda_stream->cuda_stream);
-            assert(CUSOLVER_STATUS_SUCCESS == status_cusolver);
+            HICMA_GPU_HANDLE_CHECK(CUSOLVER_STATUS_SUCCESS == status_cusolver, "cuSOLVER handle setup");
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].handle_cusolver = handle_cusolver;
 
             /* Allocate workspace for potrf handle_cusolver */
             int workspace_size;
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
             status_cusolver = cusolverDnDpotrf_bufferSize(handle_cusolver, CUBLAS_FILL_MODE_LOWER, nb, NULL, mb, &workspace_size);
-            assert(CUSOLVER_STATUS_SUCCESS == status_cusolver);
+            HICMA_GPU_HANDLE_CHECK(CUSOLVER_STATUS_SUCCESS == status_cusolver, "cuSOLVER handle setup");
 #endif
 
 #if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
@@ -679,28 +730,31 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t 
                 data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer = zone_malloc( cuda_device->super.memory, workspace_size * sizeof(double) + sizeof(int) );
             }
             //printf("data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer %d\n", ((int *)data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer)[0]);
-            assert(NULL != data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer);
+            HICMA_GPU_HANDLE_CHECK(NULL != data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer, "GPU workspace allocation");
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_size = workspace_size;
 
             /* Create handle_cublas_gpu */
             status = cublasCreate(&handle_cublas_gpu);
+            HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cublasCreate");
             cublasSetStream( handle_cublas_gpu, cuda_stream->cuda_stream );
-            assert(CUBLAS_STATUS_SUCCESS == status);
+            HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cuBLAS handle setup");
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].handle_cublas = handle_cublas_gpu;
 
             /* Create handle_cublas_gpu_deviceptr */
             status = cublasCreate(&handle_cublas_gpu_deviceptr);
+            HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cublasCreate");
             cublasSetStream( handle_cublas_gpu_deviceptr, cuda_stream->cuda_stream );
             status = cublasSetPointerMode(handle_cublas_gpu_deviceptr, CUBLAS_POINTER_MODE_DEVICE);
-            assert(CUBLAS_STATUS_SUCCESS == status);
+            HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cuBLAS handle setup");
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].handle_cublas_deviceptr = handle_cublas_gpu_deviceptr;
 
             /* Create handle_cublas_tensor */
             status = cublasCreate(&handle_cublas_tensor);
-            assert(CUBLAS_STATUS_SUCCESS == status);
+            HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cublasCreate");
+            HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cuBLAS handle setup");
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
             status = cublasSetMathMode(handle_cublas_tensor, CUBLAS_DEFAULT_MATH); /* Set the math mode to allow cuBLAS to use Tensor Cores */
-            assert(CUBLAS_STATUS_SUCCESS == status);
+            HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cuBLAS handle setup");
 #endif
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].handle_cublas_tensor = handle_cublas_tensor;
             //printf("i %d j %d : %p\n", i, j, data->ws_gpu->gpu_workspace[i].stream_workspace[j].handle_cublas_tensor);
@@ -714,13 +768,13 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t 
                     || DENSE_MP_GPU_FP8_ADAPTIVE == kind_of_cholesky
                     || DENSE_MP_GPU_FP8_SP == kind_of_cholesky ) {
                 data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_A = zone_malloc( cuda_device->super.memory, mb * nb * sizeof(double) );
-                assert(NULL != data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_A);
+                HICMA_GPU_HANDLE_CHECK(NULL != data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_A, "GPU workspace allocation");
 
                 data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_B = zone_malloc( cuda_device->super.memory, mb * nb * sizeof(double) );
-                assert(NULL != data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_B);
+                HICMA_GPU_HANDLE_CHECK(NULL != data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_B, "GPU workspace allocation");
 
                 data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_C = zone_malloc( cuda_device->super.memory, mb * nb * sizeof(double) );
-                assert(NULL != data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_C);
+                HICMA_GPU_HANDLE_CHECK(NULL != data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_C, "GPU workspace allocation");
             }
 
             if( 1 || DENSE_TLR_DP == kind_of_cholesky
@@ -730,10 +784,10 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t 
                     || DENSE_MP_GPU_FP8_ADAPTIVE == kind_of_cholesky
                     || DENSE_MP_GPU_FP8_SP == kind_of_cholesky ) {
                 data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_mbr = zone_malloc( cuda_device->super.memory, mb * maxrank * sizeof(double) );
-                assert(NULL != data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_mbr);
+                HICMA_GPU_HANDLE_CHECK(NULL != data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_mbr, "GPU workspace allocation");
 
                 data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_rr = zone_malloc( cuda_device->super.memory, maxrank * maxrank * sizeof(double) );
-                assert(NULL != data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_rr);
+                HICMA_GPU_HANDLE_CHECK(NULL != data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_rr, "GPU workspace allocation");
             }
 
         }

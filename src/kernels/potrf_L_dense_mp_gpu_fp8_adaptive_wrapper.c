@@ -580,13 +580,13 @@ potrf_L_dense_mp_gpu_fp8_adaptive_New( parsec_context_t *parsec,
 
     // Validate input parameters
     if ((uplo != PlasmaLower)) {
-        dplasma_error("potrf_L_dense_tlr_dp_New", "potrf_L_dense_tlr_dp only support PlasmaLower for now");
+        dplasma_error("potrf_L_dense_mp_gpu_fp8_adaptive_New", "potrf_L_dense_mp_gpu_fp8_adaptive only supports PlasmaLower for now");
         return NULL /*-1*/;
     }
 
     // Validate rank parameters for storage and computation
     if(storagemaxrank > compmaxrank) {
-        dplasma_error("potrf_L_dense_tlr_dp_New", "maxrank for storage larger than maxrank for buffers \
+        dplasma_error("potrf_L_dense_mp_gpu_fp8_adaptive_New", "maxrank for storage larger than maxrank for buffers \
                 is not meaningful");
         return NULL /*-1*/;
     }

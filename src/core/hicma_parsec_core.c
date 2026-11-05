@@ -31,6 +31,33 @@ int hicma_parsec_gpu_counter_id(hicma_parsec_params_t *params_tlr,
          + cuda_device->cuda_index * PARSEC_GPU_MAX_STREAMS
          + lookup_gpu_workspace_j(cuda_device, cuda_stream);
 }
+
+/* Copy the {norm, precision} metadata that TRSM wrote on the device (A_norm
+ * and/or B_norm, 2 doubles each) into A_meta/B_meta. The producing task has
+ * completed before this task runs, so only the copy itself must be waited
+ * for: use the workspace's private non-blocking stream instead of cudaMemcpy,
+ * whose legacy default stream waits for every blocking stream of the device. */
+static void hicma_gpu_read_norm_meta(parsec_potrf_stream_workspace_t *ws,
+                                     const void *A_norm, double A_meta[2],
+                                     const void *B_norm, double B_meta[2])
+{
+    if( NULL == ws || NULL == ws->norm_meta_stream || NULL == ws->norm_meta_host ) {
+        if( NULL != A_norm ) cudaMemcpy(A_meta, A_norm, 2 * sizeof(double), cudaMemcpyDeviceToHost);
+        if( NULL != B_norm ) cudaMemcpy(B_meta, B_norm, 2 * sizeof(double), cudaMemcpyDeviceToHost);
+        return;
+    }
+    if( NULL != A_norm ) {
+        cudaMemcpyAsync(ws->norm_meta_host, A_norm, 2 * sizeof(double),
+                        cudaMemcpyDeviceToHost, ws->norm_meta_stream);
+    }
+    if( NULL != B_norm ) {
+        cudaMemcpyAsync(ws->norm_meta_host + 2, B_norm, 2 * sizeof(double),
+                        cudaMemcpyDeviceToHost, ws->norm_meta_stream);
+    }
+    cudaStreamSynchronize(ws->norm_meta_stream);
+    if( NULL != A_norm ) { A_meta[0] = ws->norm_meta_host[0]; A_meta[1] = ws->norm_meta_host[1]; }
+    if( NULL != B_norm ) { B_meta[0] = ws->norm_meta_host[2]; B_meta[1] = ws->norm_meta_host[3]; }
+}
 #endif
 
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
@@ -3335,7 +3362,6 @@ void hicma_parsec_core_syrk_runtime_decision_gpu( parsec_tiled_matrix_t* descA,
         return;
     }
 
-#if 1
     int tempmm = m == descA->mt-1 ? descA->m - m*descA->mb : descA->mb;
     int ldam = BLKLDD( descA, m );
     if( DEBUG_INFO ) printf("GPU_syrk:  %d %d\n", m, k);
@@ -3356,9 +3382,9 @@ void hicma_parsec_core_syrk_runtime_decision_gpu( parsec_tiled_matrix_t* descA,
                                                             &gpu_time_start, &gpu_time_stop);
 #endif
 
-    double Aprecision_as_double;
-    cudaMemcpy(&Aprecision_as_double, ((double *)A_norm) + 1, sizeof(double), cudaMemcpyDeviceToHost);
-    uint16_t Aprecision = (uint16_t)Aprecision_as_double;
+    double A_meta[2] = {0.0, (double)DENSE_DP};
+    hicma_gpu_read_norm_meta(stream_found, A_norm, A_meta, NULL, NULL);
+    uint16_t Aprecision = (uint16_t)A_meta[1];
 
     if( IS_DENSE(m, k) ) {
         if( DENSE_DP == params_tlr->decisions[m*descA->lmt+m] ) {
@@ -3402,21 +3428,6 @@ void hicma_parsec_core_syrk_runtime_decision_gpu( parsec_tiled_matrix_t* descA,
                                            cuda_stream->cuda_stream,
                                            gpu_time_start, gpu_time_stop);
     }
-#endif
-#else
-
-    uint16_t old_decision = params_tlr->decisions_send[k*descA->lmt+m];
-    uint16_t runtime_precision = old_decision;
-
-    if( params_tlr->adaptive_decision_runtime && NULL != A_norm ) {
-        double precision_as_double = (double)old_decision;
-        cudaMemcpy(&precision_as_double, ((double *)A_norm) + 1, sizeof(double), cudaMemcpyDeviceToHost);
-        runtime_precision = (uint16_t)precision_as_double;
-    }
-
-    params_tlr->decisions_send[k*descA->lmt+m] = runtime_precision;
-    hicma_parsec_core_syrk_gpu(descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream, T, A, m, k, Arank);
-    params_tlr->decisions_send[k*descA->lmt+m] = old_decision;
 #endif
 }
 
@@ -3924,17 +3935,17 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
     C_h = (void *)stream_found->gpu_buffer_C;
 
     /* Fetch runtime {norm, precision} metadata from TRSM outputs. */
-    if( NULL != A_norm ) {
-        double A_meta[2];
-        cudaMemcpy(A_meta, (double *)A_norm, 2 * sizeof(double), cudaMemcpyDeviceToHost);
-        Anorm = A_meta[0];
-        Aprecision = (uint16_t)A_meta[1];
-    }
-    if( NULL != B_norm ) {
-        double B_meta[2];
-        cudaMemcpy(B_meta, (double *)B_norm, 2 * sizeof(double), cudaMemcpyDeviceToHost);
-        Bnorm = B_meta[0];
-        Bprecision = (uint16_t)B_meta[1];
+    if( NULL != A_norm || NULL != B_norm ) {
+        double A_meta[2], B_meta[2];
+        hicma_gpu_read_norm_meta(stream_found, A_norm, A_meta, B_norm, B_meta);
+        if( NULL != A_norm ) {
+            Anorm = A_meta[0];
+            Aprecision = (uint16_t)A_meta[1];
+        }
+        if( NULL != B_norm ) {
+            Bnorm = B_meta[0];
+            Bprecision = (uint16_t)B_meta[1];
+        }
     }
     hicma_parsec_get_precision_tile(params_tlr, &new_decision, Anorm * Bnorm, m, n);
     cublasSetStream( handle, cuda_stream->cuda_stream );
@@ -3950,9 +3961,9 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
             && DENSE_DP == params_tlr->decisions[idx_C]
             && DENSE_DP != new_decision ) {
         uint16_t storage_decision = (uint16_t)Cprecision;
-        double C_norm = 0.0;
-        const size_t tile_elems = descA->mb * descA->nb;
-        cublasDnrm2(stream_found->handle_cublas, tile_elems, C, 1, &C_norm);
+        /* C is untouched before its first GEMM: reuse the norm from
+         * matrix_compress instead of a synchronous nrm2 on the GPU. */
+        double C_norm = params_tlr->norm_tile[n*params_tlr->NT+m];
         hicma_parsec_get_precision_tile(params_tlr, &storage_decision, C_norm, m, n);
         if( params_tlr->verbose > 100 ) {
             printf("k 0 m %d n %d C_norm %lf storage_decision %d gemm_decision %d old_decision %d\n",

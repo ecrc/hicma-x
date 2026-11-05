@@ -571,8 +571,20 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
      * Connect every peer here, before starting those workers. A private
      * communicator keeps startup messages separate from caller traffic;
      * one byte ensures the transport actually establishes the endpoint.
+     * This is P-1 rounds and builds all-to-all endpoints, which gets costly
+     * at large scale where the workaround is not needed: set
+     * HICMA_MPI_PRECONNECT=0 to skip it (rank 0's setting is used everywhere
+     * so ranks cannot disagree and deadlock).
      */
+    int mpi_preconnect = 1;
     if (params->nodes > 1) {
+        const char *preconnect_env = getenv("HICMA_MPI_PRECONNECT");
+        if (NULL != preconnect_env && 0 == strcmp(preconnect_env, "0")) {
+            mpi_preconnect = 0;
+        }
+        MPI_Bcast(&mpi_preconnect, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    }
+    if (params->nodes > 1 && mpi_preconnect) {
         MPI_Comm startup_comm;
         unsigned char send_byte = 0, recv_byte;
         MPI_Comm_dup(MPI_COMM_WORLD, &startup_comm);
