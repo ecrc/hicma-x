@@ -293,6 +293,8 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         {"gpus", "Number of GPUs (default: 0)", 0, &params->gpus},
         {"P", "Rows (P) in the PxQ process grid (default: NP)", 0, &params->P},
         {"Q", "Columns (Q) in the PxQ process grid (default: NP/P)", 0, &params->Q},
+        {"grid_rows", "Same as --P", 0, &params->P},
+        {"grid_cols", "Same as --Q", 0, &params->Q},
         {"KP", "Block rows (KP) in the PxQ process grid (default: 1)", 0, &params->KP},
         {"KQ", "Block columns (KQ) in the PxQ process grid (default: 1)", 0, &params->KQ},
         {"M", "Row dimension (M) of the matrices (required)", 0, &params->M},
@@ -301,7 +303,7 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         {"MB", "Row tile size (required)", 0, &params->MB},
         {"NB", "Column tile size (required)", 0, &params->NB},
         {"KB", "Column tile size (required)", 0, &params->KB},
-        {"check", "Verify the results (requires value: 0 or 1)", 0, &params->check},
+        {"check", "Verify the results (--check, or --check 0|1)", 3, &params->check},
         {"verbose", "Extra verbose output: 1=normal, >1=more verbose about decisions", 0, &params->verbose},
         {"help", "Show this help message", 3, NULL},
         
@@ -406,7 +408,7 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         
         printf("\nSpecial options:\n");
         printf("  --help               Show this help message\n");
-        printf("  --check=0|1          Enable correctness check (0=off, 1=on)\n");
+        printf("  --check [0|1]        Enable correctness check (--check alone means 1)\n");
         printf("  --verbose            Set verbosity level\n");
         exit(0);
     }
@@ -464,8 +466,12 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
             
             config_option_t *opt = find_option(options, option_name);
             if (opt) {
-                if (opt->type == 3) { // Flag
-                    parse_arg_value("1", opt->type, opt->target);
+                if (opt->type == 3) { // Flag: --opt sets 1, --opt 0|1 (or --opt=0|1) sets the value
+                    if (parse_arg_value(value ? value : "1", 0, opt->target) != 0) {
+                        fprintf(stderr, "Error: Invalid value '%s' for flag '--%s' (expected 0 or 1)\n",
+                                value, option_name);
+                        return -1;
+                    }
                 } else if (value) {
                     if (parse_arg_value(value, opt->type, opt->target) != 0) {
                         fprintf(stderr, "Error: Invalid value '%s' for option '--%s'\n", 
