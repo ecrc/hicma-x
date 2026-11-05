@@ -10,6 +10,17 @@ extern "C" %{
 
 #include "hicma_parsec.h"
 
+/* Whether to stage tile (m, n) on the GPU. Low-rank tiles are skipped when
+ * asked: each is rewritten on the CPU (where its rank, and so its size, can
+ * grow) before any GPU task reads it, and PaRSEC stages a later read into the
+ * existing GPU copy without checking its size, so a copy made now would be
+ * both stale and too small. */
+static inline int warmup_stage_tile(const hicma_parsec_params_t *params, int skip_low_rank, int m, int n)
+{
+    if( !skip_low_rank ) return 1;
+    uint16_t decision = params->decisions[hicma_tile_idx(params, m, n)];
+    return LOW_RANK_DP != decision && LOW_RANK_SP != decision;
+}
 
 %}
 
@@ -25,6 +36,9 @@ params_tlr      [ type = "hicma_parsec_params_t *" ]
 
 /** Symmetry flag: 1 for symmetric, 0 for general matrix */
 sym             [ type = "int" ]
+
+/** Skip the low-rank tiles of descA (per params_tlr->decisions) */
+skip_low_rank   [ type = "int" hidden = on default = 0 ]
 
 /* GPU device management parameters */
 /** Number of available CUDA devices */
@@ -58,7 +72,7 @@ n = 0 .. %{ return sym? m: descA->lnt-1; %}
 
 /* Data flow: read matrix tile and pass to warmup task */
 READ A <- descA(m, n)
-       -> A warmup_task(m, n)
+       -> (%{ return warmup_stage_tile(params_tlr, skip_low_rank, m, n); %}) ? A warmup_task(m, n)
 
 
 BODY
@@ -116,7 +130,7 @@ n = 0 .. %{ return sym? m: descA->lnt-1; %}
 : descA(m, n)
 
 /* Data flow: receive data from binding task */
-READ A <- A potrf_bind_A(m, n) 
+READ A <- (%{ return warmup_stage_tile(params_tlr, skip_low_rank, m, n); %}) ? A potrf_bind_A(m, n) : NULL
 
 
 /* HIP (AMD GPU) implementation */
@@ -207,6 +221,32 @@ void hicma_parsec_potrf_L_warmup_Destruct(parsec_taskpool_t *taskpool)
     parsec_taskpool_free(taskpool);
 }
 
+static int potrf_L_warmup_run(parsec_context_t *parsec,
+                       parsec_tiled_matrix_t *dcA,
+                       hicma_parsec_params_t *params,
+                       int sym, int skip_low_rank)
+{
+    /* Only perform warmup if GPU devices are available */
+    if( params->gpus > 0) {
+        /* Create the warmup taskpool */
+        parsec_taskpool_t * potrf_L_warmup = hicma_parsec_potrf_L_warmup_New(parsec, dcA, params, sym); 
+        
+        if( potrf_L_warmup != NULL ){
+            ((parsec_potrf_L_warmup_taskpool_t *)potrf_L_warmup)->_g_skip_low_rank = skip_low_rank;
+
+            /* Schedule and execute the warmup tasks */
+            parsec_context_add_taskpool(parsec, potrf_L_warmup);
+            parsec_context_start(parsec);
+            parsec_context_wait(parsec);
+            
+            /* Clean up the taskpool */
+            hicma_parsec_potrf_L_warmup_Destruct(potrf_L_warmup);
+        }
+    }
+
+    return 0;
+}
+
 /**
  * @brief Executes the Cholesky factorization warmup phase
  * 
@@ -225,23 +265,24 @@ int hicma_parsec_potrf_L_warmup(parsec_context_t *parsec,
                        hicma_parsec_params_t *params,
                        int sym)
 {
-    /* Only perform warmup if GPU devices are available */
-    if( params->gpus > 0) {
-        /* Create the warmup taskpool */
-        parsec_taskpool_t * potrf_L_warmup = hicma_parsec_potrf_L_warmup_New(parsec, dcA, params, sym); 
-        
-        if( potrf_L_warmup != NULL ){
-            /* Schedule and execute the warmup tasks */
-            parsec_context_add_taskpool(parsec, potrf_L_warmup);
-            parsec_context_start(parsec);
-            parsec_context_wait(parsec);
-            
-            /* Clean up the taskpool */
-            hicma_parsec_potrf_L_warmup_Destruct(potrf_L_warmup);
-        }
-    }
+    return potrf_L_warmup_run( parsec, dcA, params, sym, 0 );
+}
 
-    return 0;
+/**
+ * @brief Warmup for the Cholesky factorization of dcA: stages the dense
+ * tiles of its lower triangle and skips the low-rank ones (per
+ * params->decisions, which must describe dcA)
+ *
+ * @param [in] parsec:     PaRSEC context for task scheduling
+ * @param [in] dcA:        Matrix to factorize, already distributed and allocated
+ * @param [in] params:     Parameters for TLR operations and GPU management
+ * @return 0 on success, non-zero on failure
+ */
+int hicma_parsec_potrf_L_warmup_dense(parsec_context_t *parsec,
+                       parsec_tiled_matrix_t *dcA,
+                       hicma_parsec_params_t *params)
+{
+    return potrf_L_warmup_run( parsec, dcA, params, 1, 1 );
 }
 
 %}

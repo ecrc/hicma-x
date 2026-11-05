@@ -287,7 +287,7 @@ int hicma_parsec_matrix_pre_analysis( parsec_context_t *parsec,
         }
         SYNC_TIME_START();
         //hicma_parsec_warmup_potrf(params->rank, params->uplo, 3872, parsec);
-        hicma_parsec_potrf_L_warmup( parsec, A, params, 1);
+        hicma_parsec_potrf_L_warmup_dense( parsec, A, params );
         SYNC_TIME_PRINT(params->rank, ("Warmup\n"));
     }
 

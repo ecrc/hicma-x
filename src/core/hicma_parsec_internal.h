@@ -2493,6 +2493,15 @@ int hicma_parsec_potrf_L_warmup(parsec_context_t *parsec,
                        int sym);
 
 /**
+ * @brief GPU warmup for the Cholesky factorization of dcA: like
+ * hicma_parsec_potrf_L_warmup( parsec, dcA, params, 1 ), but skips the
+ * low-rank tiles (per params->decisions, which must describe dcA)
+ */
+int hicma_parsec_potrf_L_warmup_dense(parsec_context_t *parsec,
+                       parsec_tiled_matrix_t *dcA,
+                       hicma_parsec_params_t *params);
+
+/**
  * @brief free memory
  *
  * @param [inout] dcA:      the data, already distributed and allocated
