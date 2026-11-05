@@ -65,10 +65,7 @@ BODY [ type = CUDA ]
     // Perform the datatype conversion on the tile
     // This function handles the actual conversion logic based on decisions
     //printf("111111 %d %d: %d\n", m, n, this_task->data._f_A.data_out->original->nb_elts);
-    uint16_t current_decision = decisions[n*descA->lmt+m];
-    if(params_tlr->accumulation_fp32 && DENSE_HP == decisions[n*descA->lmt+m]) {
-        current_decision = DENSE_SP;
-    }
+    uint16_t current_decision = hicma_parsec_trmm_storage_precision(params_tlr, decisions[n*descA->lmt+m]);
     convert_datatype_adaptive_unary_GPU(ws_gpu, cuda_device, gpu_task, cuda_stream, A, descA->mb, descA->nb, descA->mb, current_decision, convert_direction, enable_stochastic_rounding, &this_task->data._f_A.data_out->original->nb_elts);
     //printf("222222 %d %d: %d\n", m, n, this_task->data._f_A.data_out->original->nb_elts);
 }
@@ -79,10 +76,7 @@ BODY [ type = HIP ]
     // Perform the datatype conversion on the tile
     // This function handles the actual conversion logic based on decisions
     //printf("111111 %d %d: %d\n", m, n, this_task->data._f_A.data_out->original->nb_elts);
-    uint16_t current_decision = decisions[n*descA->lmt+m];
-    if(params_tlr->accumulation_fp32 && DENSE_HP == decisions[n*descA->lmt+m]) {
-        current_decision = DENSE_SP;
-    }
+    uint16_t current_decision = hicma_parsec_trmm_storage_precision(params_tlr, decisions[n*descA->lmt+m]);
     convert_datatype_adaptive_unary_GPU(ws_gpu, cuda_device, gpu_task, cuda_stream, A, descA->mb, descA->nb, descA->mb, current_decision, convert_direction, enable_stochastic_rounding, &this_task->data._f_A.data_out->original->nb_elts);
     //printf("222222 %d %d: %d\n", m, n, this_task->data._f_A.data_out->original->nb_elts);
 }
@@ -92,10 +86,7 @@ BODY
 {
     // Perform the datatype conversion on the tile
     // This function handles the actual conversion logic based on decisions
-    uint16_t current_decision = decisions[n*descA->lmt+m];
-    if(params_tlr->accumulation_fp32 && DENSE_HP == decisions[n*descA->lmt+m]) {
-        current_decision = DENSE_SP;
-    }
+    uint16_t current_decision = hicma_parsec_trmm_storage_precision(params_tlr, decisions[n*descA->lmt+m]);
     convert_datatype_adaptive_unary_CPU(A, descA->mb, descA->nb, descA->mb, current_decision, convert_direction, enable_stochastic_rounding, &this_task->data._f_A.data_out->original->nb_elts);
 }
 END
@@ -127,7 +118,7 @@ parsec_datatype_convert_dense_adaptive_New(hicma_parsec_data_t *data,
  
 #if !GPU_BUFFER_ONCE
     // Allocate GPU workspace buffers if not already allocated
-    gpu_temporay_buffer_init( data, A->mb, A->nb, storagemaxrank, params->kind_of_cholesky );
+    gpu_temporay_buffer_init( data, params, A->mb, A->nb, 0, params->kind_of_cholesky );
 #endif 
 #endif
     

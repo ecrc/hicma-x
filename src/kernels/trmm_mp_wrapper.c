@@ -198,6 +198,9 @@ hicma_parsec_trmm_Destruct( parsec_taskpool_t *tp )
     parsec_private_memory_fini( otrmm->_g_p_work_full_dp );
     parsec_private_memory_fini( otrmm->_g_p_work_full_sp );
     parsec_private_memory_fini( otrmm->_g_p_work_full_hp );
+    free( otrmm->_g_p_work_full_dp );
+    free( otrmm->_g_p_work_full_sp );
+    free( otrmm->_g_p_work_full_hp );
 
     parsec_taskpool_free(tp);
 }

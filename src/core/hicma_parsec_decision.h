@@ -427,7 +427,24 @@ float hicma_parsec_matrix_ssum(parsec_context_t *parsec,
 void hicma_parsec_get_precision_tile(hicma_parsec_params_t *params_tlr,
         hicma_parsec_decision_enum_t *new_decision, double norm_tile, int m, int n);
 
-int decision_datatype_tile_trmm_mp_LLN(uint16_t *decisions, int m, int n, int NT);
+/**
+ * @brief Storage precision of a TRMM tile with the given precision decision
+ *
+ * With --accumulation_fp32, a tile whose decision is FP16 is stored in FP32:
+ * its GEMMs take FP16 operands and accumulate into an FP32 C. Otherwise the
+ * storage precision is the decision.
+ */
+static inline uint16_t hicma_parsec_trmm_storage_precision(const hicma_parsec_params_t *params,
+                                                           uint16_t decision)
+{
+    return (params->accumulation_fp32 && DENSE_HP == decision) ? DENSE_SP : decision;
+}
+
+/**
+ * @brief Arena index of TRMM tile (m, n), from its storage precision
+ */
+int decision_datatype_tile_trmm_mp_LLN(const hicma_parsec_params_t *params,
+                                       const uint16_t *decisions, int m, int n, int NT);
 
 #ifdef __cplusplus
 }

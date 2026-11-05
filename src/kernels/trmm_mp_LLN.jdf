@@ -83,8 +83,8 @@ read_A(m, k) [profile = off]
   : descA((descB->mt-1)-m, k)
 
   READ  A    <- descA((descB->mt-1)-m, k) 
-             -> (k == (descB->mt-1-m)) ? A dtrmm(m, 0..(descB->nt-1))    [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr->decisions, (descB->mt-1)-m, k, descA->lmt)]; %} ]
-             -> (k != (descB->mt-1-m)) ? A dgemm(m, 0..(descB->nt-1), k) [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr->decisions, (descB->mt-1)-m, k, descA->lmt)]; %} ]
+             -> (k == (descB->mt-1-m)) ? A dtrmm(m, 0..(descB->nt-1))    [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr, params_tlr->decisions, (descB->mt-1)-m, k, descA->lmt)]; %} ]
+             -> (k != (descB->mt-1-m)) ? A dgemm(m, 0..(descB->nt-1), k) [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr, params_tlr->decisions, (descB->mt-1)-m, k, descA->lmt)]; %} ]
 
   /* Each C chain visits k = i-1, ..., 0, where i = descB->mt-1-m.
    * Leave the diagonal and the first trmm_window off-diagonal tiles ready;
@@ -117,7 +117,7 @@ read_B(n, k) [profile = off]
   : descB(k,n)
 
   READ  B    <- descB(k,n)
-             -> B dgemm(0..(descB->mt-k-2), n, k)  [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr->decisionsB, k, n, descB->lmt)]; %} ] 
+             -> B dgemm(0..(descB->mt-k-2), n, k)  [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr, params_tlr->decisionsB, k, n, descB->lmt)]; %} ] 
 
 BODY
 {
@@ -136,9 +136,9 @@ dtrmm(m, n) [ flops = inline_c %{ return FLOPS_DTRMM(side, CLEAN_MB(descB, m), C
   /* Locality */
   : descB((descB->mt-1)-m,n)
 
-  READ  A    <- A read_A(m, descB->mt-1-m)                      [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr->decisions, (descB->mt-1)-m, (descB->mt-1)-m, descA->lmt)]; %} ]
+  READ  A    <- A read_A(m, descB->mt-1-m)                      [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr, params_tlr->decisions, (descB->mt-1)-m, (descB->mt-1)-m, descA->lmt)]; %} ]
   RW    B    <- descB((descB->mt-1)-m,n)                        
-             -> (m <  (descB->mt-1)) ? C dgemm(m, n, descB->mt-m-2) [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr->decisionsB, (descB->mt-1)-m, n, descB->lmt)]; %} ]
+             -> (m <  (descB->mt-1)) ? C dgemm(m, n, descB->mt-m-2) [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr, params_tlr->decisionsB, (descB->mt-1)-m, n, descB->lmt)]; %} ]
              -> (m == (descB->mt-1)) ? descB((descB->mt-1)-m,n) 
 
   /* Preserve the original B(i,n) until every lower row has consumed it. */
@@ -228,12 +228,12 @@ dgemm(m, n, k) [ flops = inline_c %{ return FLOPS_DGEMM(CLEAN_MB(descB, m), CLEA
   /* Locality */
   : descB((descB->mt-1)-m,n)
 
-  READ  A    <- A read_A(m, k)                                      [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr->decisions, (descB->mt-1)-m, k, descA->lmt)]; %} ]
-  READ  B    <- B read_B(n, k)                                      [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr->decisionsB, k, n, descB->lmt)]; %} ] 
+  READ  A    <- A read_A(m, k)                                      [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr, params_tlr->decisions, (descB->mt-1)-m, k, descA->lmt)]; %} ]
+  READ  B    <- B read_B(n, k)                                      [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr, params_tlr->decisionsB, k, n, descB->lmt)]; %} ] 
   /* Consume the nearest preceding B row first, releasing its overwrite
    * dependency early so different output rows can progress concurrently.
    * Keep a single writer for C; descending k changes the summation order. */
-  RW    C    <- ((k+m) == (descB->mt-2)) ? B dtrmm(m, n)             [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr->decisionsB, (descB->mt-1)-m, n, descB->lmt)]; %} ]
+  RW    C    <- ((k+m) == (descB->mt-2)) ? B dtrmm(m, n)             [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr, params_tlr->decisionsB, (descB->mt-1)-m, n, descB->lmt)]; %} ]
              <- ((k+m) <  (descB->mt-2)) ? C dgemm(m, n, k+1)
              -> (k >  0) ? C dgemm(m, n, k-1)
              -> (k == 0) ? descB((descB->mt-1)-m,n)
