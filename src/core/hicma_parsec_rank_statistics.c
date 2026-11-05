@@ -161,6 +161,13 @@ void hicma_parsec_rank_stat(parsec_context_t* parsec, char* strid,
     int band_size_dense = params->band_size_dense;
     int maxrank = params->maxrank;
 
+    if( band_size_dense >= NT ) {
+        *minrk = 0;
+        *maxrk = 0;
+        *avgrk = 0.0;
+        return;
+    }
+
     /* Gather rank information from all processes to a global array */
     parsec_rank_gather(parsec, dcAr, params->rank_array, band_size_dense);
 

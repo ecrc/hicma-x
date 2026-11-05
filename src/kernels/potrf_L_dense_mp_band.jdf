@@ -208,6 +208,8 @@ BODY [type=RECURSIVE]
     /* Create recursive taskpool for smaller subproblem */
     parsec_dpotrf = dplasma_dpotrf_New(params_tlr->uplo, (parsec_tiled_matrix_t *)small_descT, &this_task->locals.info.value);
 
+    params_tlr->decisions_storage_final[k*descA->lmt+k] = DENSE_DP;
+
     /* Execute recursive call asynchronously */
     parsec_recursivecall((parsec_task_t*)this_task,
             parsec_dpotrf, dplasma_dpotrf_Destruct,
@@ -327,7 +329,9 @@ BODY [type=CUDA]
 {
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
     /* GPU implementation: Delegate to GPU-specific triangular solve */
-    hicma_parsec_core_trsm_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream, T, C, m, k );
+    parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, ws_gpu);
+    cublasSetStream( stream_found->handle_cublas, cuda_stream->cuda_stream );
+    hicma_parsec_core_trsm_gpu( descA, params_tlr, stream_found, cuda_device, gpu_task, cuda_stream, T, C, m, k );
 #endif
 }
 END

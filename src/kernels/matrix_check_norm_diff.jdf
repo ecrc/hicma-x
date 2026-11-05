@@ -79,7 +79,7 @@ BODY
     } else if( DENSE_HP == params_tlr->decisions[n*params_tlr->NT+m] ) {
         // Half precision: compare with half precision matrix
         void *tmp_S = parsec_private_memory_pop(s_work);
-        hicma_parsec_convert_2h_bit( params_tlr, D, tmp_S, m, n, descA->mb, descA->nb );
+        hicma_parsec_convert_2h_bit(D, tmp_S, descA->mb, descA->nb, params_tlr->decisions[n*descA->lmt+m]);
         for(int j = 0; j < descA->nb; j++) {
             for(int i = 0; i < descA->mb; i++) {
                 current_value = ((double *)tmp_D)[j*descA->mb+i] - (float)((float *)tmp_S)[j*descA->mb+i];

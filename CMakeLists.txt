@@ -197,17 +197,22 @@ message(STATUS "HCORE configured from submodule")
 # STARSH is now built as part of the project via submodule
 # The starsh library target is available after add_subdirectory(stars-h)
 
-# Check if GSL is needed by STARSH
-find_library(_STARSH_LIB NAME starsh PATHS ${CMAKE_BINARY_DIR}/stars-h/src)
-if(_STARSH_LIB AND EXISTS "${_STARSH_LIB}")
-    execute_process(COMMAND nm ${_STARSH_LIB} COMMAND grep -q gsl RESULT_VARIABLE GSL_IN_STARSH)
-    if(${GSL_IN_STARSH} EQUAL 0)
+# STARSH exposes its GSL option through the CMake cache. Use that option
+# directly instead of inspecting a previously-built archive: on a clean build
+# (or when GSL is newly enabled) the archive does not exist yet or is stale.
+# Mirror STARSH's own logic (option ON *and* package found): when GSL is
+# missing, STARSH only turns GSL off in its own directory scope, so the cached
+# value seen here can still be ON and a REQUIRED lookup would abort configure.
+if(GSL)
+    find_package(GSL)
+    if(GSL_FOUND)
         message(STATUS "STARSH depends on GSL. Adding it to dependency list")
-        find_package(GSL REQUIRED)
         add_definitions(-DGSL)
         include_directories(${GSL_INCLUDE_DIRS})
         message(STATUS "GSL support enabled")
         list(APPEND HCORE_STARSH_LIB ${GSL_LIBRARIES})
+    else()
+        message(STATUS "GSL not found: building without GSL support")
     endif()
 endif()
 
@@ -215,12 +220,45 @@ endif()
 list(APPEND HCORE_STARSH_LIB starsh)
 message(STATUS "STARSH configured from submodule")
 
-# Sanitizer configuration
+# Sanitizer configuration.
 if(ENABLE_SANITIZER)
+    # Keep compile-time ASan instrumentation enabled.
     add_definitions(-DENABLE_SANITIZER)
     add_compile_options(-fsanitize=address -fno-omit-frame-pointer -Wall)
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
-    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -fsanitize=address")
+
+    # Portable path: prefer compiler-driven sanitizer linking.
+    # Do not pre-set the result variable: check_c_source_compiles() skips the
+    # probe whenever the variable is already defined.
+    cmake_push_check_state()
+    string(APPEND CMAKE_REQUIRED_FLAGS " -fsanitize=address -fno-omit-frame-pointer")
+    list(APPEND CMAKE_REQUIRED_LINK_OPTIONS "-fsanitize=address")
+    check_c_source_compiles("int main(void) { return 0; }" HICMA_ASAN_LINKS_WITH_COMPILER_FLAGS)
+    cmake_pop_check_state()
+
+    if(HICMA_ASAN_LINKS_WITH_COMPILER_FLAGS)
+        add_link_options(-fsanitize=address)
+        message(STATUS "AddressSanitizer runtime: compiler-managed (-fsanitize=address)")
+    else()
+        # Fallback path for environments with broken/missing compiler runtime resolution.
+        set(HICMA_ASAN_RUNTIME_LIBRARY "" CACHE FILEPATH
+            "Optional absolute path to libasan runtime (e.g. /path/to/libasan.so.8)")
+        if(HICMA_ASAN_RUNTIME_LIBRARY)
+            if(EXISTS "${HICMA_ASAN_RUNTIME_LIBRARY}")
+                add_link_options("-Wl,--no-as-needed" "${HICMA_ASAN_RUNTIME_LIBRARY}")
+                message(STATUS "AddressSanitizer runtime: ${HICMA_ASAN_RUNTIME_LIBRARY}")
+            else()
+                message(FATAL_ERROR
+                    "HICMA_ASAN_RUNTIME_LIBRARY is set but does not exist: "
+                    "${HICMA_ASAN_RUNTIME_LIBRARY}")
+            endif()
+        else()
+            message(FATAL_ERROR
+                "ENABLE_SANITIZER is ON, but linker probe with -fsanitize=address failed.\n"
+                "Provide -DHICMA_ASAN_RUNTIME_LIBRARY=/absolute/path/to/libasan.so "
+                "or configure with -DENABLE_SANITIZER=OFF.")
+        endif()
+    endif()
+
     message(STATUS "AddressSanitizer enabled")
 endif()
 
@@ -369,6 +407,13 @@ message(STATUS "Shared libraries: ${BUILD_SHARED_LIBS}")
 message(STATUS "C11 support: ${SUPPORT_C11}")
 message(STATUS "CUDA support: ${HICMA_PARSEC_HAVE_CUDA}")
 message(STATUS "HIP support: ${HICMA_PARSEC_HAVE_HIP}")
+# FP8 (E4M3) GEMMs are built with CUDA; at runtime kinds 8, 9 and 10 use them
+# when every GPU has compute capability >= 8.9, unless --fp8 0
+if(HICMA_PARSEC_HAVE_CUDA)
+    message(STATUS "FP8 GEMMs: ON (kinds 8-10, when every GPU has compute capability >= 8.9)")
+else(HICMA_PARSEC_HAVE_CUDA)
+    message(STATUS "FP8 GEMMs: OFF (needs CUDA)")
+endif(HICMA_PARSEC_HAVE_CUDA)
 message(STATUS "Fugaku mode: ${ON_FUGAKU}")
 message(STATUS "AddressSanitizer: ${ENABLE_SANITIZER}")
 message(STATUS "CUTLASS support: ${ENABLE_CUTLASS}")

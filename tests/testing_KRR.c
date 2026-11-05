@@ -90,7 +90,11 @@ int main(int argc, char **argv)
     hicma_parsec_matrix_analysis_t analysis;
 
     /* Initialize HiCMA and PaRSEC */
-    parsec_context_t* parsec = hicma_parsec_init(argc, argv, &params, &params_kernel, &data); 
+    parsec_context_t* parsec = hicma_parsec_init(argc, argv, &params, &params_kernel, &data);
+    if( NULL == parsec ) {
+        fprintf(stderr, "Failed to initialize HiCMA PaRSEC\n");
+        return EXIT_FAILURE;
+    }
 
     /* Select appropriate matrix based on configuration */
     parsec_tiled_matrix_t *AA = (parsec_tiled_matrix_t *)&data.dcA;

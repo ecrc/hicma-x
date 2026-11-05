@@ -319,7 +319,11 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         {"band_dist", "If 0: normal two_dim_block_cyclic; if >0: with band distribution", 0, &params->band_size_dist},
         {"band_p", "Row process grid on band, default 1", 0, &params->band_p},
         {"adaptive_decision", "0: disabled; ~0: adaptive_decision of each tile's format using norm approach", 0, &params->adaptive_decision},
+        {"adaptive_decision_runtime", "0: disabled; ~0: adaptive_decision of each tile's format using norm approach during runtime", 0, &params->adaptive_decision_runtime},
         {"adaptive_memory", "0: memory allocated once; 1: memory reallocated per tile after precision decision", 0, &params->adaptive_memory},
+        {"fp8", "FP8 GEMMs in kinds 8, 9 and 10: 1 (default) use them when every GPU has compute capability >= 8.9; 0: never (those tiles use HP)", 0, &params->fp8},
+        {"fp8_scaling", "FP8 GEMMs: 1 (default) scale each operand tile by a power of two from its max entry; 0: unscaled", 0, &params->fp8_scaling},
+        {"arena_pinned_memory", "Use pinned host memory for taskpool arenas when GPUs are enabled", 3, &params->arena_pinned_memory},
         {"adaptive_maxrank", "In -D 6, adaptively set the maxrank used in Cholesky based on the generation", 0, &params->adaptive_maxrank},
         {"kind_of_cholesky", "Cholesky type", 0, &params->kind_of_cholesky},
         {"mesh_file", "Path to mesh file", 2, &params->mesh_file},
@@ -388,6 +392,7 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         printf("  %-2d SPARSE_TLR_DP_GENERAL - Sparse TLR double precision general (sparse + low-rank)\n", SPARSE_TLR_DP_GENERAL);
         printf("  %-2d SPARSE_TLR_DP_BALANCE - Sparse TLR double precision balanced (workload-balanced sparse)\n", SPARSE_TLR_DP_BALANCE);
         printf("  %-2d DENSE_MP_GPU_FP8      - Dense mixed precision GPU FP8 (FP8 precision on GPU)\n", DENSE_MP_GPU_FP8);
+        printf("  %-2d DENSE_MP_GPU_FP8_ADAPTIVE      - Dense mixed precision GPU FP8 adaptively during runtime (FP8 precision on GPU)\n", DENSE_MP_GPU_FP8_ADAPTIVE);
         printf("  %-2d DENSE_MP_GPU_FP8_SP   - Dense mixed precision GPU FP8 single (FP8 + SP on GPU)\n", DENSE_MP_GPU_FP8_SP);
         
         printf("\nSpecial options:\n");
@@ -477,6 +482,48 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
     return 0;
 }
 
+/*
+ * Per-worker statistics counters (nb_gemms, nb_datatype_conversions).
+ * Layout of one row: [0, cores) for CPU threads indexed by es->th_id, then
+ * [cores, cores + gpus*PARSEC_GPU_MAX_STREAMS) for GPU execution streams
+ * (see hicma_parsec_gpu_counter_id). CPU bodies can run in GPU builds too,
+ * so both ranges must exist; giving each worker its own slot keeps the
+ * increments race free without atomics.
+ */
+static void hicma_parsec_counters_allocate(hicma_parsec_params_t *params)
+{
+    params->counter_gpu_offset = params->cores;
+    params->counter_stride = params->cores;
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    if(params->gpus > 0) {
+        params->counter_stride += params->gpus * PARSEC_GPU_MAX_STREAMS;
+    }
+#endif
+
+    params->nb_gemms = (uint64_t *)calloc((NB_DECISIONS+1)*params->counter_stride, sizeof(uint64_t));
+    params->nb_datatype_conversions = (uint64_t *)calloc(params->counter_stride, sizeof(uint64_t));
+}
+
+static void hicma_parsec_free_kernel_time_intervals(hicma_kernel_time_interval_t **intervals, int count)
+{
+    int i;
+    hicma_kernel_time_interval_t *interval, *next_interval;
+
+    if(NULL == intervals) {
+        return;
+    }
+
+    for(i = 0; i < count; i++) {
+        interval = intervals[i];
+        while(NULL != interval) {
+            next_interval = interval->next;
+            free(interval);
+            interval = next_interval;
+        }
+    }
+    free(intervals);
+}
+
 /**
  * @brief Parse command line arguments and initialize MPI
  * 
@@ -519,6 +566,41 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     // Get MPI communicator information for process grid setup
     MPI_Comm_size(MPI_COMM_WORLD, &params->nodes);
     MPI_Comm_rank(MPI_COMM_WORLD, &params->rank);
+#if defined(OMPI_MAJOR_VERSION) && OMPI_MAJOR_VERSION == 5
+    /* Open MPI 5 / UCX can defer PMIx worker-address lookups until the
+     * first send to a peer. On Vista these lookups intermittently fail
+     * with PMIX_ERR_BAD_PARAM when first triggered by PaRSEC workers.
+     * Connect every peer here, before starting those workers. A private
+     * communicator keeps startup messages separate from caller traffic;
+     * one byte ensures the transport actually establishes the endpoint.
+     * This is P-1 rounds and builds all-to-all endpoints, which gets costly
+     * at large scale where the workaround is not needed: set
+     * HICMA_MPI_PRECONNECT=0 to skip it (rank 0's setting is used everywhere
+     * so ranks cannot disagree and deadlock).
+     */
+    int mpi_preconnect = 1;
+    if (params->nodes > 1) {
+        const char *preconnect_env = getenv("HICMA_MPI_PRECONNECT");
+        if (NULL != preconnect_env && 0 == strcmp(preconnect_env, "0")) {
+            mpi_preconnect = 0;
+        }
+        MPI_Bcast(&mpi_preconnect, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    }
+    if (params->nodes > 1 && mpi_preconnect) {
+        MPI_Comm startup_comm;
+        unsigned char send_byte = 0, recv_byte;
+        MPI_Comm_dup(MPI_COMM_WORLD, &startup_comm);
+        for (int step = 1; step < params->nodes; ++step) {
+            int destination = (params->rank + step) % params->nodes;
+            int source = (params->rank - step + params->nodes) % params->nodes;
+            MPI_Sendrecv(&send_byte, 1, MPI_BYTE, destination, 0,
+                         &recv_byte, 1, MPI_BYTE, source, 0,
+                         startup_comm, MPI_STATUS_IGNORE);
+        }
+        MPI_Barrier(startup_comm);
+        MPI_Comm_free(&startup_comm);
+    }
+#endif
 #else
     // Single process execution - no MPI available
     params->nodes = 1;
@@ -540,6 +622,16 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     // Hardware configuration - these control resource utilization
     params->cores = -1;         // Number of cores per node (-1 = auto-detect from system)
     params->gpus  = 0;          // Number of GPUs to use (0 = CPU only, >0 enables GPU acceleration)
+    params->fp8 = 1;                 // Use FP8 GEMMs where the GPUs support them (0=never)
+    params->fp8_enabled = 0;         // Set in setup_parsec() from --fp8, the kind and the GPUs' compute capability
+    params->kernel_time_cpu = NULL;
+    params->kernel_time_gpu = NULL;
+    params->kernel_time_gpu_event = NULL;
+    params->kernel_time_cpu_intervals = NULL;
+    params->kernel_time_gpu_intervals = NULL;
+    params->kernel_time_cpu_count = 0;
+    params->kernel_time_gpu_count = 0;
+    params->kernel_time_gpu_event_count = 0;
     
     // Band size configuration for different precision types
     // Band size controls the width of the dense diagonal band in the matrix
@@ -553,8 +645,11 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     
     // Adaptive computation settings - control dynamic behavior
     params->adaptive_decision = 0;          // Disable adaptive tile format decision (0=disabled, >0=enabled)
+    params->adaptive_decision_runtime = 0;  // Disable adaptive tile format decision during runtime (0=disabled, >0=enabled)
+    params->fp8_scaling = 1;                // Scale FP8 GEMM operands per tile (0=unscaled)
     // TODO: Need to test the overhead and restructure memory allocation strategy
     params->adaptive_memory = 0;            // Enable adaptive memory allocation per tile (1=enabled, 0=disabled)
+    params->arena_pinned_memory = 0;         // Use the default arena allocator unless explicitly enabled
     params->lookahead = -1;                 // Lookahead depth (auto-tuned based on band_size_dense)
     
     // Problem configuration - define the computational problem
@@ -645,7 +740,7 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     free(value);
 
     // Enable GPU debugging output if verbose mode is enabled
-    if(params->gpus > 0 && params->verbose > 1) {
+    if(params->gpus > 0 && params->verbose > 5) {
         parsec_setenv_mca_param( "device_show_capabilities", "1", &environ );
         parsec_setenv_mca_param( "device_show_statistics", "1", &environ );
     }
@@ -748,6 +843,7 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
             && !(params->kind_of_cholesky == DENSE_TLR_MP
                 || params->kind_of_cholesky == DENSE_MP_GPU
                 || params->kind_of_cholesky == DENSE_MP_GPU_FP8
+                || params->kind_of_cholesky == DENSE_MP_GPU_FP8_ADAPTIVE
                 || params->kind_of_cholesky == DENSE_MP_GPU_FP8_SP
                 || params->kind_of_cholesky == DENSE_SP_HP_BAND)
         ) {
@@ -892,6 +988,23 @@ parsec_context_t* setup_parsec(int argc, char **argv, hicma_parsec_params_t * pa
         // Gather time in JDF (Job Data Flow) execution
         params->gather_time = (double *)calloc(params->cores, sizeof(double));
         params->gather_time_tmp = (double *)calloc(params->cores, sizeof(double));
+        params->kernel_time_cpu_count = params->cores;
+        params->kernel_time_cpu = (double *)calloc(params->kernel_time_cpu_count, sizeof(double));
+        params->kernel_time_cpu_intervals = (hicma_kernel_time_interval_t **)calloc(params->kernel_time_cpu_count, sizeof(hicma_kernel_time_interval_t *));
+        /* Indexed by PaRSEC device_index: 0 = CPU, 1 = recursive, GPUs start at 2. */
+        params->kernel_time_gpu_count = (params->gpus > 0) ? params->gpus + 2 : 0;
+        params->kernel_time_gpu_event_count = params->kernel_time_gpu_count;
+        if(params->kernel_time_gpu_count > 0) {
+            params->kernel_time_gpu = (double *)calloc(params->kernel_time_gpu_count, sizeof(double));
+            params->kernel_time_gpu_event = (double *)calloc(params->kernel_time_gpu_event_count, sizeof(double));
+            params->kernel_time_gpu_intervals = (hicma_kernel_time_interval_t **)calloc(params->kernel_time_gpu_count, sizeof(hicma_kernel_time_interval_t *));
+        } else {
+            params->kernel_time_gpu = NULL;
+            params->kernel_time_gpu_event = NULL;
+            params->kernel_time_gpu_intervals = NULL;
+        }
+
+        hicma_parsec_counters_allocate(params);
     }
 
     // Print parameter summary for verification
@@ -936,9 +1049,58 @@ parsec_context_t* setup_parsec(int argc, char **argv, hicma_parsec_params_t * pa
     }
 
 #endif
+    if(params->verbose > 1 && nb_gpus_check !=  params->gpus) {
+        fprintf(stderr, RED "Rank %d: Update nb_gpus from input %d to real %d\n" RESET, params->rank, params->gpus, hicma_parsec_min(nb_gpus_check, params->gpus));
+    }
     params->gpus = hicma_parsec_min(nb_gpus_check, params->gpus);
-    if(params->verbose > 1) {
-        fprintf(stderr, RED "Rank %d: Update nb_gpus from input %d to real %d\n" RESET, params->rank, params->gpus, params->gpus);
+
+    /* FP8 GEMMs go through cuBLASLt E4M3, which needs compute capability
+     * >= 8.9 (Ada/Hopper and newer). On V100/A100 the matmul fails with
+     * CUBLAS_STATUS_ARCH_MISMATCH, so tiles that would be FP8 use HP instead,
+     * as they do with --fp8 0, without GPUs, and in kinds other than 8-10.
+     * Agree across ranks: every rank computes the same decision arrays. */
+    int fp8_gpus_ok = HAVE_FP8 && params->gpus > 0;
+#if HAVE_FP8 && defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+    for( int d = 0; d < params->gpus && fp8_gpus_ok; d++ ) {
+        struct cudaDeviceProp prop;
+        if( cudaSuccess != cudaGetDeviceProperties(&prop, d)
+            || prop.major * 10 + prop.minor < 89 ) {
+            fp8_gpus_ok = 0;
+        }
+    }
+#endif
+    MPI_Allreduce(MPI_IN_PLACE, &fp8_gpus_ok, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+    /* Only kinds 8, 9 and 10 run FP8 tiles; the precision decisions
+     * (hicma_parsec_get_precision_tile, hicma_parsec_decisions_send_analysis)
+     * are shared by every kind, so keep FP8 off for the others */
+    int fp8_kind = DENSE_MP_GPU_FP8 == params->kind_of_cholesky
+                   || DENSE_MP_GPU_FP8_SP == params->kind_of_cholesky
+                   || DENSE_MP_GPU_FP8_ADAPTIVE == params->kind_of_cholesky;
+    params->fp8_enabled = fp8_gpus_ok && params->fp8 && fp8_kind;
+    /* Every CUDA build has FP8 GEMMs: on V100/A100 warn only for kinds 8 and
+     * 9, which exist to use FP8 (hicma_parsec_params_print_initial prints
+     * fp8_enabled for every kind) */
+    if( 0 == params->rank && HAVE_FP8 && params->fp8 && params->gpus > 0 && !fp8_gpus_ok
+        && (DENSE_MP_GPU_FP8 == params->kind_of_cholesky
+            || DENSE_MP_GPU_FP8_SP == params->kind_of_cholesky) ) {
+        fprintf(stderr, RED "FP8 GEMM requires compute capability >= 8.9 on every GPU: "
+                "tiles that would use FP8 use HP instead\n" RESET);
+    }
+    /* Without FP8 GEMMs the static dense band has no FP8 part: those tiles
+     * are HP (hicma_parsec_decision_init) */
+    if( !params->fp8_enabled ) {
+        params->band_size_dense_hp = params->band_size_dense;
+    }
+
+    /* With adaptive_memory, convert_d2s gives SP tiles an SP-sized host buffer.
+     * Only the GPU runtime GEMM reallocates before promoting C to DP; the CPU
+     * runtime GEMM converts in place and would write past the buffer. */
+    if( params->adaptive_decision_runtime && params->adaptive_memory && 0 == params->gpus ) {
+        if( 0 == params->rank ) {
+            fprintf(stderr, RED "adaptive_decision_runtime on CPU does not support adaptive_memory: "
+                    "setting adaptive_memory= 0\n" RESET);
+        }
+        params->adaptive_memory = 0;
     }
 
     params->gpu_cols = hicma_parsec_process_grid_calculation( params->gpus );
@@ -1075,6 +1237,10 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
     params->nb_low_rank_dp = 0.0;     // Number of double precision low-rank tiles
     params->nb_low_rank_sp = 0.0;     // Number of single precision low-rank tiles
 
+    if( params->cores > 0 ) {
+        hicma_parsec_counters_allocate(params);
+    }
+
     /* ===========================================
      * Initialize performance tracking
      * =========================================== */
@@ -1102,6 +1268,10 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
     
     // Precision decision arrays for different matrices
     params->decisions = (uint16_t *)calloc(params->MT * params->NT, sizeof(uint16_t));      // Main matrix decisions
+    params->decisions_gemm_last = (uint16_t *)calloc(params->MT * params->NT, sizeof(uint16_t));
+    params->decisions_gemm_first = (uint16_t *)calloc(params->MT * params->NT, sizeof(uint16_t));
+    params->tile_host_bytes = (size_t *)calloc((size_t)params->MT * params->NT, sizeof(size_t));
+    params->decisions_storage_final = (uint16_t *)calloc(params->MT * params->NT, sizeof(uint16_t));
 
     // Data type conversion decisions
     params->decisions_send = (uint16_t *)calloc(params->NT * params->NT, sizeof(uint16_t));
@@ -1187,6 +1357,21 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
     if( params->cores > 0 ) {
         params->gather_time = (double *)calloc(params->cores, sizeof(double));
         params->gather_time_tmp = (double *)calloc(params->cores, sizeof(double));
+        params->kernel_time_cpu_count = params->cores;
+        params->kernel_time_cpu = (double *)calloc(params->kernel_time_cpu_count, sizeof(double));
+        params->kernel_time_cpu_intervals = (hicma_kernel_time_interval_t **)calloc(params->kernel_time_cpu_count, sizeof(hicma_kernel_time_interval_t *));
+        /* Indexed by PaRSEC device_index: 0 = CPU, 1 = recursive, GPUs start at 2. */
+        params->kernel_time_gpu_count = (params->gpus > 0) ? params->gpus + 2 : 0;
+        params->kernel_time_gpu_event_count = params->kernel_time_gpu_count;
+        if(params->kernel_time_gpu_count > 0) {
+            params->kernel_time_gpu = (double *)calloc(params->kernel_time_gpu_count, sizeof(double));
+            params->kernel_time_gpu_event = (double *)calloc(params->kernel_time_gpu_event_count, sizeof(double));
+            params->kernel_time_gpu_intervals = (hicma_kernel_time_interval_t **)calloc(params->kernel_time_gpu_count, sizeof(hicma_kernel_time_interval_t *));
+        } else {
+            params->kernel_time_gpu = NULL;
+            params->kernel_time_gpu_event = NULL;
+            params->kernel_time_gpu_intervals = NULL;
+        }
     }
     params->critical_path_time = 0.0;
     params->potrf_time = 0.0;
@@ -1250,11 +1435,12 @@ void hicma_parsec_params_print_initial( hicma_parsec_params_t *params )
         printf("nodes=%d P=%d Q=%d cores=%d nb_gpus= %d gpu_type= %d verbose= %d\n", params->nodes, params->P, params->Q, params->cores, params->gpus, params->gpu_type, params->verbose);
         printf("kind_of_problem=%d %s\n", params->kind_of_problem, params->str_problem[params->kind_of_problem]);
         printf("fixedacc=%.1e add_diag=%g fixed_rk=%d wave_k=%g\n", params->fixedacc, params->add_diag, params->fixedrk, params->wave_k);
-        printf("send_full_tile=%d lookahead= %d adaptive_decision= %d adaptive_memory= %d\n", params->send_full_tile, params->lookahead, params->adaptive_decision, params->adaptive_memory);
+        printf("send_full_tile=%d lookahead= %d adaptive_decision= %d adaptive_decision_runtime= %d adaptive_memory= %d arena_pinned_memory= %d\n", params->send_full_tile, params->lookahead, params->adaptive_decision, params->adaptive_decision_runtime, params->adaptive_memory, params->arena_pinned_memory);
         printf("band_size_dist= %d band_size_dense_dp:%d band_size_dense_sp:%d band_size_dense_hp: %d band_size_dense: %d band_size_low_rank_dp:%d NT= %d band_p= %d\n", params->band_size_dist, params->band_size_dense_dp, params->band_size_dense_sp, params->band_size_dense_hp, params->band_size_dense, params->band_size_low_rank_dp, params->NT, params->band_p);
         printf("band_size_auto_tuning_termination= %lf band_size_dense_gpu_memory_max= %d exe_file_path= %s\n", params->band_size_auto_tuning_termination, params->band_size_dense_gpu_memory_max, params->exe_file_path);
         printf("max_rank=%d gen=%d comp=%d\n", params->maxrank, params->genmaxrank, params->compmaxrank);
         printf("auto_band=%d sparse=%d kind_of_cholesky=%d tensor_gemm=%d datatype_convert=%d left_looking=%d\n", params->auto_band, params->sparse, params->kind_of_cholesky, params->tensor_gemm, params->datatype_convert, params->left_looking);
+        printf("fp8= %d fp8_enabled= %d fp8_scaling= %d\n", params->fp8, params->fp8_enabled, params->fp8_scaling);
         if( 6 == params->kind_of_problem) printf("mesh_file=%s, rbf_kernel=%d, numobj=%d, order=%d, radius=%f, density=%f\n", params->mesh_file, params->rbf_kernel, params->numobj, params->order, params->radius, params->density);
         printf("time_slots=%d sigma=%lf beta=%lf nu=%lf beta_time=%lf nu_time=%lf nonsep_param=%lf noise= %lf\n", params->time_slots, params->sigma, params->beta, params->nu, params->beta_time, params->nu_time, params->nonsep_param, params->noise);
         printf("numobj/L= %d gpu_rows= %d gpu_cols= %d\n\n", params->numobj, params->gpu_rows, params->gpu_cols);
@@ -1311,7 +1497,9 @@ void hicma_parsec_params_print_final( int argc, char **argv,
         printf("%d %lf %lf %lf %lf %lf %lf %lf    ", params->time_slots, params->sigma, params->beta, params->nu, params->beta_time, params->nu_time, params->nonsep_param, params->noise);
         printf("%e %d %d %e %e %e %e ", params->result_accuracy, params->left_looking, params->gpu_type, params->norm_global_diff, params->fixedacc * params->norm_global, params->log_det_dp, params->log_det_mp);
         printf("%lf %lf %lf %d  ", params->time_decision_kernel, params->time_decision_sender, params->time_syrk_app, params->numobj);
-        printf("%d %d %d %g %g  ", params->order, params->nsnp, params->rbf_kernel, params->radius, params->density);
+        printf("%d %d %d %g %g %d ", params->order, params->nsnp, params->rbf_kernel, params->radius, params->density, params->adaptive_decision_runtime);
+        printf("%lu %lu %lu %lu %lu %lu %lu ", params->nb_gemms[DENSE_DP*params->counter_stride], params->nb_gemms[DENSE_SP*params->counter_stride], params->nb_gemms[DENSE_HP*params->counter_stride], params->nb_gemms[LOW_RANK_DP*params->counter_stride], params->nb_gemms[LOW_RANK_SP*params->counter_stride], params->nb_gemms[DENSE_FP8*params->counter_stride], params->nb_datatype_conversions[0]);
+        printf("%d ", params->arena_pinned_memory);
 #ifdef GITHASH
         printf("%s ", xstr(GITHASH));
 #else
@@ -1572,6 +1760,13 @@ int hicma_parsec_kernel_init( starsh_params_t *params_kernel, hicma_parsec_param
             gsl_set_error_handler_off();
 
             break;
+#else
+        case 8: case 9: case 10: case 11: case 12: case 13:
+            fprintf(stderr,
+                    "Problem type %d (%s) requires GSL support, but this build was configured without GSL.\n"
+                    "Load GSL (for example, 'module load gsl'), reconfigure, and rebuild.\n",
+                    params->kind_of_problem, str_problem[params->kind_of_problem]);
+            return -1;
 #endif
 
         case 14:
@@ -1625,7 +1820,29 @@ int hicma_parsec_params_check( hicma_parsec_params_t *params )
      * Basic parameter validation
      * =========================================== */
 
-    if(GENOMICS || DEBUG_INFO || params->check) {
+    // If adaptive decision during runtime
+    if( params->adaptive_decision_runtime != 0 ) {
+        /* The runtime-decision GPU GEMM converts/copies operands with C's edge
+         * sizes and assumes ld == rows, which is only right for full tiles. */
+        if( params->N % params->NB != 0 ) {
+            if( 0 == params->rank ) {
+                fprintf(stderr, RED "adaptive_decision_runtime requires N (%d) to be a multiple of NB (%d)\n" RESET,
+                        params->N, params->NB);
+            }
+            exit(1);
+        }
+        params->kind_of_cholesky = DENSE_MP_GPU_FP8_ADAPTIVE;
+        //params->adaptive_decision = 1; 
+        params->datatype_convert = 0;
+        //params->adaptive_memory = 0;
+        params->band_size_dense = params->NT;
+        if( 0 == params->rank ) {
+            fprintf( stderr, RED "kind_of_cholesky=DENSE_MP_GPU_FP8_ADAPTIVE, adaptive_decision=%d, datatype_convert=%d, adaptive_memory=%d, band_size_dense=%d\n" RESET, params->adaptive_decision, params->datatype_convert, params->adaptive_memory, params->band_size_dense);
+        }
+    }
+
+    //if(GENOMICS || DEBUG_INFO || params->check) {
+    if(GENOMICS || DEBUG_INFO) {
         params->adaptive_memory = 0;
     }
 
@@ -1917,10 +2134,6 @@ int hicma_parsec_params_check( hicma_parsec_params_t *params )
     }
 #endif
 
-#if !HAVE_FP8
-    params->band_size_dense_hp = params->band_size_dense; 
-#endif
-
     return 0; 
 }
 
@@ -2046,11 +2259,6 @@ int hicma_parsec_data_init( hicma_parsec_data_t *data, hicma_parsec_params_t *pa
     }
 #endif
 
-    /* Init two_dim_block_cyclic_band_t structure */
-    if( (auto_band || band_size_dense > 1) && 0 == sparse && band_size_dist )
-        hicma_parsec_parsec_matrix_sym_block_cyclic_band_init( &data->dcA, nodes, rank, band_size_dist );
-    else
-        parsec_matrix_sym_block_cyclic_band_init( &data->dcA, nodes, rank, band_size_dist );
     parsec_data_collection_set_key((parsec_data_collection_t*)&data->dcA, "dcA_off_band");
     parsec_data_collection_set_key(&data->dcA.band.super.super, "dcA_band");
 
@@ -2101,11 +2309,6 @@ int hicma_parsec_data_init( hicma_parsec_data_t *data, hicma_parsec_params_t *pa
                               band_size_dist, RANK_MAP_BUFF*NT, band_p, nodes/band_p,
                               1, 1, 0, 0);
 
-    /* Init two_dim_block_cyclic_band_t structure */
-    if( (auto_band || band_size_dense > 1) && 0 == sparse && band_size_dist )
-        hicma_parsec_parsec_matrix_sym_block_cyclic_band_init( &data->dcRank, nodes, rank, band_size_dist );
-    else
-        parsec_matrix_sym_block_cyclic_band_init( &data->dcRank, nodes, rank, band_size_dist );
     parsec_data_collection_set_key((parsec_data_collection_t*)&data->dcRank, "dcRank_super");
     parsec_data_collection_set_key(&data->dcRank.band.super.super, "dcRank_band");
 
@@ -2113,7 +2316,7 @@ int hicma_parsec_data_init( hicma_parsec_data_t *data, hicma_parsec_params_t *pa
 
     /* Allocate memory for GPU workspace */
 #if (defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)) && GPU_BUFFER_ONCE 
-    gpu_temporay_buffer_init( data, NB, NB, params->compmaxrank, params->kind_of_cholesky );
+    gpu_temporay_buffer_init( data, params, NB, NB, params->compmaxrank, params->kind_of_cholesky );
 #endif
 
     /* dcFake to control process rank working on*/
@@ -2124,6 +2327,15 @@ int hicma_parsec_data_init( hicma_parsec_data_t *data, hicma_parsec_params_t *pa
             (size_t)data->dcFake.super.bsiz *
             (size_t)parsec_datadist_getsizeoftype(data->dcFake.super.mtype));
     parsec_data_collection_set_key((parsec_data_collection_t*)&data->dcFake, "dcFake");
+
+    /* Init two_dim_block_cyclic_band_t structure */
+    if( (auto_band || band_size_dense > 1) && 0 == sparse && band_size_dist ) {
+        hicma_parsec_parsec_matrix_sym_block_cyclic_band_init( &data->dcA, nodes, rank, band_size_dist );
+        hicma_parsec_parsec_matrix_sym_block_cyclic_band_init( &data->dcRank, nodes, rank, band_size_dist );
+    } else {
+        parsec_matrix_sym_block_cyclic_band_init( &data->dcA, nodes, rank, band_size_dist );
+        parsec_matrix_sym_block_cyclic_band_init( &data->dcRank, nodes, rank, band_size_dist );
+    }
 
 #if GENOMICS
     /* desc for pheno, X, and prediction*/
@@ -2584,6 +2796,15 @@ void hicma_parsec_free_memory( parsec_context_t *parsec,
 #endif
 
     if( params->check ) {
+#if !BAND_MEMORY_CONTIGUOUS
+        /* When check matrices are generated tile-by-tile (band_regenerate path),
+         * release tile allocations before destroying descriptors.
+         */
+        parsec_band_free_memory(parsec, (parsec_tiled_matrix_t *)&data->dcA1, params, FREE_BAND_MEMORY);
+        parsec_band_free_memory(parsec, (parsec_tiled_matrix_t *)&data->dcA1, params, FREE_OFFBAND_MEMORY);
+        parsec_band_free_memory(parsec, (parsec_tiled_matrix_t *)&data->dcA0, params, FREE_BAND_MEMORY);
+        parsec_band_free_memory(parsec, (parsec_tiled_matrix_t *)&data->dcA0, params, FREE_OFFBAND_MEMORY);
+#endif
         /* dcA1 */
         parsec_data_free(data->dcA1.mat);
         parsec_tiled_matrix_destroy( (parsec_tiled_matrix_t*)&data->dcA1);
@@ -2613,13 +2834,24 @@ void hicma_parsec_free_memory( parsec_context_t *parsec,
     }
 
     free( params->rank_array );
+    free( params->nb_gemms ); 
+    free( params->nb_datatype_conversions );
     free( params->op_band );
     free( params->op_offband );
     free( params->op_path );
     free( params->op_offpath );
     free( params->gather_time );
     free( params->gather_time_tmp );
+    free( params->kernel_time_cpu );
+    free( params->kernel_time_gpu );
+    free( params->kernel_time_gpu_event );
+    hicma_parsec_free_kernel_time_intervals(params->kernel_time_cpu_intervals, params->kernel_time_cpu_count);
+    hicma_parsec_free_kernel_time_intervals(params->kernel_time_gpu_intervals, params->kernel_time_gpu_count);
     free( params->decisions );
+    free( params->decisions_gemm_last );
+    free( params->decisions_gemm_first );
+    free( params->tile_host_bytes );
+    free( params->decisions_storage_final );
     free( params->decisions_send);
     free( params->decisions_gemm_gpu);
     free( params->norm_tile );
@@ -2655,7 +2887,13 @@ void hicma_parsec_memory_flush_choleksy( parsec_context_t *parsec,
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
         cudaHostUnregister(data->dcAd.mat);
 #endif
+        /*
+         * This branch allocated one contiguous dcAd.mat slab. Tile pointers are
+         * offsets into that slab, so they must not be freed individually.
+         * Per-tile buffers exist only when band_size_dense < NT.
+         */
         parsec_data_free(data->dcAd.mat);
+        data->dcAd.mat = NULL;
 #endif
 #if PREDICTION || CHECKSOLVE
         parsec_data_free(data->dcAcpy.mat);
@@ -2667,9 +2905,13 @@ void hicma_parsec_memory_flush_choleksy( parsec_context_t *parsec,
 #if BAND_MEMORY_CONTIGUOUS
     parsec_data_free(data->dcA.band.mat);
 #else
-    parsec_band_free_memory(parsec, (parsec_tiled_matrix_t *)&data->dcA, params, FREE_BAND_MEMORY);
+    /*
+     * Free all tile allocations directly instead of band/off-band ranges.
+     * The active band size may be retuned after matrix generation, so range-
+     * based frees can miss tiles allocated under an earlier band window.
+     */
+    parsec_memory_free_tile(parsec, (parsec_tiled_matrix_t *)&data->dcA, params, 1);
 #endif
-    parsec_band_free_memory(parsec, (parsec_tiled_matrix_t *)&data->dcA, params, FREE_OFFBAND_MEMORY);
 }
 
 static uint32_t always_local_rank_of(parsec_data_collection_t * desc, ...)

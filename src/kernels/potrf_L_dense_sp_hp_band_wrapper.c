@@ -111,7 +111,7 @@ parsec_shpotrf_New( parsec_context_t *parsec,
 #if !GPU_BUFFER_ONCE
     /* Initialize GPU workspace buffers for temporary storage during factorization */
     // Allocate GPU memory buffers for intermediate computations and data transfers
-    gpu_temporay_buffer_init( data, A->mb, A->nb, maxrank, params->kind_of_cholesky );
+    gpu_temporay_buffer_init( data, params, A->mb, A->nb, maxrank, params->kind_of_cholesky );
 #endif /* GPU_BUFFER_ONCE */
 
 #endif

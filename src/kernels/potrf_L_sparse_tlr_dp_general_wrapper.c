@@ -18,6 +18,7 @@
  */
 
 #include "hicma_parsec.h"
+#include "hicma_kernel_time.h"
 #include "potrf_L_sparse_tlr_dp_general.h"
 
 /**
@@ -47,8 +48,15 @@ static int wrap_potrf(parsec_execution_stream_t * es,
         (parsec_potrf_L_sparse_tlr_dp_general_taskpool_t*)this_task->taskpool;
     
     /* Record start time of POTRF operation for timing analysis */
-    parsec_tp->_g_params_tlr->potrf_time_temp = MPI_Wtime();
-    parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id] = parsec_tp->_g_params_tlr->potrf_time_temp;
+    double start_time = MPI_Wtime();
+#if PRINT_KERNEL_TIME
+    /* Only taken back when PRINT_KERNEL_TIME is on; recording it
+     * unconditionally leaves stale entries that a reused task object
+     * (e.g. a later GEMM) would pick up. */
+    hicma_kernel_time_record(this_task, start_time);
+#endif
+    parsec_tp->_g_params_tlr->potrf_time_temp = start_time;
+    parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id] = start_time;
     
     /* Call the actual POTRF implementation */
     return parsec_tp->_g_params_tlr->wrap_potrf(es, (parsec_task_t *)this_task);
@@ -83,10 +91,15 @@ static int wrap_potrf_complete(parsec_execution_stream_t * es,
 
 #if PRINT_CRITICAL_PATH_TIME
     /* Print detailed timing information for critical path analysis */
-    fprintf(stderr, "OUT_critical_path_time band_size_dense %d Nodes %d Matrix %d POTRF %d end_time %lf start_time %lf exe_time %lf sum_time %lf\n",
+    fprintf(stderr, "OUT_critical_path_time band_size_dense %d Nodes %d Matrix %d POTRF %d end_time %lf start_time %lf task_exe_time %lf sum_time %lf\n",
 		    parsec_tp->_g_params_tlr->band_size_dense, parsec_tp->_g_descA->super.nodes, parsec_tp->_g_descA->lm,
 		    this_task->locals.k.value, end_time, parsec_tp->_g_params_tlr->potrf_time_temp,
 		    end_time - parsec_tp->_g_params_tlr->potrf_time_temp, parsec_tp->_g_params_tlr->potrf_time);
+#endif
+
+#if PRINT_KERNEL_TIME
+    hicma_kernel_time_report((parsec_task_t *)this_task, parsec_tp->_g_params_tlr, parsec_tp->_g_descA, es->th_id,
+                             "POTRF", this_task->locals.k.value, -1, -1, hicma_kernel_time_take(this_task, end_time), end_time);
 #endif
 
     return val;
@@ -110,12 +123,19 @@ static int wrap_trsm(parsec_execution_stream_t * es,
         (parsec_potrf_L_sparse_tlr_dp_general_taskpool_t*)this_task->taskpool;
     
     /* Record start time for thread-level timing */
-    parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id] = MPI_Wtime();
+    double start_time = MPI_Wtime();
+#if PRINT_KERNEL_TIME
+    /* Only taken back when PRINT_KERNEL_TIME is on; recording it
+     * unconditionally leaves stale entries that a reused task object
+     * (e.g. a later GEMM) would pick up. */
+    hicma_kernel_time_record(this_task, start_time);
+#endif
+    parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id] = start_time;
 
     /* Only time the first TRSM operation in each column (critical path) */
     if(this_task->locals.m.value == this_task->locals.k.value + 1){
         /* Record start time of TRSM for critical path timing */
-        parsec_tp->_g_params_tlr->trsm_time_temp = MPI_Wtime();
+        parsec_tp->_g_params_tlr->trsm_time_temp = start_time;
         return parsec_tp->_g_params_tlr->wrap_trsm(es, (parsec_task_t *)this_task);
     } else {
         /* Skip timing for non-critical path TRSM operations */
@@ -153,7 +173,7 @@ static int wrap_trsm_complete(parsec_execution_stream_t * es,
 
 #if PRINT_CRITICAL_PATH_TIME
         /* Print detailed timing information for critical path analysis */
-        fprintf(stderr, "OUT_critical_path_time band_size_dense %d Nodes %d Matrix %d TRSM %d end_time %lf start_time %lf exe_time %lf sum_time %lf\n",
+        fprintf(stderr, "OUT_critical_path_time band_size_dense %d Nodes %d Matrix %d TRSM %d end_time %lf start_time %lf task_exe_time %lf sum_time %lf\n",
 			parsec_tp->_g_params_tlr->band_size_dense, parsec_tp->_g_descA->super.nodes, parsec_tp->_g_descA->lm,
 			this_task->locals.k.value, end_time, parsec_tp->_g_params_tlr->trsm_time_temp,
 			end_time - parsec_tp->_g_params_tlr->trsm_time_temp, parsec_tp->_g_params_tlr->trsm_time);
@@ -166,6 +186,11 @@ static int wrap_trsm_complete(parsec_execution_stream_t * es,
 
     /* Update thread-level timing statistics */
     parsec_tp->_g_params_tlr->gather_time[es->th_id] += end_time - parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id];
+#if PRINT_KERNEL_TIME
+    hicma_kernel_time_report((parsec_task_t *)this_task, parsec_tp->_g_params_tlr, parsec_tp->_g_descA, es->th_id,
+                             "TRSM", this_task->locals.m.value, this_task->locals.k.value, -1, hicma_kernel_time_take(this_task, end_time), end_time);
+#endif
+
     return val;
 }
 
@@ -187,12 +212,19 @@ static int wrap_syrk(parsec_execution_stream_t * es,
         (parsec_potrf_L_sparse_tlr_dp_general_taskpool_t*)this_task->taskpool;
     
     /* Record start time for thread-level timing */
-    parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id] = MPI_Wtime();
+    double start_time = MPI_Wtime();
+#if PRINT_KERNEL_TIME
+    /* Only taken back when PRINT_KERNEL_TIME is on; recording it
+     * unconditionally leaves stale entries that a reused task object
+     * (e.g. a later GEMM) would pick up. */
+    hicma_kernel_time_record(this_task, start_time);
+#endif
+    parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id] = start_time;
     
     /* Only time the first SYRK operation in each column (critical path) */
     if(this_task->locals.m.value == this_task->locals.k.value + 1){
         /* Record start time of SYRK for critical path timing */
-        parsec_tp->_g_params_tlr->syrk_time_temp = MPI_Wtime();
+        parsec_tp->_g_params_tlr->syrk_time_temp = start_time;
         return parsec_tp->_g_params_tlr->wrap_syrk(es, (parsec_task_t *)this_task);
     } else {
         /* Skip timing for non-critical path SYRK operations */
@@ -230,7 +262,7 @@ static int wrap_syrk_complete(parsec_execution_stream_t * es,
 
 #if PRINT_CRITICAL_PATH_TIME
         /* Print detailed timing information for critical path analysis */
-        fprintf(stderr, "OUT_critical_path_time band_size_dense %d Nodes %d Matrix %d SYRK %d end_time %lf start_time %lf exe_time %lf sum_time %lf\n",
+        fprintf(stderr, "OUT_critical_path_time band_size_dense %d Nodes %d Matrix %d SYRK %d end_time %lf start_time %lf task_exe_time %lf sum_time %lf\n",
 			parsec_tp->_g_params_tlr->band_size_dense, parsec_tp->_g_descA->super.nodes, parsec_tp->_g_descA->lm,
 			this_task->locals.k.value, end_time, parsec_tp->_g_params_tlr->syrk_time_temp,
 			end_time - parsec_tp->_g_params_tlr->syrk_time_temp, parsec_tp->_g_params_tlr->syrk_time);
@@ -243,6 +275,11 @@ static int wrap_syrk_complete(parsec_execution_stream_t * es,
 
     /* Update thread-level timing statistics */
     parsec_tp->_g_params_tlr->gather_time[es->th_id] += end_time - parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id];
+#if PRINT_KERNEL_TIME
+    hicma_kernel_time_report((parsec_task_t *)this_task, parsec_tp->_g_params_tlr, parsec_tp->_g_descA, es->th_id,
+                             "SYRK", this_task->locals.m.value, this_task->locals.k.value, -1, hicma_kernel_time_take(this_task, end_time), end_time);
+#endif
+
     return val;
 }
 
@@ -264,7 +301,7 @@ static int wrap_gemm(parsec_execution_stream_t * es,
         (parsec_potrf_L_sparse_tlr_dp_general_taskpool_t*)this_task->taskpool;
     
     /* Record start time for thread-level timing (GEMM not in critical path) */
-    parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id] = MPI_Wtime();
+    hicma_kernel_time_record(this_task, MPI_Wtime());
     
     /* Call the actual GEMM implementation */
     return parsec_tp->_g_params_tlr->wrap_gemm(es, (parsec_task_t *)this_task);
@@ -287,21 +324,21 @@ static int wrap_gemm_complete(parsec_execution_stream_t * es,
     parsec_potrf_L_sparse_tlr_dp_general_taskpool_t *parsec_tp = 
         (parsec_potrf_L_sparse_tlr_dp_general_taskpool_t*)this_task->taskpool;
     int val;
-    double start_time = parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id];
+    double start_time = hicma_kernel_time_take(this_task, MPI_Wtime());
     
     /* Call the actual GEMM completion function */
     val = parsec_tp->_g_params_tlr->wrap_gemm_complete(es, (parsec_task_t *)this_task);
     
     /* Record end time and calculate execution time */
     double end_time = MPI_Wtime();
-    parsec_tp->_g_params_tlr->gather_time[es->th_id] += end_time - start_time; 
+    double elapsed_time = end_time - start_time;
+    parsec_tp->_g_params_tlr->gather_time[es->th_id] += elapsed_time;
 
-    /* Print debug timing information if enabled */
-    if( DEBUG_INFO )
-        fprintf(stderr, "band_size_dense %d Nodes %d Matrix %d GEMM %d %d %d end_time %lf start_time %lf exe_time %lf sum_time %lf\n",
-			parsec_tp->_g_params_tlr->band_size_dense, parsec_tp->_g_descA->super.nodes, parsec_tp->_g_descA->lm,
-                        this_task->locals.m.value, this_task->locals.n.value, this_task->locals.k.value,
-                        end_time, start_time, end_time - start_time, parsec_tp->_g_params_tlr->gather_time[es->th_id]);
+    /* Print GEMM timing information if enabled */
+#if PRINT_KERNEL_TIME
+    hicma_kernel_time_report((parsec_task_t *)this_task, parsec_tp->_g_params_tlr, parsec_tp->_g_descA, es->th_id,
+                             "GEMM", this_task->locals.m.value, this_task->locals.n.value, this_task->locals.k.value, start_time, end_time);
+#endif
     return val;
 }
 

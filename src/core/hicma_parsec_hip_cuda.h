@@ -115,6 +115,9 @@
 #define cudaMallocHost hipHostMalloc                      // Allocate host memory (hipMallocHost deprecated)
 #define cudaMemcpy hipMemcpy                              // Copy memory between host/device
 #define cudaMemset hipMemset                              // Initialize device memory
+#define cudaHostRegister hipHostRegister  
+#define cudaHostUnregister hipHostUnregister
+#define cudaHostRegisterDefault hipHostRegisterDefault
 
 // Memory optimization functions
 #define cudaMemAdvise hipMemAdvise                        // Provide memory access hints
@@ -179,6 +182,8 @@
 #define cublasDgemm hipblasDgemm                           // Double precision matrix multiplication
 #define cublasDsyrk hipblasDsyrk                           // Double precision symmetric rank-k update
 #define cublasDtrsm hipblasDtrsm                           // Double precision triangular solve
+#define cublasDnrm2 hipblasDnrm2
+#define cublasSnrm2 hipblasSnrm2
 
 // Single precision BLAS operations
 #define cublasSgemm hipblasSgemm                           // Single precision matrix multiplication
@@ -196,6 +201,8 @@
 
 // Stream management
 #define cublasSetStream hipblasSetStream                   // Set stream for cuBLAS operations
+#define cublasSetPointerMode hipblasSetPointerMode
+#define CUBLAS_POINTER_MODE_DEVICE HIPBLAS_POINTER_MODE_DEVICE
 
 // cuBLAS status constants
 #define CUBLAS_STATUS_SUCCESS HIPBLAS_STATUS_SUCCESS

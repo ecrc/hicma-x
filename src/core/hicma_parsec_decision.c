@@ -11,6 +11,7 @@
 #include "potrf_L_dense_tlr_mp.h"
 #include "potrf_L_dense_mp_gpu.h"
 #include "potrf_L_dense_mp_gpu_fp8.h"
+#include "potrf_L_dense_mp_gpu_fp8_adaptive.h"
 #include "potrf_L_dense_mp_gpu_fp8_sp.h"
 
 /**
@@ -56,8 +57,8 @@ void  hicma_parsec_decisions_update( parsec_context_t *parsec,
 
     if( params->verbose > 9 ) {
         print_decisions( params );
-        print_decisions_send( params );
-        print_decisions_gemm_gpu( params );
+        //print_decisions_send( params );
+        //print_decisions_gemm_gpu( params );
     }
 }
 
@@ -118,7 +119,7 @@ int hicma_parsec_decision_init( hicma_parsec_params_t *params )
         }
     }
 
-    if( params->verbose > 9 ) {
+    if( 0 && params->verbose > 9 ) {
         print_decisions( params );
     }
 
@@ -171,6 +172,81 @@ void print_decisions( hicma_parsec_params_t *params ) {
 
         fflush(stdout);
         sleep(1);
+}
+
+static void print_runtime_decisions(const hicma_parsec_params_t *params,
+        const uint16_t *decisions, const char *label, int fill_gemm_boundaries)
+{
+    if(params->rank != 0) return;
+
+    fflush(stdout);
+    sleep(1);
+    fprintf(stderr, "\n%s: DP=%d SP=%d LR_DP=%d LR_SP=%d HP=%d FP8=%d\n", label,
+            DENSE_DP, DENSE_SP, LOW_RANK_DP, LOW_RANK_SP, DENSE_HP, DENSE_FP8);
+    for(int m = 0; m < params->MT; m++) {
+        for(int n = 0; n <= m && n < params->NT; n++) {
+            size_t index = (size_t)n * params->MT + m;
+            uint16_t precision = (fill_gemm_boundaries && n == 0) ?
+                params->decisions[index] : decisions[index];
+            if(fill_gemm_boundaries && m == n) {
+                fprintf(stderr, RED "%2d " RESET, DENSE_DP);
+            } else if(precision == DENSE_DP) {
+                fprintf(stderr, RED "%2u " RESET, (unsigned)precision);
+            } else if(precision == DENSE_SP) {
+                fprintf(stderr, BLU "%2u " RESET, (unsigned)precision);
+            } else if(precision == LOW_RANK_DP) {
+                fprintf(stderr, PUR "%2u " RESET, (unsigned)precision);
+            } else if(precision == LOW_RANK_SP) {
+                fprintf(stderr, YEL "%2u " RESET, (unsigned)precision);
+            } else if(precision == DENSE_HP) {
+                fprintf(stderr, GRN "%2u " RESET, (unsigned)precision);
+            } else if(precision == DENSE_FP8) {
+                fprintf(stderr, CYN "%2u " RESET, (unsigned)precision);
+            } else {
+                fprintf(stderr, "  -- ");
+            }
+        }
+        fprintf(stderr, "\n");
+    }
+    fprintf(stderr, "\n");
+}
+
+void print_first_local_gemm_decisions(const hicma_parsec_params_t *params)
+{
+    print_runtime_decisions(params, params->decisions_gemm_first,
+            "first_local_gemm_precision (A*B, k=0)", 1);
+}
+
+void print_last_local_gemm_decisions(const hicma_parsec_params_t *params)
+{
+    print_runtime_decisions(params, params->decisions_gemm_last,
+            "last_local_gemm_precision (A*B, k=n-1)", 1);
+}
+
+void print_final_storage_decisions(const hicma_parsec_params_t *params)
+{
+    print_runtime_decisions(params, params->decisions_storage_final,
+            "final_storage_precision (POTRF diagonal, TRSM off-diagonal)", 0);
+}
+
+void get_decisions(uint16_t *decisions, size_t size,
+        parsec_tiled_matrix_t *descA ) {
+    assert((int)size == size);
+    assert(size == (size_t)descA->lmt * descA->lnt);
+
+    /* Runtime decisions are updated only by the rank owning each output tile.
+     * Remove stale replicas before summing so every tile has one contributor. */
+    for( int n = 0; n < descA->lnt; n++ ) {
+        for( int m = 0; m < descA->lmt; m++ ) {
+            size_t index = (size_t)n * descA->lmt + m;
+            if( m < n || descA->super.myrank !=
+                    descA->super.rank_of(&descA->super, m, n) ) {
+                decisions[index] = 0;
+            }
+        }
+    }
+
+    MPI_Allreduce(MPI_IN_PLACE, decisions, size, MPI_UNSIGNED_SHORT, MPI_SUM, MPI_COMM_WORLD);
 }
 
 /**
@@ -266,7 +342,9 @@ void hicma_parsec_decisions_send_analysis( hicma_parsec_params_t *params ) {
                 /* Set to HP by default */
                 params->decisions_send[n*NT+m] = DENSE_HP;
 #if HAVE_FP8
-                params->decisions_send[n*NT+m] = DENSE_FP8;
+                if( params->fp8_enabled ) {
+                    params->decisions_send[n*NT+m] = DENSE_FP8;
+                }
 #endif
 
                 /* Store decision */
@@ -365,7 +443,7 @@ int decision_datatype_tile_potrf_L_dense_tlr_mp(uint16_t *decisions, int m, int 
         case LOW_RANK_SP:
             return PARSEC_potrf_L_dense_tlr_mp_UV_SP_ADT_IDX;
         default:
-            fprintf(stderr, "The decision is not correct! \n");
+            fprintf(stderr, "The decision is not correct! %d\n", decisions[n*NT+m]);
             return -1;
     }
 }
@@ -394,7 +472,7 @@ int decision_datatype_tile_potrf_L_dense_mp_gpu(uint16_t *decisions, int m, int 
         case LOW_RANK_SP:
             return PARSEC_potrf_L_dense_mp_gpu_UV_SP_ADT_IDX;
         default:
-            fprintf(stderr, "The decision is not correct! \n");
+            fprintf(stderr, "The decision is not correct! %d \n", decisions[n*NT+m]);
             return -1;
     }
 } 
@@ -423,7 +501,37 @@ int decision_datatype_tile_potrf_L_dense_mp_gpu_fp8(uint16_t *decisions, int m, 
         case LOW_RANK_SP:
             return PARSEC_potrf_L_dense_mp_gpu_fp8_UV_SP_ADT_IDX;
         default:
-            fprintf(stderr, "The decision is not correct! \n");
+            fprintf(stderr, "The decision is not correct! %d \n", decisions[n*NT+m]);
+            return -1;
+    }
+}
+
+
+/**
+ * @brief Get datatype for POTRF dense mixed precision GPU FP8 tile adaptive
+ *
+ * Determines the appropriate datatype index for POTRF dense mixed precision
+ * GPU FP8 operations based on the decision matrix. Returns the corresponding PaRSEC
+ * ADT index for the specified precision level.
+ *
+ * @param[in] decisions Decision array
+ * @param[in] m Row index
+ * @param[in] n Column index
+ * @param[in] NT Matrix size
+ * @return PaRSEC ADT index for the specified precision
+ */
+int decision_datatype_tile_potrf_L_dense_mp_gpu_fp8_adaptive(uint16_t *decisions, int m, int n, int NT) {
+    switch( decisions[n*NT+m] ) {
+        case DENSE_DP:
+            return PARSEC_potrf_L_dense_mp_gpu_fp8_adaptive_FULL_DP_ADT_IDX;
+        case DENSE_SP: case DENSE_HP: case DENSE_FP8:
+            return PARSEC_potrf_L_dense_mp_gpu_fp8_adaptive_FULL_SP_ADT_IDX;
+        case LOW_RANK_DP:
+            return PARSEC_potrf_L_dense_mp_gpu_fp8_adaptive_UV_DP_ADT_IDX;
+        case LOW_RANK_SP:
+            return PARSEC_potrf_L_dense_mp_gpu_fp8_adaptive_UV_SP_ADT_IDX;
+        default:
+            fprintf(stderr, "The decision is not correct! %d\n", decisions[n*NT+m]);
             return -1;
     }
 }
@@ -452,7 +560,7 @@ int decision_datatype_tile_potrf_L_dense_mp_gpu_fp8_sp(uint16_t *decisions, int 
         case LOW_RANK_SP:
             return PARSEC_potrf_L_dense_mp_gpu_fp8_sp_UV_SP_ADT_IDX;
         default:
-            fprintf(stderr, "The decision is not correct! \n");
+            fprintf(stderr, "The decision is not correct! %d \n", decisions[n*NT+m]);
             return -1;
     }
 }
@@ -485,7 +593,7 @@ int decision_datatype_tile_send_potrf_L_dense_mp_gpu(uint16_t *decisions, int m,
         case LOW_RANK_SP:
             return PARSEC_potrf_L_dense_mp_gpu_UV_SP_ADT_IDX;
         default:
-            fprintf(stderr, "The decision is not correct! \n");
+            fprintf(stderr, "The decision is not correct! %d \n", decisions[n*NT+m]);
             return -1;
     }
 }
@@ -518,7 +626,40 @@ int decision_datatype_tile_send_potrf_L_dense_mp_gpu_fp8(uint16_t *decisions, in
         case LOW_RANK_SP:
             return PARSEC_potrf_L_dense_mp_gpu_fp8_UV_SP_ADT_IDX;
         default:
-            fprintf(stderr, "The decision is not correct! \n");
+            fprintf(stderr, "The decision is not correct! %d \n", decisions[n*NT+m]);
+            return -1;
+    }
+}
+
+/**
+ * @brief Get datatype for POTRF dense mixed precision GPU FP8 send tile adaptive
+ *
+ * Determines the appropriate datatype index for POTRF dense mixed precision
+ * GPU FP8 send operations based on the decision matrix. Returns the corresponding PaRSEC
+ * ADT index for the specified precision level.
+ *
+ * @param[in] decisions Decision array
+ * @param[in] m Row index
+ * @param[in] n Column index
+ * @param[in] NT Matrix size
+ * @return PaRSEC ADT index for the specified precision
+ */
+int decision_datatype_tile_send_potrf_L_dense_mp_gpu_fp8_adaptive(uint16_t *decisions, int m, int n, int NT) {
+    switch( decisions[n*NT+m] ) {
+        case DENSE_DP:
+            return PARSEC_potrf_L_dense_mp_gpu_fp8_adaptive_FULL_DP_ADT_IDX;
+        case DENSE_SP:
+            return PARSEC_potrf_L_dense_mp_gpu_fp8_adaptive_FULL_SP_ADT_IDX;
+        case DENSE_HP:
+            return PARSEC_potrf_L_dense_mp_gpu_fp8_adaptive_FULL_HP_ADT_IDX;
+        case DENSE_FP8:
+            return PARSEC_potrf_L_dense_mp_gpu_fp8_adaptive_FULL_FP8_ADT_IDX;
+        case LOW_RANK_DP:
+            return PARSEC_potrf_L_dense_mp_gpu_fp8_adaptive_UV_DP_ADT_IDX;
+        case LOW_RANK_SP:
+            return PARSEC_potrf_L_dense_mp_gpu_fp8_adaptive_UV_SP_ADT_IDX;
+        default:
+            fprintf(stderr, "The decision is not correct! %d \n", decisions[n*NT+m]);
             return -1;
     }
 }
@@ -551,11 +692,104 @@ int decision_datatype_tile_send_potrf_L_dense_mp_gpu_fp8_sp(uint16_t *decisions,
         case LOW_RANK_SP:
             return PARSEC_potrf_L_dense_mp_gpu_fp8_sp_UV_SP_ADT_IDX;
         default:
-            fprintf(stderr, "The decision is not correct! \n");
+            fprintf(stderr, "The decision is not correct! %d \n", decisions[n*NT+m]);
             return -1;
     }
 }
 
-/* Conversion functions now included from datatype_convert.h */
 
+/**
+ * @brief Determine the precision of that tile 
+ *
+ * @return The precision decision 
+ */
+void hicma_parsec_get_precision_tile(hicma_parsec_params_t *params_tlr,
+        hicma_parsec_decision_enum_t *new_decision, double norm_tile, int m, int n) {
 
+    double scalar_factore = (double)params_tlr->NT;
+
+    // Determine precision decisions based on tile norm relative to global norm and tolerance
+    // Each decision checks if the normalized tile norm is below the precision-specific threshold
+    bool decision_hp_gpu = norm_tile * scalar_factore / params_tlr->norm_global  < params_tlr->fixedacc / EPS_HP_GPU;
+    bool decision_hp = norm_tile * scalar_factore / params_tlr->norm_global  < params_tlr->fixedacc / EPS_HP;
+    bool decision_sp = norm_tile * scalar_factore / params_tlr->norm_global  < params_tlr->fixedacc / EPS_SP;
+    bool decision_fp8 = norm_tile * scalar_factore / params_tlr->norm_global  < params_tlr->fixedacc / EPS_FP8;
+
+    // Debug print statement (commented out)
+    //printf("\n (%d, %d), params_tlr->norm_global:%f, tile norm:%f, res:%f %f %f %f\n", m, n, params_tlr->norm_global,  norm_tile);
+
+    /* Make precision decisions based on current tile type */
+    // Handle dense tile precision decisions (DP, SP, HP, FP8)
+    if( IS_DENSE(m, n) ) {
+        // Precision selection hierarchy: FP8 -> HP -> SP -> DP (if supported)
+#if HAVE_FP8
+        if( decision_fp8 && params_tlr->fp8_enabled ) {
+            *new_decision = DENSE_FP8;
+        }
+#if HAVE_HP
+        else if( decision_hp ) {
+            *new_decision = DENSE_HP;
+        } else if( decision_sp ) {
+#else
+        if( decision_sp ) {
+#endif // HAVE_HP
+
+#else
+        // FP8 not supported, check HP and SP
+#if HAVE_HP
+        if( decision_hp ) {
+            *new_decision = DENSE_HP;
+        } else if( decision_sp ) {
+#else
+        if( decision_sp ) {
+#endif // HAVE_HP
+
+#endif // HAVE_FP8
+
+            *new_decision = DENSE_SP;
+        } else {
+            // Fall back to highest precision based on build configuration
+#if GENOMICS
+            *new_decision = DENSE_SP;
+#else
+            *new_decision = DENSE_DP;
+#endif
+        }
+    } else {
+        // Handle low-rank tile precision decisions
+        if( decision_sp ) {
+            *new_decision = LOW_RANK_SP;
+        } else {
+            *new_decision = LOW_RANK_DP;
+        }
+    }
+
+    // GPU precision decisions for dense tiles only
+    if( params_tlr->gpus > 0 && IS_DENSE(m, n) ) {
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+        // CUDA-specific GPU precision selection
+        if( decision_hp_gpu && ENABLE_TF16_A16_B16_C16_OP16 ) {
+            params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m] = MASK_TF16_A16_B16_C16_OP16;
+            //printf("%d %d : %g %g\n", m, n, params_tlr->norm_tile[n*params_tlr->NT+m], params_tlr->norm_global);
+        } else if( decision_hp ) {
+#elif defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+        // HIP-specific GPU precision selection
+        if( decision_hp ) {
+#else
+        // No GPU support
+        if( 0 ) {
+#endif
+            params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m] = MASK_TF16_A16_B16_C32_OP32;
+        } else if( decision_sp ) {
+            params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m] = MASK_FP32;
+        } else {
+            // Fall back to highest precision based on build configuration
+#if GENOMICS
+            params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m] = MASK_FP32;
+#else
+            params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m] = MASK_FP64;
+#endif
+        }
+    }
+
+}

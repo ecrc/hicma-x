@@ -1331,6 +1331,66 @@ void memcpy_half_GPU( int nrows, int ncols, void *_src, void *_dest, hipStream_t
 /****************************************************************************************************/
 
 /**
+ * @brief HIP kernel for copying double precision matrix data
+ */
+__global__ void memcpy_double_GPU_kernel( int nrows, int ncols,
+                const double *src, double *dest ) {
+    const int idx = hipBlockIdx_x * hipBlockDim_x + hipThreadIdx_x;
+    const int idy = hipBlockIdx_y * hipBlockDim_y + hipThreadIdx_y;
+
+    if( idx >= nrows || idy >= ncols ) {
+        return;
+    }
+
+    dest[idy * nrows + idx] = src[idy * nrows + idx];
+}
+
+extern "C"
+void memcpy_double_GPU( int nrows, int ncols, void *_src, void *_dest,
+                        hipStream_t stream ) {
+    const dim3 dimBlock(CHUNKSIZE, CHUNKSIZE);
+    const dim3 dimGrid((nrows + CHUNKSIZE - 1) / CHUNKSIZE,
+                       (ncols + CHUNKSIZE - 1) / CHUNKSIZE);
+
+    const double *src = (const double *)_src;
+    double *dest = (double *)_dest;
+
+    memcpy_double_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, src, dest);
+}
+
+/****************************************************************************************************/
+
+/**
+ * @brief HIP kernel for subtracting a float matrix from a double matrix
+ */
+__global__ void sub_float_from_double_GPU_kernel( int nrows, int ncols,
+                const float *src, double *dest ) {
+    const int idx = hipBlockIdx_x * hipBlockDim_x + hipThreadIdx_x;
+    const int idy = hipBlockIdx_y * hipBlockDim_y + hipThreadIdx_y;
+
+    if( idx >= nrows || idy >= ncols ) {
+        return;
+    }
+
+    dest[idy * nrows + idx] -= (double)src[idy * nrows + idx];
+}
+
+extern "C"
+void sub_float_from_double_GPU( int nrows, int ncols, void *_src, void *_dest,
+                                hipStream_t stream ) {
+    const dim3 dimBlock(CHUNKSIZE, CHUNKSIZE);
+    const dim3 dimGrid((nrows + CHUNKSIZE - 1) / CHUNKSIZE,
+                       (ncols + CHUNKSIZE - 1) / CHUNKSIZE);
+
+    const float *src = (const float *)_src;
+    double *dest = (double *)_dest;
+
+    sub_float_from_double_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, src, dest);
+}
+
+/****************************************************************************************************/
+
+/**
  * @brief HIP kernel for copying single precision matrix
  * 
  * Copies elements from source single precision matrix to destination single precision matrix.
@@ -1558,6 +1618,50 @@ hipblasStatus_t my_cublasGemmEx(hipblasHandle_t handle,
                                   B, Btype, ldb,
                         &beta_h,  C, Ctype, ldc,
                         computeType, algo);
+}
+
+/****************************************************************************************************/
+
+__global__ void store_float_as_double_kernel(double* dst, float x)
+{
+  if (hipThreadIdx_x == 0 && hipBlockIdx_x == 0) {
+    dst[0] = (double)x;
+  }
+}
+
+__global__ void store_double_kernel(double* dst, double x)
+{
+  if (hipThreadIdx_x == 0 && hipBlockIdx_x == 0) {
+    dst[0] = x;
+  }
+}
+
+__global__ void store_device_float_as_double_kernel(double* dst, const float* src)
+{
+  if (hipThreadIdx_x == 0 && hipBlockIdx_x == 0) {
+    dst[0] = (double)src[0];
+  }
+}
+
+// d_dst: device pointer to 1 double (cudaMalloc)
+// x: host float
+// stream: stream to enqueue the kernel (0 = default)
+extern "C" void copy_float_to_device_double(double* d_dst, float x, cudaStream_t stream)
+{
+  if (!d_dst) return;
+  store_float_as_double_kernel<<<1, 1, 0, stream>>>(d_dst, x);
+}
+
+extern "C" void set_device_double(double* d_dst, double x, cudaStream_t stream)
+{
+  if (!d_dst) return;
+  store_double_kernel<<<1, 1, 0, stream>>>(d_dst, x);
+}
+
+extern "C" void copy_device_float_to_device_double(double* d_dst, const float* d_src, cudaStream_t stream)
+{
+  if (!d_dst || !d_src) return;
+  store_device_float_as_double_kernel<<<1, 1, 0, stream>>>(d_dst, d_src);
 }
 
 /****************************************************************************************************/

@@ -25,6 +25,7 @@
  */
 
 #include "hicma_parsec.h"
+#include "hicma_kernel_time.h"
 #include "potrf_L_dense_mp_gpu.h"
 
 /* ============================================================================
@@ -49,8 +50,15 @@ static int wrap_potrf(parsec_execution_stream_t * es,
     parsec_potrf_L_dense_mp_gpu_taskpool_t *parsec_tp = (parsec_potrf_L_dense_mp_gpu_taskpool_t*)this_task->taskpool;
     
     /* Record start time for POTRF operation timing */
-    parsec_tp->_g_params_tlr->potrf_time_temp = MPI_Wtime();
-    parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id] = parsec_tp->_g_params_tlr->potrf_time_temp;
+    double start_time = MPI_Wtime();
+#if PRINT_KERNEL_TIME
+    /* Only taken back when PRINT_KERNEL_TIME is on; recording it
+     * unconditionally leaves stale entries that a reused task object
+     * (e.g. a later GEMM) would pick up. */
+    hicma_kernel_time_record(this_task, start_time);
+#endif
+    parsec_tp->_g_params_tlr->potrf_time_temp = start_time;
+    parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id] = start_time;
     
     /* Execute the actual POTRF operation */
     return parsec_tp->_g_params_tlr->wrap_potrf(es, (parsec_task_t *)this_task);
@@ -84,10 +92,15 @@ static int wrap_potrf_complete(parsec_execution_stream_t * es,
 
 #if PRINT_CRITICAL_PATH_TIME
     /* Print detailed timing information for critical path analysis */
-    fprintf(stderr, "OUT_critical_path_time band_size_dense %d Nodes %d Matrix %d POTRF %d end_time %lf start_time %lf exe_time %lf sum_time %lf\n",
+    fprintf(stderr, "OUT_critical_path_time band_size_dense %d Nodes %d Matrix %d POTRF %d end_time %lf start_time %lf task_exe_time %lf sum_time %lf\n",
 		    parsec_tp->_g_params_tlr->band_size_dense, parsec_tp->_g_descA->super.nodes, parsec_tp->_g_descA->lm,
 		    this_task->locals.k.value, end_time, parsec_tp->_g_params_tlr->potrf_time_temp,
 		    end_time - parsec_tp->_g_params_tlr->potrf_time_temp, parsec_tp->_g_params_tlr->potrf_time);
+#endif
+
+#if PRINT_KERNEL_TIME
+    hicma_kernel_time_report((parsec_task_t *)this_task, parsec_tp->_g_params_tlr, parsec_tp->_g_descA, es->th_id,
+                             "POTRF", this_task->locals.k.value, -1, -1, hicma_kernel_time_take(this_task, end_time), end_time);
 #endif
 
     return val;
@@ -110,12 +123,19 @@ static int wrap_trsm(parsec_execution_stream_t * es,
     parsec_potrf_L_dense_mp_gpu_taskpool_t *parsec_tp = (parsec_potrf_L_dense_mp_gpu_taskpool_t*)this_task->taskpool;
     
     /* Record start time for thread-level timing */
-    parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id] = MPI_Wtime();
+    double start_time = MPI_Wtime();
+#if PRINT_KERNEL_TIME
+    /* Only taken back when PRINT_KERNEL_TIME is on; recording it
+     * unconditionally leaves stale entries that a reused task object
+     * (e.g. a later GEMM) would pick up. */
+    hicma_kernel_time_record(this_task, start_time);
+#endif
+    parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id] = start_time;
 
     /* Only time the first TRSM operation in each column to avoid double-counting */
     if(this_task->locals.m.value == this_task->locals.k.value + 1){
         /* Record start time for TRSM operation timing */
-        parsec_tp->_g_params_tlr->trsm_time_temp = MPI_Wtime();
+        parsec_tp->_g_params_tlr->trsm_time_temp = start_time;
         return parsec_tp->_g_params_tlr->wrap_trsm(es, (parsec_task_t *)this_task);
     } else {
         /* Execute TRSM without timing (already counted) */
@@ -152,7 +172,7 @@ static int wrap_trsm_complete(parsec_execution_stream_t * es,
 
 #if PRINT_CRITICAL_PATH_TIME
         /* Print detailed timing information for critical path analysis */
-        fprintf(stderr, "OUT_critical_path_time band_size_dense %d Nodes %d Matrix %d TRSM %d end_time %lf start_time %lf exe_time %lf sum_time %lf\n",
+        fprintf(stderr, "OUT_critical_path_time band_size_dense %d Nodes %d Matrix %d TRSM %d end_time %lf start_time %lf task_exe_time %lf sum_time %lf\n",
 			parsec_tp->_g_params_tlr->band_size_dense, parsec_tp->_g_descA->super.nodes, parsec_tp->_g_descA->lm,
 			this_task->locals.k.value, end_time, parsec_tp->_g_params_tlr->trsm_time_temp,
 			end_time - parsec_tp->_g_params_tlr->trsm_time_temp, parsec_tp->_g_params_tlr->trsm_time);
@@ -165,6 +185,11 @@ static int wrap_trsm_complete(parsec_execution_stream_t * es,
 
     /* Always update thread-level timing */
     parsec_tp->_g_params_tlr->gather_time[es->th_id] += end_time - parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id];
+#if PRINT_KERNEL_TIME
+    hicma_kernel_time_report((parsec_task_t *)this_task, parsec_tp->_g_params_tlr, parsec_tp->_g_descA, es->th_id,
+                             "TRSM", this_task->locals.m.value, this_task->locals.k.value, -1, hicma_kernel_time_take(this_task, end_time), end_time);
+#endif
+
     return val;
 }
 
@@ -185,12 +210,19 @@ static int wrap_syrk(parsec_execution_stream_t * es,
     parsec_potrf_L_dense_mp_gpu_taskpool_t *parsec_tp = (parsec_potrf_L_dense_mp_gpu_taskpool_t*)this_task->taskpool;
     
     /* Record start time for thread-level timing */
-    parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id] = MPI_Wtime();
+    double start_time = MPI_Wtime();
+#if PRINT_KERNEL_TIME
+    /* Only taken back when PRINT_KERNEL_TIME is on; recording it
+     * unconditionally leaves stale entries that a reused task object
+     * (e.g. a later GEMM) would pick up. */
+    hicma_kernel_time_record(this_task, start_time);
+#endif
+    parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id] = start_time;
     
     /* Only time the first SYRK operation in each column to avoid double-counting */
     if(this_task->locals.m.value == this_task->locals.k.value + 1){
         /* Record start time for SYRK operation timing */
-        parsec_tp->_g_params_tlr->syrk_time_temp = MPI_Wtime();
+        parsec_tp->_g_params_tlr->syrk_time_temp = start_time;
         return parsec_tp->_g_params_tlr->wrap_syrk(es, (parsec_task_t *)this_task);
     } else {
         /* Execute SYRK without timing (already counted) */
@@ -227,7 +259,7 @@ static int wrap_syrk_complete(parsec_execution_stream_t * es,
 
 #if PRINT_CRITICAL_PATH_TIME
         /* Print detailed timing information for critical path analysis */
-        fprintf(stderr, "OUT_critical_path_time band_size_dense %d Nodes %d Matrix %d SYRK %d end_time %lf start_time %lf exe_time %lf sum_time %lf\n",
+        fprintf(stderr, "OUT_critical_path_time band_size_dense %d Nodes %d Matrix %d SYRK %d end_time %lf start_time %lf task_exe_time %lf sum_time %lf\n",
 			parsec_tp->_g_params_tlr->band_size_dense, parsec_tp->_g_descA->super.nodes, parsec_tp->_g_descA->lm,
 			this_task->locals.k.value, end_time, parsec_tp->_g_params_tlr->syrk_time_temp,
 			end_time - parsec_tp->_g_params_tlr->syrk_time_temp, parsec_tp->_g_params_tlr->syrk_time);
@@ -240,6 +272,11 @@ static int wrap_syrk_complete(parsec_execution_stream_t * es,
 
     /* Always update thread-level timing */
     parsec_tp->_g_params_tlr->gather_time[es->th_id] += end_time - parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id];
+#if PRINT_KERNEL_TIME
+    hicma_kernel_time_report((parsec_task_t *)this_task, parsec_tp->_g_params_tlr, parsec_tp->_g_descA, es->th_id,
+                             "SYRK", this_task->locals.m.value, this_task->locals.k.value, -1, hicma_kernel_time_take(this_task, end_time), end_time);
+#endif
+
     return val;
 }
 
@@ -260,7 +297,7 @@ static int wrap_gemm(parsec_execution_stream_t * es,
     parsec_potrf_L_dense_mp_gpu_taskpool_t *parsec_tp = (parsec_potrf_L_dense_mp_gpu_taskpool_t*)this_task->taskpool;
     
     /* Record start time for GEMM operation timing */
-    parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id] = MPI_Wtime();
+    hicma_kernel_time_record(this_task, MPI_Wtime());
     
     /* Execute the actual GEMM operation */
     return parsec_tp->_g_params_tlr->wrap_gemm(es, (parsec_task_t *)this_task);
@@ -282,21 +319,21 @@ static int wrap_gemm_complete(parsec_execution_stream_t * es,
 {
     parsec_potrf_L_dense_mp_gpu_taskpool_t *parsec_tp = (parsec_potrf_L_dense_mp_gpu_taskpool_t*)this_task->taskpool;
     int val;
-    double start_time = parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id];
+    double start_time = hicma_kernel_time_take(this_task, MPI_Wtime());
     
     /* Execute the actual GEMM completion function */
     val = parsec_tp->_g_params_tlr->wrap_gemm_complete(es, (parsec_task_t *)this_task);
     
     /* Calculate and accumulate GEMM execution time */
     double end_time = MPI_Wtime();
-    parsec_tp->_g_params_tlr->gather_time[es->th_id] += end_time - start_time; 
+    double elapsed_time = end_time - start_time;
+    parsec_tp->_g_params_tlr->gather_time[es->th_id] += elapsed_time;
 
-    /* Print detailed timing information if debug mode is enabled */
-    if( DEBUG_INFO )
-        fprintf(stderr, "band_size_dense %d Nodes %d Matrix %d GEMM %d %d %d end_time %lf start_time %lf exe_time %lf sum_time %lf\n",
-			parsec_tp->_g_params_tlr->band_size_dense, parsec_tp->_g_descA->super.nodes, parsec_tp->_g_descA->lm,
-                        this_task->locals.m.value, this_task->locals.n.value, this_task->locals.k.value,
-                        end_time, start_time, end_time - start_time, parsec_tp->_g_params_tlr->gather_time[es->th_id]);
+    /* Print detailed GEMM timing information if enabled */
+#if PRINT_KERNEL_TIME
+    hicma_kernel_time_report((parsec_task_t *)this_task, parsec_tp->_g_params_tlr, parsec_tp->_g_descA, es->th_id,
+                             "GEMM", this_task->locals.m.value, this_task->locals.n.value, this_task->locals.k.value, start_time, end_time);
+#endif
     return val;
 }
 
@@ -346,8 +383,32 @@ static parsec_hook_return_t evaluate_gpu_trsm(parsec_task_t* task) {
 }
 
 /**
+ * @brief GPU evaluation function for TRSM_SEND operation
+ *
+ * Uses the same dense-band criterion as TRSM. The CUDA/HIP body of
+ * potrf_dtrsm_send returns PARSEC_HOOK_RETURN_NEXT for low-rank tiles, and
+ * PaRSEC re-queues a GPU task that returns NEXT on the same GPU stream
+ * instead of falling back to the CPU chore, so low-rank tiles must be
+ * kept off the GPU here or the factorization hangs.
+ *
+ * @param task TRSM_SEND task to evaluate
+ * @return PARSEC_HOOK_RETURN_DONE for GPU execution, PARSEC_HOOK_RETURN_NEXT for CPU
+ */
+static parsec_hook_return_t evaluate_gpu_trsm_send(parsec_task_t* task) {
+    int m = ((__parsec_potrf_L_dense_mp_gpu_potrf_dtrsm_send_task_t *)task)->locals.m.value;
+    int k = ((__parsec_potrf_L_dense_mp_gpu_potrf_dtrsm_send_task_t *)task)->locals.k.value;
+    int band_size_dense = ((__parsec_potrf_L_dense_mp_gpu_potrf_dtrsm_send_task_t *)task)->locals.band_size_dense_local.value;
+
+    /* Execute on GPU if within the dense band */
+    if( m-k < band_size_dense )
+        return PARSEC_HOOK_RETURN_DONE;
+    else
+        return PARSEC_HOOK_RETURN_NEXT;
+}
+
+/**
  * @brief GPU evaluation function for SYRK operation
- * 
+ *
  * Currently always executes SYRK on GPU when available.
  * This could be extended to include size-based heuristics.
  * 
@@ -418,6 +479,7 @@ potrf_L_dense_mp_gpu_New( parsec_context_t *parsec,
     void** hook;
     void** eval_gpu_potrf;
     void** eval_gpu_trsm;
+    void** eval_gpu_trsm_send;
     void** eval_gpu_syrk;
     void** eval_gpu_gemm;
 
@@ -465,7 +527,7 @@ potrf_L_dense_mp_gpu_New( parsec_context_t *parsec,
 
 #if !GPU_BUFFER_ONCE
     /* Allocate GPU workspace if not already allocated */
-    gpu_temporay_buffer_init( data, A->mb, A->nb, storagemaxrank, params->kind_of_cholesky );
+    gpu_temporay_buffer_init( data, params, A->mb, A->nb, storagemaxrank, params->kind_of_cholesky );
 #endif
 #endif
 
@@ -477,12 +539,14 @@ potrf_L_dense_mp_gpu_New( parsec_context_t *parsec,
         parsec_potrf_L_dense_mp_gpu_new( A, Ar, Rank, Fake, params ); 
 
     /* Identify task class IDs for hook installation */
-    int potrf_id, trsm_id, syrk_id, gemm_id;
+    int potrf_id, trsm_id, trsm_send_id, syrk_id, gemm_id;
     for( int i = 0; i < hicma_dpotrf->super.nb_task_classes; i++ ) {
         if( !strcmp(hicma_dpotrf->super.task_classes_array[i]->name, "potrf_dpotrf") )
             potrf_id = hicma_dpotrf->super.task_classes_array[i]->task_class_id;
         else if( !strcmp(hicma_dpotrf->super.task_classes_array[i]->name, "potrf_dtrsm") )
             trsm_id = hicma_dpotrf->super.task_classes_array[i]->task_class_id;
+        else if( !strcmp(hicma_dpotrf->super.task_classes_array[i]->name, "potrf_dtrsm_send") )
+            trsm_send_id = hicma_dpotrf->super.task_classes_array[i]->task_class_id;
         else if( !strcmp(hicma_dpotrf->super.task_classes_array[i]->name, "potrf_dsyrk") )
             syrk_id = hicma_dpotrf->super.task_classes_array[i]->task_class_id;
         else if( !strcmp(hicma_dpotrf->super.task_classes_array[i]->name, "potrf_dgemm") )
@@ -537,10 +601,12 @@ potrf_L_dense_mp_gpu_New( parsec_context_t *parsec,
         /* Install GPU evaluation functions for kernel selection */
         eval_gpu_potrf = (void *)&hicma_dpotrf->super.task_classes_array[potrf_id]->incarnations[gpu_id].evaluate;
         eval_gpu_trsm  = (void *)&hicma_dpotrf->super.task_classes_array[trsm_id]->incarnations[gpu_id].evaluate;
+        eval_gpu_trsm_send = (void *)&hicma_dpotrf->super.task_classes_array[trsm_send_id]->incarnations[gpu_id].evaluate;
         eval_gpu_syrk  = (void *)&hicma_dpotrf->super.task_classes_array[syrk_id]->incarnations[gpu_id].evaluate;
         eval_gpu_gemm  = (void *)&hicma_dpotrf->super.task_classes_array[gemm_id]->incarnations[gpu_id].evaluate;
         *eval_gpu_potrf = &evaluate_gpu_potrf;
         *eval_gpu_trsm  = &evaluate_gpu_trsm;
+        *eval_gpu_trsm_send = &evaluate_gpu_trsm_send;
         *eval_gpu_syrk  = &evaluate_gpu_syrk;
         *eval_gpu_gemm  = &evaluate_gpu_gemm;
 #endif
@@ -702,6 +768,12 @@ potrf_L_dense_mp_gpu_New( parsec_context_t *parsec,
             parsec_datatype_int_t, PARSEC_MATRIX_FULL,
             1, 1, 1, 1,
             PARSEC_ARENA_ALIGNMENT_SSE, -1 );
+
+    if( params->arena_pinned_memory && nb > 0 ) {
+        hicma_parsec_arenas_use_pinned_memory(
+                hicma_dpotrf->arenas_datatypes,
+                PARSEC_potrf_L_dense_mp_gpu_ADT_IDX_MAX);
+    }
 
     return (parsec_taskpool_t*)hicma_dpotrf;
 }

@@ -50,17 +50,10 @@ BODY
 {
     // Check if the tile has allocated memory
     if( NULL != PARSEC_DATA_COPY_GET_PTR(parsec_data_get_copy(data_of_descA(m, n), 0)) ) {
-        
-#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
-        // GPU memory deallocation: use CUDA/HIP free for pinned host memory
-        if( params_tlr->gpus > 0 ) {
-            cudaFreeHost(PARSEC_DATA_COPY_GET_PTR(parsec_data_get_copy(data_of_descA(m, n), 0)));
-        } else 
-#endif
-        {
-            // CPU memory deallocation: use standard free
-            free(PARSEC_DATA_COPY_GET_PTR(parsec_data_get_copy(data_of_descA(m, n), 0)));
-        }
+        /* Band tiles may be pinned while off-band tiles are calloc'ed, so pick
+         * the deallocator per pointer rather than per run configuration. */
+        hicma_parsec_host_tile_free(PARSEC_DATA_COPY_GET_PTR(parsec_data_get_copy(data_of_descA(m, n), 0)),
+                                    params_tlr->gpus);
     }
 }
 END

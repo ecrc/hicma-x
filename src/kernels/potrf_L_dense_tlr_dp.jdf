@@ -281,6 +281,8 @@ BODY [type=RECURSIVE]
     /* Create recursive PaRSEC taskpool for sub-tile factorization */
     parsec_dpotrf = dplasma_dpotrf_New(params_tlr->uplo, (parsec_tiled_matrix_t *)small_descT, &this_task->locals.info.value);
 
+    params_tlr->decisions_storage_final[k*descA->lmt+k] = DENSE_DP;
+
     /* Execute recursive call asynchronously */
     parsec_recursivecall((parsec_task_t*)this_task,
             parsec_dpotrf, dplasma_dpotrf_Destruct,
@@ -365,7 +367,9 @@ BODY [type=CUDA]
         return PARSEC_HOOK_RETURN_NEXT;
     }
 
-    hicma_parsec_core_trsm_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream, T, C, m, k );
+    parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, ws_gpu);
+    cublasSetStream( stream_found->handle_cublas, cuda_stream->cuda_stream );
+    hicma_parsec_core_trsm_gpu( descA, params_tlr, stream_found, cuda_device, gpu_task, cuda_stream, T, C, m, k );
 
     /* Update send size, how many bytes */
     this_task->locals.size.value = descA->mb * descA->mb;
@@ -400,6 +404,8 @@ BODY [type=RECURSIVE]
             (double)1.0,
             (parsec_tiled_matrix_t *)small_descT,
             (parsec_tiled_matrix_t *)small_descC );
+
+    params_tlr->decisions_storage_final[k*descA->lmt+m] = DENSE_DP;
 
     parsec_recursivecall((parsec_task_t*)this_task,
             parsec_dtrsm, dplasma_dtrsm_Destruct,
@@ -1206,4 +1212,3 @@ static parsec_key_t my_make_key_potrf_dgemm(const parsec_taskpool_t * tp, const 
 }
 
 %}
-

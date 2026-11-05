@@ -166,6 +166,9 @@ int gpu_load_mixed_precision( int m, int n, int NT, int P, int nb_cuda_devices, 
 parsec_potrf_stream_workspace_t *lookup_gpu_workspace( parsec_device_cuda_module_t *cuda_device,
         parsec_cuda_exec_stream_t *cuda_stream,
         parsec_potrf_workspace_t *ws );
+int lookup_gpu_workspace_i( parsec_device_cuda_module_t *cuda_device );
+int lookup_gpu_workspace_j( parsec_device_cuda_module_t *cuda_device,
+        parsec_cuda_exec_stream_t *cuda_stream );
 
 /**
  * @brief Allocate memory for workspace
@@ -233,7 +236,8 @@ void gpu_handle_fini( hicma_parsec_data_t *data );
  * @param[in] maxrank Maximum rank
  * @param[in] kind_of_cholesky Type of Cholesky factorization
  */
-void gpu_temporay_buffer_init( hicma_parsec_data_t *data, int mb, int nb, int maxrank, int kind_of_cholesky );
+void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t *params,
+        int mb, int nb, int maxrank, int kind_of_cholesky );
 
 /**
  * @brief Finalize GPU temporary buffer
@@ -467,6 +471,12 @@ void half2fp8_GPU( int nrows, int ncols,
                 void *T, int ldt,
                 cudaStream_t stream );
 
+void half2fp8_padded_GPU( int nrows, int ncols,
+                const void *S, int lds,
+                void *T, int ldt,
+                int padded_rows, int padded_cols,
+                cudaStream_t stream );
+
 /**
  * @brief Convert single precision to FP8 on GPU
  * 
@@ -483,6 +493,12 @@ void half2fp8_GPU( int nrows, int ncols,
 void float2fp8_GPU( int nrows, int ncols,
                 const float *S, int lds,
                 void *T, int ldt,
+                cudaStream_t stream );
+
+void float2fp8_padded_GPU( int nrows, int ncols,
+                const float *S, int lds,
+                void *T, int ldt,
+                int padded_rows, int padded_cols,
                 cudaStream_t stream );
 
 /**
@@ -511,6 +527,35 @@ void float2fp8_host(const float F, void* H);
 void double2fp8_GPU( int nrows, int ncols,
                 const double *S, int lds,
                 void *T, int ldt,
+                cudaStream_t stream );
+
+void double2fp8_padded_GPU( int nrows, int ncols,
+                const double *S, int lds,
+                void *T, int ldt,
+                int padded_rows, int padded_cols,
+                cudaStream_t stream );
+
+/**
+ * @brief Convert a tile to FP8 (E4M3) scaled by a power of two from its amax
+ *
+ * Writes the same transposed, zero-padded layout as double2fp8_padded_GPU,
+ * but of s * S, where s is the largest power of two with s * max|S| <= 448,
+ * and stores 1/s in scale[2] for cuBLASLt's A/B scale pointer. All on stream.
+ *
+ * @param[in] src_elem_size Element size of S: sizeof(double), sizeof(float) or 2 (half)
+ * @param[in] nrows, ncols  Size of S
+ * @param[in] S, lds        Source tile, column major
+ * @param[out] T, ldt       FP8 output
+ * @param[in] padded_rows, padded_cols Size of T, zero filled beyond S
+ * @param[in,out] scale     Device array of 3 floats: amax, s, 1/s
+ * @param[in] scaling       0: s = 1 (plain conversion)
+ * @param[in] stream        CUDA stream
+ */
+void hicma_fp8_scaled_convert_GPU( int src_elem_size, int nrows, int ncols,
+                const void *S, int lds,
+                void *T, int ldt,
+                int padded_rows, int padded_cols,
+                float *scale, int scaling,
                 cudaStream_t stream );
 
 /* ============================================================================
@@ -720,6 +765,44 @@ void int_2double_array(int nrows, int ncols,
  * ============================================================================ */
 
 /**
+ * @brief Subtract float matrix from double matrix on GPU
+ *
+ * Performs element-wise operation:
+ *   dest(double) -= src(float)
+ *
+ * @param[in] nrows Number of rows
+ * @param[in] ncols Number of columns
+ * @param[in] _src Source data pointer (float)
+ * @param[in,out] _dest Destination data pointer (double)
+ * @param[in] stream CUDA stream
+ */
+void sub_float_from_double_GPU( int nrows, int ncols, void *_src, void *_dest, cudaStream_t stream );
+
+void sub_float_from_double_ld_GPU( int nrows, int ncols,
+               void *_src, int ldsrc,
+               void *_dest, int lddest,
+               cudaStream_t stream );
+
+void sub_float_from_float_ld_GPU( int nrows, int ncols,
+               void *_src, int ldsrc,
+               void *_dest, int lddest,
+               cudaStream_t stream );
+
+/**
+ * @brief Copy double precision data from source to destination on GPU
+ *
+ * Performs memory copy operation for double precision data on GPU between
+ * source and destination locations.
+ *
+ * @param[in] nrows Number of rows
+ * @param[in] ncols Number of columns
+ * @param[in] _src Source data pointer
+ * @param[out] _dest Destination data pointer
+ * @param[in] stream CUDA stream
+ */
+void memcpy_double_GPU( int nrows, int ncols, void *_src, void *_dest, cudaStream_t stream );
+
+/**
  * @brief Copy float data from source to destination on GPU
  * 
  * Performs memory copy operation for float data on GPU between
@@ -927,6 +1010,13 @@ void hicma_parsec_hamming_merge_GPU(int nrows, int ncols, int *aout, int *ain, i
  * @param[in] stream CUDA stream
  */
 void hicma_parsec_memcpy_int32_GPU( int nrows, int ncols, void *_src, void *_dest, cudaStream_t stream );
+
+// d_dst: device pointer to 1 double (cudaMalloc)
+// x: host scalar value
+// stream: stream to enqueue the kernel (0 = default)
+void copy_float_to_device_double(double* d_dst, float x, cudaStream_t stream);
+void set_device_double(double* d_dst, double x, cudaStream_t stream);
+void copy_device_float_to_device_double(double* d_dst, const float* d_src, cudaStream_t stream);
 
 /* ============================================================================
  * GPU core operations
