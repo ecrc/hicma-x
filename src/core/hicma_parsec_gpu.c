@@ -635,14 +635,20 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t 
                     &workspaceSize, sizeof(workspaceSize));
 
             int requestedAlgoCount = 1;
-            int returnAlgoCount;
-            //cudaMalloc(&returnAlgoCount, sizeof(int));
+            int returnAlgoCount = 0;
             cublasLtMatmulHeuristicResult_t heuristicResultsArray;
+            memset(&heuristicResultsArray, 0, sizeof(heuristicResultsArray));
 
-            cublasLtMatmulAlgoGetHeuristic(
+            cublasStatus_t heuristic_status = cublasLtMatmulAlgoGetHeuristic(
                     lightHandle, matmulDesc, Adesc, Bdesc,
                     Cdesc, Cdesc, pref, requestedAlgoCount,
                     &heuristicResultsArray, &returnAlgoCount);
+            /* Expected on GPUs without FP8 GEMM (CC < 8.9), where FP8 tiles are
+             * disabled; anywhere else an FP8 GEMM would now abort. */
+            if( (CUBLAS_STATUS_SUCCESS != heuristic_status || 0 == returnAlgoCount) && params->fp8_enabled ) {
+                fprintf(stderr, "Warning: no cuBLASLt FP8 GEMM algorithm on device %d (status %d)\n",
+                        i, (int)heuristic_status);
+            }
 
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].heuristicResultsArray = heuristicResultsArray;
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].pref = pref;

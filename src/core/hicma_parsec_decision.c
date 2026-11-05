@@ -342,7 +342,9 @@ void hicma_parsec_decisions_send_analysis( hicma_parsec_params_t *params ) {
                 /* Set to HP by default */
                 params->decisions_send[n*NT+m] = DENSE_HP;
 #if HAVE_FP8
-                params->decisions_send[n*NT+m] = DENSE_FP8;
+                if( params->fp8_enabled ) {
+                    params->decisions_send[n*NT+m] = DENSE_FP8;
+                }
 #endif
 
                 /* Store decision */
@@ -721,7 +723,7 @@ void hicma_parsec_get_precision_tile(hicma_parsec_params_t *params_tlr,
     if( IS_DENSE(m, n) ) {
         // Precision selection hierarchy: FP8 -> HP -> SP -> DP (if supported)
 #if HAVE_FP8
-        if( decision_fp8 ) {
+        if( decision_fp8 && params_tlr->fp8_enabled ) {
             *new_decision = DENSE_FP8;
         }
 #if HAVE_HP

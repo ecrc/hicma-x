@@ -200,13 +200,20 @@ message(STATUS "HCORE configured from submodule")
 # STARSH exposes its GSL option through the CMake cache. Use that option
 # directly instead of inspecting a previously-built archive: on a clean build
 # (or when GSL is newly enabled) the archive does not exist yet or is stale.
+# Mirror STARSH's own logic (option ON *and* package found): when GSL is
+# missing, STARSH only turns GSL off in its own directory scope, so the cached
+# value seen here can still be ON and a REQUIRED lookup would abort configure.
 if(GSL)
-    message(STATUS "STARSH depends on GSL. Adding it to dependency list")
-    find_package(GSL REQUIRED)
-    add_definitions(-DGSL)
-    include_directories(${GSL_INCLUDE_DIRS})
-    message(STATUS "GSL support enabled")
-    list(APPEND HCORE_STARSH_LIB ${GSL_LIBRARIES})
+    find_package(GSL)
+    if(GSL_FOUND)
+        message(STATUS "STARSH depends on GSL. Adding it to dependency list")
+        add_definitions(-DGSL)
+        include_directories(${GSL_INCLUDE_DIRS})
+        message(STATUS "GSL support enabled")
+        list(APPEND HCORE_STARSH_LIB ${GSL_LIBRARIES})
+    else()
+        message(STATUS "GSL not found: building without GSL support")
+    endif()
 endif()
 
 # Add STARSH library to our dependency list
@@ -220,9 +227,10 @@ if(ENABLE_SANITIZER)
     add_compile_options(-fsanitize=address -fno-omit-frame-pointer -Wall)
 
     # Portable path: prefer compiler-driven sanitizer linking.
-    set(HICMA_ASAN_LINKS_WITH_COMPILER_FLAGS FALSE)
+    # Do not pre-set the result variable: check_c_source_compiles() skips the
+    # probe whenever the variable is already defined.
     cmake_push_check_state()
-    list(APPEND CMAKE_REQUIRED_FLAGS "-fsanitize=address -fno-omit-frame-pointer")
+    string(APPEND CMAKE_REQUIRED_FLAGS " -fsanitize=address -fno-omit-frame-pointer")
     list(APPEND CMAKE_REQUIRED_LINK_OPTIONS "-fsanitize=address")
     check_c_source_compiles("int main(void) { return 0; }" HICMA_ASAN_LINKS_WITH_COMPILER_FLAGS)
     cmake_pop_check_state()

@@ -364,7 +364,7 @@ BODY [type=CUDA]
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
     /* GPU-accelerated precision conversion from double to single precision */
     if( params_tlr->decisions_send[k*params_tlr->NT+k] != DENSE_DP ) {
-        hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(cuda_device, cuda_stream));
+        hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
         double2float_GPU( descA->mb, descA->nb, T0, descA->mb, T, descA->mb, cuda_stream->cuda_stream );
         this_task->data._f_T.data_out->original->nb_elts = descA->mb * descA->nb * sizeof(float);
     }
@@ -377,7 +377,7 @@ BODY [type=HIP]
 #if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
     /* HIP-accelerated precision conversion from double to single precision */
     if( params_tlr->decisions_send[k*params_tlr->NT+k] != DENSE_DP ) {
-        hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(cuda_device, cuda_stream));
+        hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
         double2float_GPU( descA->mb, descA->nb, T0, descA->mb, T, descA->mb, cuda_stream->cuda_stream );
         this_task->data._f_T.data_out->original->nb_elts = descA->mb * descA->nb * sizeof(float);
     } 
@@ -474,20 +474,24 @@ BODY [type=CUDA]
     parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, ws_gpu);
     cublasSetStream( stream_found->handle_cublas, cuda_stream->cuda_stream );
 
-    /* After the last GEMM that writes C, optionally store C in SP.
+    /* Column 0 (no GEMM updates C before this TRSM): decide from the norm
+     * of C whether to store C in SP before the solve.
      * handle_cublas is HOST pointer mode (synchronous nrm2 result).
      * handle_cublas_deviceptr cannot write into a host stack address. */
     const size_t tile_elems = descA->mb * descA->nb;
     const int idx_C = k * descA->lmt + m;
     uint16_t decision = params_tlr->decisions[idx_C];
-    if( 0 == k && 0 == params_tlr->adaptive_decision && DENSE_DP == params_tlr->decisions[idx_C] ) {
+    /* Runtime mode only: other ranks learn the new precision from the C_norm
+     * flow; without it they would keep reading this tile as DP. */
+    if( params_tlr->adaptive_decision_runtime && 0 == k && 0 == params_tlr->adaptive_decision
+            && DENSE_DP == params_tlr->decisions[idx_C] ) {
         double C_norm_host = 0.0;
         float *C_s = (float *)stream_found->gpu_buffer_C;
         cublasDnrm2(stream_found->handle_cublas, tile_elems, C, 1, &C_norm_host);
         hicma_parsec_get_precision_tile(params_tlr, &decision, C_norm_host, m, k);
         if( params_tlr->verbose > 100 ) {
             printf("m %d k %d C_norm %lf new_decision %d old_decision %d\n",
-                   m, k, C_norm, decision, params_tlr->decisions[idx_C]);
+                   m, k, C_norm_host, decision, params_tlr->decisions[idx_C]);
         }
         if( DENSE_DP != decision ) {
             double2float_GPU(descA->mb, descA->nb, C, descA->mb, C_s, descA->mb,
@@ -534,20 +538,24 @@ BODY [type=HIP]
     parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, ws_gpu);
     cublasSetStream( stream_found->handle_cublas, cuda_stream->cuda_stream );
 
-    /* After the last GEMM that writes C, optionally store C in SP.
+    /* Column 0 (no GEMM updates C before this TRSM): decide from the norm
+     * of C whether to store C in SP before the solve.
      * handle_cublas is HOST pointer mode (synchronous nrm2 result).
      * handle_cublas_deviceptr cannot write into a host stack address. */
     const size_t tile_elems = descA->mb * descA->nb;
     const int idx_C = k * descA->lmt + m;
     uint16_t decision = params_tlr->decisions[idx_C];
-    if( 0 == k && 0 == params_tlr->adaptive_decision && DENSE_DP == params_tlr->decisions[idx_C] ) {
+    /* Runtime mode only: other ranks learn the new precision from the C_norm
+     * flow; without it they would keep reading this tile as DP. */
+    if( params_tlr->adaptive_decision_runtime && 0 == k && 0 == params_tlr->adaptive_decision
+            && DENSE_DP == params_tlr->decisions[idx_C] ) {
         double C_norm_host = 0.0;
         float *C_s = (float *)stream_found->gpu_buffer_C;
         cublasDnrm2(stream_found->handle_cublas, tile_elems, C, 1, &C_norm_host);
         hicma_parsec_get_precision_tile(params_tlr, &decision, C_norm_host, m, k);
         if( params_tlr->verbose > 100 ) {
             printf("m %d k %d C_norm %lf new_decision %d old_decision %d\n",
-                   m, k, C_norm, decision, params_tlr->decisions[idx_C]);
+                   m, k, C_norm_host, decision, params_tlr->decisions[idx_C]);
         }
         if( DENSE_DP != decision ) {
             double2float_GPU(descA->mb, descA->nb, C, descA->mb, C_s, descA->mb,
@@ -747,23 +755,23 @@ BODY [type=CUDA]
 
         /* GPU-accelerated precision conversion */
         if( DENSE_SP == params_tlr->decisions_send[k*params_tlr->NT+m] && DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
-            hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(cuda_device, cuda_stream));
+            hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
             double2float_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
         } else if( DENSE_HP == params_tlr->decisions_send[k*params_tlr->NT+m] ) {
             if( DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
-                hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(cuda_device, cuda_stream));
+                hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
                 double2half_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
             } else {
-                hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(cuda_device, cuda_stream));
+                hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
                 float2half_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
             }
         } else if( DENSE_FP8 == params_tlr->decisions_send[k*params_tlr->NT+m] ) {
 #if HAVE_FP8
             if( DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
-                hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(cuda_device, cuda_stream));
+                hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
                 double2fp8_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
             } else {
-                hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(cuda_device, cuda_stream));
+                hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
                 float2fp8_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
             }
 #endif
@@ -806,23 +814,23 @@ BODY [type=HIP]
 
         /* HIP-accelerated precision conversion */
         if( DENSE_SP == params_tlr->decisions_send[k*params_tlr->NT+m] && DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
-            hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(cuda_device, cuda_stream));
+            hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
             double2float_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
         } else if( DENSE_HP == params_tlr->decisions_send[k*params_tlr->NT+m] ) {
             if( DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
-                hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(cuda_device, cuda_stream));
+                hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
                 double2half_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
             } else {
-                hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(cuda_device, cuda_stream));
+                hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
                 float2half_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
             }
         } else if( DENSE_FP8 == params_tlr->decisions_send[k*params_tlr->NT+m] ) {
 #if HAVE_FP8
             if( DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
-                hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(cuda_device, cuda_stream));
+                hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
                 double2fp8_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
             } else {
-                hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(cuda_device, cuda_stream));
+                hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
                 float2fp8_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
             }
 #endif

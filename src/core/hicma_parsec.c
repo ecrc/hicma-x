@@ -357,6 +357,17 @@ int hicma_parsec_potrf( parsec_context_t *parsec,
     cudaProfilerStart();
 #endif
 
+    /* Per-run statistics: start every factorization from zero so callers that
+     * loop over nruns (KRR, climate emulator, ...) do not accumulate counts. */
+    if( NULL != params->nb_gemms ) {
+        memset(params->nb_gemms, 0,
+               (size_t)(NB_DECISIONS+1) * params->counter_stride * sizeof(uint64_t));
+    }
+    if( NULL != params->nb_datatype_conversions ) {
+        memset(params->nb_datatype_conversions, 0,
+               (size_t)params->counter_stride * sizeof(uint64_t));
+    }
+
     /* Synchronize all processes and start timing for accurate measurement */
     MPI_Barrier( MPI_COMM_WORLD );
     SYNC_TIME_START();
@@ -506,17 +517,24 @@ int hicma_parsec_potrf( parsec_context_t *parsec,
 
     /* Statistics for number of GEMMs in different precision */
     if(params->verbose > 1) {
+        /* counter_stride depends on the local core/GPU count and may differ
+         * between ranks, so reduce the per-worker slots locally first and
+         * only exchange a fixed-size array of totals. Totals land in slot 0. */
         int counter_stride = params->counter_stride;
+        uint64_t totals[NB_DECISIONS+2] = {0};
         for( int i = 0; i < NB_DECISIONS+1; i++ ) {
-            for( int j = 1; j < counter_stride; j++ ) {
-                params->nb_gemms[i*counter_stride] += params->nb_gemms[i*counter_stride+j];
+            for( int j = 0; j < counter_stride; j++ ) {
+                totals[i] += params->nb_gemms[i*counter_stride+j];
             }
         }
-        MPI_Allreduce(MPI_IN_PLACE, params->nb_gemms, (NB_DECISIONS+1)*counter_stride, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
-        for( int j = 1; j < counter_stride; j++ ) {
-            params->nb_datatype_conversions[0] += params->nb_datatype_conversions[j];
+        for( int j = 0; j < counter_stride; j++ ) {
+            totals[NB_DECISIONS+1] += params->nb_datatype_conversions[j];
         }
-        MPI_Allreduce(MPI_IN_PLACE, params->nb_datatype_conversions, counter_stride, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, totals, NB_DECISIONS+2, MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+        for( int i = 0; i < NB_DECISIONS+1; i++ ) {
+            params->nb_gemms[i*counter_stride] = totals[i];
+        }
+        params->nb_datatype_conversions[0] = totals[NB_DECISIONS+1];
         if( 0 == params->rank ) {
             fprintf(stderr, GRN"Number_of_GEMMs: DENSE_DP= %lu DENSE_SP= %lu DENSE_HP= %lu DENSE_FP8= %lu LOW_RANK_DP= %lu LOW_RANK_SP= %lu Number_of_Datatype_Conversions= %lu\n"RESET,
                     params->nb_gemms[DENSE_DP*counter_stride], params->nb_gemms[DENSE_SP*counter_stride], params->nb_gemms[DENSE_HP*counter_stride],

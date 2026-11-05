@@ -62,6 +62,16 @@ void hicma_parsec_core_memory_allocation(void **A, size_t nb_elements, char *all
 void hicma_parsec_arenas_use_pinned_memory(parsec_arena_datatype_t *arenas,
                                            int arena_count);
 
+/**
+ * @brief Release one host tile buffer with the deallocator matching its allocator.
+ *
+ * Tiles of one matrix can mix pinned (cudaMallocHost/hipHostMalloc: band tiles
+ * and regenerated check matrices when GPUs are used) and pageable
+ * (malloc/calloc: off-band low-rank tiles) buffers, so the allocator is looked
+ * up per pointer instead of assumed from the tile's position.
+ */
+void hicma_parsec_host_tile_free(void *ptr, int gpus);
+
 /* ============================================================================
  * Utility and debugging functions
  * ============================================================================ */
@@ -318,7 +328,8 @@ void hicma_parsec_count_datatype_conversion(hicma_parsec_params_t *params_tlr,
                                             int counter_id);
 
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
-int hicma_parsec_gpu_counter_id(parsec_device_cuda_module_t *cuda_device,
+int hicma_parsec_gpu_counter_id(hicma_parsec_params_t *params_tlr,
+                                parsec_device_cuda_module_t *cuda_device,
                                 parsec_cuda_exec_stream_t *cuda_stream);
 #endif
 

@@ -66,14 +66,8 @@ BODY
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)  || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
     /* GPU load balancing and data binding */
 
-#if 1
-    if( nb_cuda_devices > 0 ) {
-        int g = gpu_load_balance_2d( m, n, params_tlr );
-        parsec_advise_data_on_device( _f_A->original, 
-                                    cuda_device_index[g],
-                                    PARSEC_DEV_DATA_ADVICE_PREFERRED_DEVICE );
-    } 
-#else
+    /* Must match the device mapping of each kind's potrf_bind_A task,
+     * otherwise warmup stages tiles on a GPU the factorization does not use. */
     if( nb_cuda_devices > 0 ) {
         int g;  /* GPU device index */
         
@@ -94,7 +88,6 @@ BODY
                 cuda_device_index[g],
                 PARSEC_DEV_DATA_ADVICE_PREFERRED_DEVICE );
     }
-#endif
 #endif
 }
 END

@@ -65,7 +65,9 @@ BODY
         /* Set to highest precision by default */
         new_decisions[n*NT+m] = DENSE_HP;
 #if HAVE_FP8
-        new_decisions[n*NT+m] = DENSE_FP8;
+        if( params_tlr->fp8_enabled ) {
+            new_decisions[n*NT+m] = DENSE_FP8;
+        }
 #endif
 
         /* Store minimum precision requirement for this tile */

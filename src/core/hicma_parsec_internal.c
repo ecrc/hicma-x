@@ -480,6 +480,28 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
     return 0;
 }
 
+/*
+ * Per-worker statistics counters (nb_gemms, nb_datatype_conversions).
+ * Layout of one row: [0, cores) for CPU threads indexed by es->th_id, then
+ * [cores, cores + gpus*PARSEC_GPU_MAX_STREAMS) for GPU execution streams
+ * (see hicma_parsec_gpu_counter_id). CPU bodies can run in GPU builds too,
+ * so both ranges must exist; giving each worker its own slot keeps the
+ * increments race free without atomics.
+ */
+static void hicma_parsec_counters_allocate(hicma_parsec_params_t *params)
+{
+    params->counter_gpu_offset = params->cores;
+    params->counter_stride = params->cores;
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    if(params->gpus > 0) {
+        params->counter_stride += params->gpus * PARSEC_GPU_MAX_STREAMS;
+    }
+#endif
+
+    params->nb_gemms = (uint64_t *)calloc((NB_DECISIONS+1)*params->counter_stride, sizeof(uint64_t));
+    params->nb_datatype_conversions = (uint64_t *)calloc(params->counter_stride, sizeof(uint64_t));
+}
+
 static void hicma_parsec_free_kernel_time_intervals(hicma_kernel_time_interval_t **intervals, int count)
 {
     int i;
@@ -586,6 +608,7 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     // Hardware configuration - these control resource utilization
     params->cores = -1;         // Number of cores per node (-1 = auto-detect from system)
     params->gpus  = 0;          // Number of GPUs to use (0 = CPU only, >0 enables GPU acceleration)
+    params->fp8_enabled = HAVE_FP8;  // Refined in setup_parsec() from the GPUs' compute capability
     params->kernel_time_cpu = NULL;
     params->kernel_time_gpu = NULL;
     params->kernel_time_gpu_event = NULL;
@@ -952,7 +975,8 @@ parsec_context_t* setup_parsec(int argc, char **argv, hicma_parsec_params_t * pa
         params->kernel_time_cpu_count = params->cores;
         params->kernel_time_cpu = (double *)calloc(params->kernel_time_cpu_count, sizeof(double));
         params->kernel_time_cpu_intervals = (hicma_kernel_time_interval_t **)calloc(params->kernel_time_cpu_count, sizeof(hicma_kernel_time_interval_t *));
-        params->kernel_time_gpu_count = (params->gpus > 0) ? params->gpus + 1 : 0;
+        /* Indexed by PaRSEC device_index: 0 = CPU, 1 = recursive, GPUs start at 2. */
+        params->kernel_time_gpu_count = (params->gpus > 0) ? params->gpus + 2 : 0;
         params->kernel_time_gpu_event_count = params->kernel_time_gpu_count;
         if(params->kernel_time_gpu_count > 0) {
             params->kernel_time_gpu = (double *)calloc(params->kernel_time_gpu_count, sizeof(double));
@@ -964,17 +988,7 @@ parsec_context_t* setup_parsec(int argc, char **argv, hicma_parsec_params_t * pa
             params->kernel_time_gpu_intervals = NULL;
         }
 
-#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
-        if(params->gpus > 0) {
-            params->counter_stride = params->gpus * PARSEC_GPU_MAX_STREAMS;
-        } else
-#endif
-	{
-            params->counter_stride = params->cores;
-        }
-
-        params->nb_gemms = (uint64_t *)calloc((NB_DECISIONS+1)*params->counter_stride, sizeof(uint64_t));
-        params->nb_datatype_conversions = (uint64_t *)calloc(params->counter_stride, sizeof(uint64_t));
+        hicma_parsec_counters_allocate(params);
     }
 
     // Print parameter summary for verification
@@ -1023,6 +1037,37 @@ parsec_context_t* setup_parsec(int argc, char **argv, hicma_parsec_params_t * pa
         fprintf(stderr, RED "Rank %d: Update nb_gpus from input %d to real %d\n" RESET, params->rank, params->gpus, hicma_parsec_min(nb_gpus_check, params->gpus));
     }
     params->gpus = hicma_parsec_min(nb_gpus_check, params->gpus);
+
+    /* FP8 GEMMs go through cuBLASLt E4M3, which needs compute capability
+     * >= 8.9 (Ada/Hopper and newer). On V100/A100 the matmul fails with
+     * CUBLAS_STATUS_ARCH_MISMATCH, so tiles that would be FP8 use HP instead.
+     * Agree across ranks: every rank computes the same decision arrays. */
+    params->fp8_enabled = HAVE_FP8;
+#if HAVE_FP8 && defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+    for( int d = 0; d < params->gpus && params->fp8_enabled; d++ ) {
+        struct cudaDeviceProp prop;
+        if( cudaSuccess != cudaGetDeviceProperties(&prop, d)
+            || prop.major * 10 + prop.minor < 89 ) {
+            params->fp8_enabled = 0;
+        }
+    }
+#endif
+    MPI_Allreduce(MPI_IN_PLACE, &params->fp8_enabled, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+    if( 0 == params->rank && HAVE_FP8 && !params->fp8_enabled ) {
+        fprintf(stderr, RED "FP8 GEMM requires compute capability >= 8.9 on every GPU: "
+                "tiles that would use FP8 use HP instead\n" RESET);
+    }
+
+    /* With adaptive_memory, convert_d2s gives SP tiles an SP-sized host buffer.
+     * Only the GPU runtime GEMM reallocates before promoting C to DP; the CPU
+     * runtime GEMM converts in place and would write past the buffer. */
+    if( params->adaptive_decision_runtime && params->adaptive_memory && 0 == params->gpus ) {
+        if( 0 == params->rank ) {
+            fprintf(stderr, RED "adaptive_decision_runtime on CPU does not support adaptive_memory: "
+                    "setting adaptive_memory= 0\n" RESET);
+        }
+        params->adaptive_memory = 0;
+    }
 
     params->gpu_cols = hicma_parsec_process_grid_calculation( params->gpus );
     params->gpu_rows = params->gpus / params->gpu_cols;
@@ -1159,17 +1204,7 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
     params->nb_low_rank_sp = 0.0;     // Number of single precision low-rank tiles
 
     if( params->cores > 0 ) {
-#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
-        if(params->gpus > 0) {
-            params->counter_stride = params->gpus * PARSEC_GPU_MAX_STREAMS;
-        } else
-#endif
-	{
-            params->counter_stride = params->cores;
-        }
-
-        params->nb_gemms = (uint64_t *)calloc((NB_DECISIONS+1)*params->counter_stride, sizeof(uint64_t));
-        params->nb_datatype_conversions = (uint64_t *)calloc(params->counter_stride, sizeof(uint64_t));
+        hicma_parsec_counters_allocate(params);
     }
 
     /* ===========================================
@@ -1290,7 +1325,8 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
         params->kernel_time_cpu_count = params->cores;
         params->kernel_time_cpu = (double *)calloc(params->kernel_time_cpu_count, sizeof(double));
         params->kernel_time_cpu_intervals = (hicma_kernel_time_interval_t **)calloc(params->kernel_time_cpu_count, sizeof(hicma_kernel_time_interval_t *));
-        params->kernel_time_gpu_count = (params->gpus > 0) ? params->gpus + 1 : 0;
+        /* Indexed by PaRSEC device_index: 0 = CPU, 1 = recursive, GPUs start at 2. */
+        params->kernel_time_gpu_count = (params->gpus > 0) ? params->gpus + 2 : 0;
         params->kernel_time_gpu_event_count = params->kernel_time_gpu_count;
         if(params->kernel_time_gpu_count > 0) {
             params->kernel_time_gpu = (double *)calloc(params->kernel_time_gpu_count, sizeof(double));
@@ -1750,6 +1786,15 @@ int hicma_parsec_params_check( hicma_parsec_params_t *params )
 
     // If adaptive decision during runtime
     if( params->adaptive_decision_runtime != 0 ) {
+        /* The runtime-decision GPU GEMM converts/copies operands with C's edge
+         * sizes and assumes ld == rows, which is only right for full tiles. */
+        if( params->N % params->NB != 0 ) {
+            if( 0 == params->rank ) {
+                fprintf(stderr, RED "adaptive_decision_runtime requires N (%d) to be a multiple of NB (%d)\n" RESET,
+                        params->N, params->NB);
+            }
+            exit(1);
+        }
         params->kind_of_cholesky = DENSE_MP_GPU_FP8_ADAPTIVE;
         //params->adaptive_decision = 1; 
         params->datatype_convert = 0;

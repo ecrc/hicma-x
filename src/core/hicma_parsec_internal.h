@@ -255,7 +255,7 @@ extern "C" {  /**< Enable C linkage for C++ compatibility */
 
 /* Conditional feature flags - enable features based on available hardware */
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
-#define HAVE_FP8 1  /**< Enable FP8 precision on CUDA (8-bit floating point) */
+#define HAVE_FP8 0  /**< Enable FP8 precision on CUDA (8-bit floating point) */
 #define HAVE_I8  1  /**< Enable INT8 precision on CUDA (8-bit integer) */
 #else
 #define HAVE_FP8 0  /**< FP8 precision not available (no CUDA support) */
@@ -636,7 +636,9 @@ typedef struct hicma_parsec_params_s {
     double nb_low_rank_sp;    /**< Number of low-rank single precision tiles */
     uint64_t *nb_gemms;
     uint64_t *nb_datatype_conversions;
-    int counter_stride;
+    int counter_stride;       /**< Slots per counter row: CPU threads + GPU streams */
+    int counter_gpu_offset;   /**< First GPU-stream slot in a counter row */
+    int fp8_enabled;          /**< HAVE_FP8 and every GPU supports FP8 GEMM (CC >= 8.9) */
 
     /* ========================================================================
      * Performance metrics

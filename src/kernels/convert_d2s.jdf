@@ -51,9 +51,15 @@ BODY
     if(IS_DENSE(m, n)) {
         this_task->data._f_A.data_out->original->nb_elts = descA->mb * size * sizeof(double);
     } else {
-        // Calculate size based on rank (U*V format: rank * 2)
-        size = ((int *)Ar)[0] * 2;
-        this_task->data._f_A.data_out->original->nb_elts = descA->mb * size * sizeof(double);
+        // Calculate size based on rank (U*V format: rank * 2); used by the LOW_RANK_SP conversion below
+        int rank_tile = ((int *)Ar)[0];
+        size = rank_tile * 2;
+        /* Keep the element count matrix_compress set for the allocated U*V
+         * buffer: with send_full_tile it holds maxrank columns, and shrinking
+         * nb_elts to the current rank would truncate later stage-ins/sends. */
+        int alloc_cols = (1 == params_tlr->send_full_tile) ? params_tlr->maxrank * 2
+                                                           : parsec_imin(params_tlr->maxrank, rank_tile) * 2;
+        this_task->data._f_A.data_out->original->nb_elts = descA->mb * alloc_cols * sizeof(double);
     }
 
     // Handle dense matrix tiles that need conversion to single precision

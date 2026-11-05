@@ -51,7 +51,12 @@ static int wrap_potrf(parsec_execution_stream_t * es,
     
     /* Record start time for POTRF operation timing */
     double start_time = MPI_Wtime();
+#if PRINT_KERNEL_TIME
+    /* Only taken back when PRINT_KERNEL_TIME is on; recording it
+     * unconditionally leaves stale entries that a reused task object
+     * (e.g. a later GEMM) would pick up. */
     hicma_kernel_time_record(this_task, start_time);
+#endif
     parsec_tp->_g_params_tlr->potrf_time_temp = start_time;
     parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id] = start_time;
     
@@ -132,7 +137,12 @@ static int wrap_trsm(parsec_execution_stream_t * es,
     
     /* Record start time for thread-level timing */
     double start_time = MPI_Wtime();
+#if PRINT_KERNEL_TIME
+    /* Only taken back when PRINT_KERNEL_TIME is on; recording it
+     * unconditionally leaves stale entries that a reused task object
+     * (e.g. a later GEMM) would pick up. */
     hicma_kernel_time_record(this_task, start_time);
+#endif
     parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id] = start_time;
 
     /* Only time the first TRSM operation in each column to avoid double-counting */
@@ -227,7 +237,12 @@ static int wrap_syrk(parsec_execution_stream_t * es,
     
     /* Record start time for thread-level timing */
     double start_time = MPI_Wtime();
+#if PRINT_KERNEL_TIME
+    /* Only taken back when PRINT_KERNEL_TIME is on; recording it
+     * unconditionally leaves stale entries that a reused task object
+     * (e.g. a later GEMM) would pick up. */
     hicma_kernel_time_record(this_task, start_time);
+#endif
     parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id] = start_time;
     
     /* Only time the first SYRK operation in each column to avoid double-counting */

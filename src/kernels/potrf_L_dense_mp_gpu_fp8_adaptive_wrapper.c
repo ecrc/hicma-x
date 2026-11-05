@@ -52,7 +52,12 @@ static int wrap_potrf(parsec_execution_stream_t * es,
     
     // Record start time for POTRF kernel execution timing
     double start_time = MPI_Wtime();
+#if PRINT_KERNEL_TIME
+    /* Only taken back when PRINT_KERNEL_TIME is on; recording it
+     * unconditionally leaves stale entries that a reused task object
+     * (e.g. a later GEMM) would pick up. */
     hicma_kernel_time_record(this_task, start_time);
+#endif
     parsec_tp->_g_params_tlr->potrf_time_temp = start_time;
     parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id] = start_time;
     
@@ -132,7 +137,12 @@ static int wrap_trsm(parsec_execution_stream_t * es,
     
     // Record timing for thread-local gather time tracking
     double start_time = MPI_Wtime();
+#if PRINT_KERNEL_TIME
+    /* Only taken back when PRINT_KERNEL_TIME is on; recording it
+     * unconditionally leaves stale entries that a reused task object
+     * (e.g. a later GEMM) would pick up. */
     hicma_kernel_time_record(this_task, start_time);
+#endif
     parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id] = start_time;
 
     // Only record TRSM timing for the first operation in each column (critical path)
@@ -226,7 +236,12 @@ static int wrap_syrk(parsec_execution_stream_t * es,
     
     // Record timing for thread-local gather time tracking
     double start_time = MPI_Wtime();
+#if PRINT_KERNEL_TIME
+    /* Only taken back when PRINT_KERNEL_TIME is on; recording it
+     * unconditionally leaves stale entries that a reused task object
+     * (e.g. a later GEMM) would pick up. */
     hicma_kernel_time_record(this_task, start_time);
+#endif
     parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id] = start_time;
     
     // Only record SYRK timing for the first operation in each column (critical path)
@@ -516,6 +531,27 @@ potrf_L_dense_mp_gpu_fp8_adaptive_New( parsec_context_t *parsec,
     parsec_tiled_matrix_t *Rank = (parsec_tiled_matrix_t *)&data->dcRank;
     parsec_tiled_matrix_t *Fake = (parsec_tiled_matrix_t *)&data->dcFake;
     parsec_tiled_matrix_t *Norm = (parsec_tiled_matrix_t *)&data->dcNorm;
+
+    /* descNorm is declared `aligned = descA` in the JDF: TRSM reads/writes
+     * descNorm(m, k) on the rank owning descA(m, k). dcNorm follows dcA's band
+     * distribution while the dense path runs on dcAd (2D block cyclic), so the
+     * two differ when band_size_dist > 0 (NT <= P or --band_dist). Refuse that
+     * instead of touching norm storage this rank does not own. Every rank
+     * evaluates the same mapping, so all ranks stop together. */
+    if( params->adaptive_decision_runtime ) {
+        for( int n = 0; n < A->nt; n++ ) {
+            for( int m = n; m < A->mt; m++ ) {
+                if( A->super.rank_of(&A->super, m, n) != Norm->super.rank_of(&Norm->super, m, n) ) {
+                    if( 0 == rank ) {
+                        fprintf(stderr, "potrf_L_dense_mp_gpu_fp8_adaptive: norm descriptor is not distributed like "
+                                "the matrix (tile (%d, %d), band_size_dist= %d); run without band distribution\n",
+                                m, n, params->band_size_dist);
+                    }
+                    MPI_Abort(MPI_COMM_WORLD, 1);
+                }
+            }
+        }
+    }
 
     // Validate input parameters
     if ((uplo != PlasmaLower)) {

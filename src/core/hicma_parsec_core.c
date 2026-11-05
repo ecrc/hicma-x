@@ -16,15 +16,19 @@ void hicma_parsec_count_datatype_conversion(hicma_parsec_params_t *params_tlr,
                                             int counter_id)
 {
     if( params_tlr->verbose > 1 ) {
+        assert(counter_id >= 0 && counter_id < params_tlr->counter_stride);
         params_tlr->nb_datatype_conversions[counter_id] += 1;
     }
 }
 
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
-int hicma_parsec_gpu_counter_id(parsec_device_cuda_module_t *cuda_device,
+/* GPU stream slots live after the CPU-thread slots (see hicma_parsec_counters_allocate). */
+int hicma_parsec_gpu_counter_id(hicma_parsec_params_t *params_tlr,
+                                parsec_device_cuda_module_t *cuda_device,
                                 parsec_cuda_exec_stream_t *cuda_stream)
 {
-    return cuda_device->cuda_index * PARSEC_GPU_MAX_STREAMS
+    return params_tlr->counter_gpu_offset
+         + cuda_device->cuda_index * PARSEC_GPU_MAX_STREAMS
          + lookup_gpu_workspace_j(cuda_device, cuda_stream);
 }
 #endif
@@ -67,6 +71,41 @@ static void hicma_parsec_pinned_memory_free(void *ptr)
 #endif
 }
 
+void hicma_parsec_host_tile_free(void *ptr, int gpus)
+{
+    if( NULL == ptr ) {
+        return;
+    }
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+    if( gpus > 0 ) {
+        struct cudaPointerAttributes attr;
+        if( cudaSuccess == cudaPointerGetAttributes(&attr, ptr) ) {
+            if( cudaMemoryTypeHost == attr.type ) {
+                cudaFreeHost(ptr);
+                return;
+            }
+        } else {
+            (void)cudaGetLastError();  /* clear the sticky query error */
+        }
+    }
+#elif defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    if( gpus > 0 ) {
+        hipPointerAttribute_t attr;
+        if( hipSuccess == hipPointerGetAttributes(&attr, ptr) ) {
+            if( hipMemoryTypeHost == attr.type ) {
+                hipHostFree(ptr);
+                return;
+            }
+        } else {
+            (void)hipGetLastError();
+        }
+    }
+#else
+    (void)gpus;
+#endif
+    free(ptr);
+}
+
 void hicma_parsec_arenas_use_pinned_memory(parsec_arena_datatype_t *arenas,
                                            int arena_count)
 {
@@ -79,6 +118,17 @@ void hicma_parsec_arenas_use_pinned_memory(parsec_arena_datatype_t *arenas,
         arena->data_free = hicma_parsec_pinned_memory_free;
     }
 }
+
+/* Every early exit of the GPU GEMM kernels below is an error path (unsupported
+ * precision, failed reallocation, failed cuBLASLt call). Returning would let the
+ * task complete with C never updated, i.e. a silently wrong factorization that
+ * can still pass the residual check when the skipped updates are small
+ * (FP8 is only selected for small-norm tiles). Abort instead. */
+#define HICMA_GPU_GEMM_FATAL() do {                                              \
+        fprintf(stderr, "Fatal: GPU GEMM (%d, %d, %d) could not be executed; "   \
+                "aborting instead of skipping the update\n", m, n, k);          \
+        abort();                                                                 \
+    } while(0)
 
 #if HAVE_FP8
 static int hicma_parsec_check_cublaslt_status(cublasStatus_t status,
@@ -263,6 +313,7 @@ static int hicma_reallocate_tile_on_gpu(parsec_device_cuda_module_t *cuda_device
                                         parsec_data_copy_t *active_copy,
                                         void *expected_ptr,
                                         size_t target_bytes,
+                                        cudaStream_t exec_stream,
                                         int m, int n, int k,
                                         void **new_ptr_out)
 {
@@ -299,6 +350,11 @@ static int hicma_reallocate_tile_on_gpu(parsec_device_cuda_module_t *cuda_device
     /* Last resort: the DP GEMM result already lives in the C workspace, so the
      * old SP buffer can be released to create a contiguous FP64 slot. */
     if( NULL == new_ptr && NULL != old_ptr ) {
+        /* zone_free() only updates host-side bookkeeping: kernels already
+         * queued on exec_stream (e.g. the SP->DP conversion of C) may still
+         * read old_ptr, and the range can be handed to the next task's
+         * stage-in on another stream. Drain this stream first. */
+        cudaStreamSynchronize(exec_stream);
         zone_free(gpu_device->memory, old_ptr);
         active_copy->device_private = NULL;
         old_ptr = NULL;
@@ -313,6 +369,7 @@ static int hicma_reallocate_tile_on_gpu(parsec_device_cuda_module_t *cuda_device
     }
 
     if( !freed_old && NULL != old_ptr && old_ptr != new_ptr ) {
+        cudaStreamSynchronize(exec_stream);  /* see above: old_ptr may still be read */
         zone_free(gpu_device->memory, old_ptr);
     }
 
@@ -1631,6 +1688,8 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
             params_tlr->nb_gemms[DENSE_SP*counter_stride+tid] += 1;
         } else if( DENSE_HP == new_decision ) {
             params_tlr->nb_gemms[DENSE_HP*counter_stride+tid] += 1;
+        } else if( DENSE_FP8 == new_decision ) {
+            params_tlr->nb_gemms[DENSE_FP8*counter_stride+tid] += 1;
         } else if(LOW_RANK_DP == new_decision ) {
             params_tlr->nb_gemms[LOW_RANK_DP*counter_stride+tid] += 1;
         } else if(LOW_RANK_SP == new_decision ) {
@@ -3046,7 +3105,7 @@ void hicma_parsec_core_trsm_gpu( parsec_tiled_matrix_t* descA,
         parsec_cuda_exec_stream_t *cuda_stream,
         void *T, void *C, int m, int k ) {
 
-    int counter_id = hicma_parsec_gpu_counter_id(cuda_device, cuda_stream);
+    int counter_id = hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream);
     if(DEBUG_INFO) printf("GPU_trsm %d %d\n", m, k);
 
     int tempmm = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
@@ -3137,7 +3196,7 @@ void hicma_parsec_core_syrk_gpu( parsec_tiled_matrix_t* descA,
         parsec_cuda_exec_stream_t *cuda_stream,
         void *T, void *A, int m, int k, int Arank ) {
 
-    int counter_id = hicma_parsec_gpu_counter_id(cuda_device, cuda_stream);
+    int counter_id = hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream);
     int tempmm = m == descA->mt-1 ? descA->m - m*descA->mb : descA->mb;
     int ldam = BLKLDD( descA, m );
     if( DEBUG_INFO ) printf("GPU_syrk:  %d %d\n", m, k);
@@ -3270,7 +3329,7 @@ void hicma_parsec_core_syrk_runtime_decision_gpu( parsec_tiled_matrix_t* descA,
         void *T, void *A, int m, int k, int Arank, void *A_norm )
 {
 
-    int counter_id = hicma_parsec_gpu_counter_id(cuda_device, cuda_stream);
+    int counter_id = hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream);
     if(!params_tlr->adaptive_decision_runtime) {
         fprintf(stderr, "in SYRK, it needs to enable adaptive_decision_runtime\n");
         return;
@@ -3395,7 +3454,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
         void *C, void *A, void *B, int m, int n, int k,
         int Crank, int Arank, int Brank )
 {
-    int counter_id = hicma_parsec_gpu_counter_id(cuda_device, cuda_stream);
+    int counter_id = hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream);
     int tempmm = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
     int ldam = BLKLDD( descA, m );
     int ldan = BLKLDD( descA, n );
@@ -3429,10 +3488,10 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
         if(gpu_time_active) {                                           \
             hicma_kernel_time_gpu_event_abort(gpu_time_start, gpu_time_stop); \
         }                                                               \
-        return;                                                         \
+        HICMA_GPU_GEMM_FATAL();                                         \
     } while(0)
 #else
-#define HICMA_GPU_TIME_RETURN do { return; } while(0)
+#define HICMA_GPU_TIME_RETURN do { HICMA_GPU_GEMM_FATAL(); } while(0)
 #endif
 
     /* Get the temporary buffer on GPU */
@@ -3816,7 +3875,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
         int Crank, int Arank, int Brank,
         void *A_norm, void *B_norm )
 {
-    int counter_id = hicma_parsec_gpu_counter_id(cuda_device, cuda_stream);
+    int counter_id = hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream);
     __parsec_potrf_L_dense_mp_gpu_fp8_adaptive_potrf_dgemm_task_t *this_task =
         (__parsec_potrf_L_dense_mp_gpu_fp8_adaptive_potrf_dgemm_task_t *)this_task_;
     if(!params_tlr->adaptive_decision_runtime) {
@@ -3881,28 +3940,34 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
     cublasSetStream( handle, cuda_stream->cuda_stream );
 
 
-#if 1
-    /* The first local GEMM */
+    /* The first local GEMM: decide the *storage* precision of C from ||C||.
+     * This is kept separate from new_decision, the *compute* precision of this
+     * GEMM, which must come from ||A||*||B|| (the size of the update) and is
+     * also what decisions_gemm_first records. When this GEMM runs in DP, the DP
+     * path below stores C back in DP, so a downcast here would only add two
+     * conversions and leave nb_elts at the SP size; skip it in that case. */
     if( 0 == k && 0 == params_tlr->adaptive_decision
-            && DENSE_DP == params_tlr->decisions[idx_C] ) {
+            && DENSE_DP == params_tlr->decisions[idx_C]
+            && DENSE_DP != new_decision ) {
+        uint16_t storage_decision = (uint16_t)Cprecision;
         double C_norm = 0.0;
         const size_t tile_elems = descA->mb * descA->nb;
         cublasDnrm2(stream_found->handle_cublas, tile_elems, C, 1, &C_norm);
-        hicma_parsec_get_precision_tile(params_tlr, &new_decision, C_norm, m, n);
+        hicma_parsec_get_precision_tile(params_tlr, &storage_decision, C_norm, m, n);
         if( params_tlr->verbose > 100 ) {
-            printf("k 0 m %d n %d C_norm %lf new_decision %d old_decision %d\n",
-                   m, n, C_norm, new_decision, params_tlr->decisions[idx_C]);
+            printf("k 0 m %d n %d C_norm %lf storage_decision %d gemm_decision %d old_decision %d\n",
+                   m, n, C_norm, storage_decision, new_decision, params_tlr->decisions[idx_C]);
         }
-        if( DENSE_DP != new_decision ) {
+        if( DENSE_DP != storage_decision ) {
             double2float_GPU(descA->mb, descA->nb, C, descA->mb, C_s, descA->mb,
                              cuda_stream->cuda_stream);
             memcpy_float_GPU(descA->mb, descA->nb, C_s, C, cuda_stream->cuda_stream);
             this_task->data._f_C.data_out->original->nb_elts =
-                (size_t)tempmm * (size_t)tempnn * sizeof(float);
+                (size_t)descA->mb * (size_t)descA->nb * sizeof(float);
             params_tlr->decisions[idx_C] = DENSE_SP;
+            Cprecision = DENSE_SP;
         }
     }
-#endif
 
 #if PRINT_KERNEL_TIME && defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
     cudaEvent_t gpu_time_start = NULL;
@@ -3914,10 +3979,10 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
         if(gpu_time_active) {                                           \
             hicma_kernel_time_gpu_event_abort(gpu_time_start, gpu_time_stop); \
         }                                                               \
-        return;                                                         \
+        HICMA_GPU_GEMM_FATAL();                                         \
     } while(0)
 #else
-#define HICMA_GPU_TIME_RETURN do { return; } while(0)
+#define HICMA_GPU_TIME_RETURN do { HICMA_GPU_GEMM_FATAL(); } while(0)
 #endif
 
     if( new_decision != params_tlr->decisions[idx_C] && params_tlr->verbose > 99 ) {
@@ -3984,6 +4049,10 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
                         B_use, CUDA_R_64F, ldan,
                 &beta,  C_use, CUDA_R_64F, ldam,
                 CUBLAS_COMPUTE_64F, CUBLAS_GEMM_DEFAULT);
+        if( CUBLAS_STATUS_SUCCESS != status ) {
+            fprintf(stderr, "cublasGemmEx failed in runtime-decision GEMM: cublas status %d\n", (int)status);
+            HICMA_GPU_TIME_RETURN;
+        }
 
         // Reallocate memory on GPU if memory grows
         // Reallocate memory on CPU if adaptive_memory is enabled
@@ -4002,7 +4071,8 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
                     cpu_copy = PARSEC_DATA_GET_COPY(c_copy->original, 0);
                 }
                 active_copy = (NULL != c_dev_copy) ? c_dev_copy : c_copy;
-                if( 0 != hicma_reallocate_tile_on_gpu(cuda_device, gpu_task, active_copy, C, target_bytes, m, n, k, &new_C) ) {
+                if( 0 != hicma_reallocate_tile_on_gpu(cuda_device, gpu_task, active_copy, C, target_bytes,
+                                                         cuda_stream->cuda_stream, m, n, k, &new_C) ) {
                     HICMA_GPU_TIME_RETURN;
                 }
                 C = new_C;
@@ -4053,6 +4123,10 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
                     B_use, CUDA_R_32F, ldan,
                     &beta,  C_s,   CUDA_R_32F, ldam,
                     CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+            if( CUBLAS_STATUS_SUCCESS != status ) {
+                fprintf(stderr, "cublasGemmEx failed in runtime-decision GEMM: cublas status %d\n", (int)status);
+                HICMA_GPU_TIME_RETURN;
+            }
             sub_float_from_double_GPU(tempmm, tempnn, C_s, C, cuda_stream->cuda_stream);
         } else {
             float alpha = -1.0f, beta = 1.0f;
@@ -4062,6 +4136,10 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
                     B_use, CUDA_R_32F, ldan,
                     &beta,  C,     CUDA_R_32F, ldam,
                     CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+            if( CUBLAS_STATUS_SUCCESS != status ) {
+                fprintf(stderr, "cublasGemmEx failed in runtime-decision GEMM: cublas status %d\n", (int)status);
+                HICMA_GPU_TIME_RETURN;
+            }
             params_tlr->decisions[idx_C] = DENSE_SP;
         }
 
@@ -4104,6 +4182,10 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
                     B_use, CUDA_R_16F, ldan,
                     &beta,  C_s,   CUDA_R_32F, ldam,
                     CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+            if( CUBLAS_STATUS_SUCCESS != status ) {
+                fprintf(stderr, "cublasGemmEx failed in runtime-decision GEMM: cublas status %d\n", (int)status);
+                HICMA_GPU_TIME_RETURN;
+            }
 
             sub_float_from_double_GPU(tempmm, tempnn, C_s, C, cuda_stream->cuda_stream);
         } else {
@@ -4114,6 +4196,10 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
                     B_use, CUDA_R_16F, ldan,
                     &beta,  C,     CUDA_R_32F, ldam,
                     CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+            if( CUBLAS_STATUS_SUCCESS != status ) {
+                fprintf(stderr, "cublasGemmEx failed in runtime-decision GEMM: cublas status %d\n", (int)status);
+                HICMA_GPU_TIME_RETURN;
+            }
             params_tlr->decisions[idx_C] = DENSE_SP;
         }
 
@@ -4293,7 +4379,7 @@ void hicma_parsec_core_gemm_denseC_lrA_denseB_gpu( parsec_tiled_matrix_t* descA,
         void *C, void *A, void *B, int m, int n, int k,
         int Crank, int Arank, int Brank )
 {
-    int counter_id = hicma_parsec_gpu_counter_id(cuda_device, cuda_stream);
+    int counter_id = hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream);
     int tempmm = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
     int ldam = BLKLDD( descA, m );
     int ldan = BLKLDD( descA, n );
@@ -4524,7 +4610,7 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_gpu( parsec_tiled_matrix_t* descA,
         void *C, void *A, void *B, int m, int n, int k,
         int Crank, int Arank, int Brank )
 {
-    int counter_id = hicma_parsec_gpu_counter_id(cuda_device, cuda_stream);
+    int counter_id = hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream);
     int tempmm = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
     int ldam = BLKLDD( descA, m );
     int ldan = BLKLDD( descA, n );

@@ -52,18 +52,11 @@ BODY
 {
     // Safety check: verify tile data exists before attempting to free
     if( NULL != PARSEC_DATA_COPY_GET_PTR(parsec_data_get_copy(data_of_descA(m, n), 0)) ) {
-        // GPU-optimized memory deallocation for band tiles
-        if( 0 == indicator && params_tlr->gpus > 0 ) {
-#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
-            // Free pinned host memory that was allocated for GPU operations
-            // This memory was allocated with cudaMallocHost/hipHostMalloc for faster GPU transfers
-            cudaFreeHost(PARSEC_DATA_COPY_GET_PTR(parsec_data_get_copy(data_of_descA(m, n), 0)));
-#endif
-        } else {
-            // Standard memory deallocation for CPU tiles or off-band tiles
-            // Off-band tiles use regular malloc/calloc, so use standard free()
-            free(PARSEC_DATA_COPY_GET_PTR(parsec_data_get_copy(data_of_descA(m, n), 0)));
-        }
+        /* Band tiles are usually pinned and off-band tiles calloc'ed, but the
+         * check matrices regenerate every tile pinned when GPUs are used, so
+         * pick the deallocator per pointer rather than per band/off-band. */
+        hicma_parsec_host_tile_free(PARSEC_DATA_COPY_GET_PTR(parsec_data_get_copy(data_of_descA(m, n), 0)),
+                                    params_tlr->gpus);
     }
 }
 END
