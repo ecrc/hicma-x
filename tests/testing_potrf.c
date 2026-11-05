@@ -63,10 +63,29 @@ int main(int argc, char **argv)
     if (params.rank == 0) {
         printf("Running Cholesky decomposition %d times...\n", params.nruns);
     }
-    
+
+    /* The factorization is in place, so run 2 would factorize run 1's L, and
+     * in runtime-decision mode the precision mix (hence the time) depends on
+     * the data. Regenerate A (and redo the pre-analysis, which resets the
+     * precision decisions) before every later run where that is
+     * allocation-free: the dense FP64 layout without --check, --auto_band,
+     * --adaptive_memory or sparse mode. */
+    int regenerate = params.nruns > 1
+                     && params.band_size_dense >= params.NT && 0 == params.auto_band
+                     && !params.adaptive_memory && !params.check && 0 == params.sparse;
+    if (params.nruns > 1 && !regenerate && 0 == params.rank) {
+        fprintf(stderr, "Warning: with this configuration runs 2..%d factorize the previous run's factor; "
+                "time them with care (or use --nruns 1 per launch)\n", params.nruns);
+    }
+
     for (int i = 0; i < params.nruns; i++) {
         if (params.rank == 0 && params.nruns > 1) {
             printf("Run %d/%d...\n", i + 1, params.nruns);
+        }
+
+        if (i > 0 && regenerate) {
+            hicma_parsec_matrix_generation(parsec, &data, &params, &params_kernel);
+            hicma_parsec_matrix_pre_analysis(parsec, &data, &params, &params_kernel, &analysis);
         }
 
         /* GEMM/conversion counters and decisions_storage_final are reset
