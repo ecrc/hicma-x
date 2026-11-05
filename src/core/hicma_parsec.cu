@@ -5,6 +5,7 @@
 #include <cublasLt.h>
 #include <cuda_fp8.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 // Thread block size for optimal GPU performance
 #define CHUNKSIZE 32
@@ -526,6 +527,150 @@ void half2fp8_padded_GPU( int nrows, int ncols,
         uint8_t *_T = (uint8_t *)T;
 
         half2fp8_padded_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, padded_rows, padded_cols, S, lds, _T, ldt);
+}
+/****************************************************************************************************/
+
+
+/****************************************************************************************************/
+/**
+ * Per-tile scaled FP8 (E4M3) conversion
+ *
+ * A plain cast to E4M3 only represents magnitudes in [2^-9, 448]. The tiles
+ * the runtime decision sends to FP8 have small norms, so most of their entries
+ * would flush to zero and the GEMM would drop the update. Scale each tile by
+ * s, the largest power of two with s * amax <= 448, convert s * S, and let
+ * cuBLASLt multiply the product by 1/s_A and 1/s_B through its A/B scale
+ * pointers. Powers of two make both s * S (before rounding to FP8) and 1/s
+ * exact.
+ *
+ * scale is a device array of 3 floats: [0] amax (float bits, for atomicMax),
+ * [1] s, [2] 1/s, the value cuBLASLt reads.
+ */
+#define HICMA_FP8_E4M3_MAX 448.0f
+
+__device__ __forceinline__ float hicma_fp8_abs(double v) { return (float)fabs(v); }
+__device__ __forceinline__ float hicma_fp8_abs(float v)  { return fabsf(v); }
+__device__ __forceinline__ float hicma_fp8_abs(__half v) { return fabsf(__half2float(v)); }
+
+/* Scale in the source precision so that FP64 entries below FLT_MIN survive */
+__device__ __forceinline__ float hicma_fp8_scaled(double v, float s) { return (float)(v * (double)s); }
+__device__ __forceinline__ float hicma_fp8_scaled(float v, float s)  { return v * s; }
+__device__ __forceinline__ float hicma_fp8_scaled(__half v, float s) { return __half2float(v) * s; }
+
+template <typename T>
+__global__ void hicma_tile_amax_GPU_kernel( int nrows, int ncols,
+                const T *S, int lds, unsigned int *amax_bits ) {
+        __shared__ float warp_max[32];
+        const long n = (long)nrows * ncols;
+        float m = 0.0f;
+        for( long e = (long)blockIdx.x * blockDim.x + threadIdx.x; e < n; e += (long)gridDim.x * blockDim.x ) {
+                m = fmaxf(m, hicma_fp8_abs(S[(e / nrows) * lds + (e % nrows)]));
+        }
+        for( int o = 16; o > 0; o >>= 1 ) {
+                m = fmaxf(m, __shfl_down_sync(0xffffffffu, m, o));
+        }
+        const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+        if( 0 == lane ) warp_max[warp] = m;
+        __syncthreads();
+        if( 0 == warp ) {
+                m = (lane < (int)((blockDim.x + 31) / 32)) ? warp_max[lane] : 0.0f;
+                for( int o = 16; o > 0; o >>= 1 ) {
+                        m = fmaxf(m, __shfl_down_sync(0xffffffffu, m, o));
+                }
+                /* Non-negative floats order like their bit patterns */
+                if( 0 == lane ) atomicMax(amax_bits, __float_as_uint(m));
+        }
+}
+
+__global__ void hicma_fp8_scale_GPU_kernel( float *scale ) {
+        const float amax = __uint_as_float(*(const unsigned int *)scale);
+        float s = 1.0f;
+        if( amax > 0.0f && isfinite(amax) ) {
+                const float r = HICMA_FP8_E4M3_MAX / amax;
+                int e = 126;
+                if( isfinite(r) ) {
+                        frexpf(r, &e);   /* r = f * 2^e, f in [0.5, 1) */
+                        e -= 1;          /* 2^e <= r */
+                }
+                /* Keep s and 1/s normal floats */
+                e = max(-126, min(126, e));
+                s = ldexpf(1.0f, e);
+        }
+        scale[1] = s;
+        scale[2] = 1.0f / s;
+}
+
+template <typename T>
+__global__ void hicma_fp8_scaled_convert_GPU_kernel( int nrows, int ncols,
+                int padded_rows, int padded_cols,
+                const T *S, int lds,
+                uint8_t *dst, int ldt, const float *scale ) {
+        const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+        const int idy = blockIdx.y * blockDim.y + threadIdx.y;
+
+        if( idx >= padded_rows || idy >= padded_cols ) {
+                return;
+        }
+
+        /* Same layout as the unscaled converters: transposed (cublasLtMatmul
+         * only takes TN), zero-filled up to the padded size */
+        uint8_t v = 0;
+        if( idx < nrows && idy < ncols ) {
+                v = (uint8_t)__nv_cvt_float_to_fp8(
+                        hicma_fp8_scaled(S[idy*lds+idx], scale[1]), __NV_SATFINITE, __NV_E4M3 );
+        }
+        dst[idx*ldt+idy] = v;
+}
+
+template <typename T>
+static void hicma_fp8_scaled_convert_launch( int nrows, int ncols,
+                const T *S, int lds, uint8_t *dst, int ldt,
+                int padded_rows, int padded_cols,
+                float *scale, int scaling, cudaStream_t stream ) {
+        /* amax = 0 gives s = 1: the unscaled conversion */
+        cudaMemsetAsync(scale, 0, sizeof(float), stream);
+        if( scaling ) {
+                const long n = (long)nrows * ncols;
+                const int threads = 256;
+                const int blocks = (int)((n + threads - 1) / threads < 1024 ? (n + threads - 1) / threads : 1024);
+                if( blocks > 0 ) {
+                        hicma_tile_amax_GPU_kernel<T><<<blocks, threads, 0, stream>>>(
+                                nrows, ncols, S, lds, (unsigned int *)scale);
+                }
+        }
+        hicma_fp8_scale_GPU_kernel<<<1, 1, 0, stream>>>(scale);
+
+        dim3 dimBlock(CHUNKSIZE, CHUNKSIZE);
+        dim3 dimGrid((padded_rows+CHUNKSIZE-1)/CHUNKSIZE, (padded_cols+CHUNKSIZE-1)/CHUNKSIZE);
+        hicma_fp8_scaled_convert_GPU_kernel<T><<<dimGrid, dimBlock, 0, stream>>>(
+                nrows, ncols, padded_rows, padded_cols, S, lds, dst, ldt, scale);
+}
+
+extern "C"
+void hicma_fp8_scaled_convert_GPU( int src_elem_size, int nrows, int ncols,
+                const void *S, int lds,
+                void *T, int ldt,
+                int padded_rows, int padded_cols,
+                float *scale, int scaling,
+                cudaStream_t stream ) {
+        uint8_t *_T = (uint8_t *)T;
+        switch( src_elem_size ) {
+        case sizeof(double):
+                hicma_fp8_scaled_convert_launch<double>(nrows, ncols, (const double *)S, lds, _T, ldt,
+                                padded_rows, padded_cols, scale, scaling, stream);
+                break;
+        case sizeof(float):
+                hicma_fp8_scaled_convert_launch<float>(nrows, ncols, (const float *)S, lds, _T, ldt,
+                                padded_rows, padded_cols, scale, scaling, stream);
+                break;
+        case sizeof(__half):
+                hicma_fp8_scaled_convert_launch<__half>(nrows, ncols, (const __half *)S, lds, _T, ldt,
+                                padded_rows, padded_cols, scale, scaling, stream);
+                break;
+        default:
+                fprintf(stderr, "hicma_fp8_scaled_convert_GPU: unsupported source element size %d\n", src_elem_size);
+                abort();
+        }
 }
 /****************************************************************************************************/
 

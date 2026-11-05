@@ -347,6 +347,8 @@ void workspace_memory_free( parsec_potrf_workspace_t *ws)
             cudaFree(ws->gpu_workspace[i].stream_workspace[j].workspace);
             //cudaFree(ws->gpu_workspace[i].stream_workspace[j].heuristicResultsArray);
             cublasLtMatmulPreferenceDestroy(ws->gpu_workspace[i].stream_workspace[j].pref);
+            cublasLtMatmulDescDestroy(ws->gpu_workspace[i].stream_workspace[j].matmulDesc_scaled);
+            cudaFree(ws->gpu_workspace[i].stream_workspace[j].fp8_scale);
 #endif
             /*******************************/
 
@@ -703,6 +705,36 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t 
 
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].heuristicResultsArray = heuristicResultsArray;
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].pref = pref;
+
+            /* Runtime-decision FP8 GEMM: same GEMM, with device pointers to the
+             * per-tile scales 1/s_A and 1/s_B that hicma_fp8_scaled_convert_GPU
+             * writes on this stream before each GEMM (initially 1). */
+            float *fp8_scale = NULL;
+            const float fp8_scale_init[8] = { 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f };
+            HICMA_GPU_HANDLE_CHECK(cudaSuccess == cudaMalloc((void **)&fp8_scale, sizeof(fp8_scale_init)), "FP8 scale buffer");
+            HICMA_GPU_HANDLE_CHECK(cudaSuccess == cudaMemcpy(fp8_scale, fp8_scale_init, sizeof(fp8_scale_init), cudaMemcpyHostToDevice), "FP8 scale buffer");
+            const float *a_scale = fp8_scale + 2, *b_scale = fp8_scale + 6;
+            cublasLtMatmulDesc_t matmulDesc_scaled;
+            cublasLtMatmulDescCreate(&matmulDesc_scaled, CUBLAS_COMPUTE_32F, CUDA_R_32F);
+            cublasLtMatmulDescSetAttribute(matmulDesc_scaled, CUBLASLT_MATMUL_DESC_TRANSA, &transa, sizeof(transa));
+            cublasLtMatmulDescSetAttribute(matmulDesc_scaled, CUBLASLT_MATMUL_DESC_TRANSB, &transb, sizeof(transb));
+            cublasLtMatmulDescSetAttribute(matmulDesc_scaled, CUBLASLT_MATMUL_DESC_A_SCALE_POINTER, &a_scale, sizeof(a_scale));
+            cublasLtMatmulDescSetAttribute(matmulDesc_scaled, CUBLASLT_MATMUL_DESC_B_SCALE_POINTER, &b_scale, sizeof(b_scale));
+
+            cublasLtMatmulHeuristicResult_t heuristic_scaled;
+            memset(&heuristic_scaled, 0, sizeof(heuristic_scaled));
+            returnAlgoCount = 0;
+            heuristic_status = cublasLtMatmulAlgoGetHeuristic(
+                    lightHandle, matmulDesc_scaled, Adesc, Bdesc,
+                    Cdesc, Cdesc, pref, requestedAlgoCount,
+                    &heuristic_scaled, &returnAlgoCount);
+            if( (CUBLAS_STATUS_SUCCESS != heuristic_status || 0 == returnAlgoCount) && params->fp8_enabled ) {
+                fprintf(stderr, "Warning: no cuBLASLt scaled FP8 GEMM algorithm on device %d (status %d)\n",
+                        i, (int)heuristic_status);
+            }
+            data->ws_gpu->gpu_workspace[i].stream_workspace[j].matmulDesc_scaled = matmulDesc_scaled;
+            data->ws_gpu->gpu_workspace[i].stream_workspace[j].heuristic_scaled = heuristic_scaled;
+            data->ws_gpu->gpu_workspace[i].stream_workspace[j].fp8_scale = fp8_scale;
             /****************************************************************************/
 #endif
 

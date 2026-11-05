@@ -645,6 +645,7 @@ typedef struct hicma_parsec_params_s {
     int counter_stride;       /**< Slots per counter row: CPU threads + GPU streams */
     int counter_gpu_offset;   /**< First GPU-stream slot in a counter row */
     int fp8_enabled;          /**< HAVE_FP8 and every GPU supports FP8 GEMM (CC >= 8.9) */
+    int fp8_scaling;          /**< Runtime-decision FP8 GEMM: scale each operand tile by a power of two from its amax */
 
     /* ========================================================================
      * Performance metrics
@@ -924,6 +925,12 @@ typedef struct parsec_potrf_stream_workspace_s {
     size_t workspaceSize;                   /**< FP8 workspace size */
     cublasLtMatmulHeuristicResult_t heuristicResultsArray; /**< Heuristic results */
     cublasLtMatmulPreference_t pref;        /**< Matrix multiplication preferences */
+    /* Runtime-decision FP8 GEMM: operands scaled per tile by
+     * hicma_fp8_scaled_convert_GPU; matmulDesc_scaled reads 1/s_A and 1/s_B
+     * from fp8_scale[2] and fp8_scale[6] */
+    cublasLtMatmulDesc_t matmulDesc_scaled; /**< matmulDesc with A/B scale pointers */
+    cublasLtMatmulHeuristicResult_t heuristic_scaled; /**< Heuristic result for matmulDesc_scaled */
+    float *fp8_scale;                       /**< Device, 8 floats: A {amax, s, 1/s, -}, B {amax, s, 1/s, -} */
 #endif
 
 } parsec_potrf_stream_workspace_t;

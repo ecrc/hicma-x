@@ -535,6 +535,29 @@ void double2fp8_padded_GPU( int nrows, int ncols,
                 int padded_rows, int padded_cols,
                 cudaStream_t stream );
 
+/**
+ * @brief Convert a tile to FP8 (E4M3) scaled by a power of two from its amax
+ *
+ * Writes the same transposed, zero-padded layout as double2fp8_padded_GPU,
+ * but of s * S, where s is the largest power of two with s * max|S| <= 448,
+ * and stores 1/s in scale[2] for cuBLASLt's A/B scale pointer. All on stream.
+ *
+ * @param[in] src_elem_size Element size of S: sizeof(double), sizeof(float) or 2 (half)
+ * @param[in] nrows, ncols  Size of S
+ * @param[in] S, lds        Source tile, column major
+ * @param[out] T, ldt       FP8 output
+ * @param[in] padded_rows, padded_cols Size of T, zero filled beyond S
+ * @param[in,out] scale     Device array of 3 floats: amax, s, 1/s
+ * @param[in] scaling       0: s = 1 (plain conversion)
+ * @param[in] stream        CUDA stream
+ */
+void hicma_fp8_scaled_convert_GPU( int src_elem_size, int nrows, int ncols,
+                const void *S, int lds,
+                void *T, int ldt,
+                int padded_rows, int padded_cols,
+                float *scale, int scaling,
+                cudaStream_t stream );
+
 /* ============================================================================
  * GPU matrix generation and manipulation
  * ============================================================================ */

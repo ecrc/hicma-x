@@ -4256,59 +4256,39 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
         int fp8_ld = stream_found->fp8_ld;
         int use_padded_fp8 = (fp8_ld != descA->mb) || (tempmm != descA->mb) || (tempnn != descA->mb);
 
-        /* Convert datatype, A */
-        if( DENSE_DP == Aprecision ) {
-            hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            if( use_padded_fp8 ) {
-                double2fp8_padded_GPU( tempmm, descA->mb, A, descA->mb, A_fp8, fp8_ld, fp8_ld, fp8_ld, cuda_stream->cuda_stream );
-            } else {
-                double2fp8_GPU( tempmm, descA->mb, A, descA->mb, A_fp8, descA->mb, cuda_stream->cuda_stream );
-            }
-            A_use = A_fp8;
-        } else if( DENSE_SP == Aprecision ) {
-            hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            if( use_padded_fp8 ) {
-                float2fp8_padded_GPU( tempmm, descA->mb, A, descA->mb, A_fp8, fp8_ld, fp8_ld, fp8_ld, cuda_stream->cuda_stream );
-            } else {
-                float2fp8_GPU( tempmm, descA->mb, A, descA->mb, A_fp8, descA->mb, cuda_stream->cuda_stream );
-            }
-            A_use = A_fp8;
-        } else {
+        if( DENSE_DP != Aprecision && DENSE_SP != Aprecision ) {
             fprintf(stderr, "Precision A is not correct PF8: %d %d %d: %u!\n", m, n, k, (unsigned)Aprecision);
             HICMA_GPU_TIME_RETURN;
         }
-
-        /* Convert datatype, B */
-        if( DENSE_DP == Bprecision ) {
-            hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            if( use_padded_fp8 ) {
-                double2fp8_padded_GPU( tempnn, descA->mb, B, descA->mb, B_fp8, fp8_ld, fp8_ld, fp8_ld, cuda_stream->cuda_stream );
-            } else {
-                double2fp8_GPU( tempnn, descA->mb, B, descA->mb, B_fp8, descA->mb, cuda_stream->cuda_stream );
-            }
-            B_use = B_fp8;
-        } else if( DENSE_SP == Bprecision ) {
-            hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            if( use_padded_fp8 ) {
-                float2fp8_padded_GPU( tempnn, descA->mb, B, descA->mb, B_fp8, fp8_ld, fp8_ld, fp8_ld, cuda_stream->cuda_stream );
-            } else {
-                float2fp8_GPU( tempnn, descA->mb, B, descA->mb, B_fp8, descA->mb, cuda_stream->cuda_stream );
-            }
-            B_use = B_fp8;
-        } else {
+        if( DENSE_DP != Bprecision && DENSE_SP != Bprecision ) {
             fprintf(stderr, "Precision B is not correct FP8: %d %d %d: %u!\n", m, n, k, (unsigned)Bprecision);
             HICMA_GPU_TIME_RETURN;
         }
 
+        /* Convert A and B to FP8 (transposed, padded to fp8_ld), each scaled
+         * by a power of two from its largest entry unless --fp8_scaling 0;
+         * matmulDesc_scaled multiplies the product by the inverse scales. */
+        hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
+        hicma_fp8_scaled_convert_GPU( (DENSE_DP == Aprecision) ? (int)sizeof(double) : (int)sizeof(float),
+                tempmm, descA->mb, A, descA->mb, A_fp8, fp8_ld, fp8_ld, fp8_ld,
+                stream_found->fp8_scale, params_tlr->fp8_scaling, cuda_stream->cuda_stream );
+        A_use = A_fp8;
+
+        hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
+        hicma_fp8_scaled_convert_GPU( (DENSE_DP == Bprecision) ? (int)sizeof(double) : (int)sizeof(float),
+                tempnn, descA->mb, B, descA->mb, B_fp8, fp8_ld, fp8_ld, fp8_ld,
+                stream_found->fp8_scale + 4, params_tlr->fp8_scaling, cuda_stream->cuda_stream );
+        B_use = B_fp8;
+
         /* FP8 */
         cublasLtHandle_t lightHandle = stream_found->lightHandle;
-        cublasLtMatmulDesc_t matmulDesc = stream_found->matmulDesc;
+        cublasLtMatmulDesc_t matmulDesc = stream_found->matmulDesc_scaled;
         cublasLtMatrixLayout_t Adesc = stream_found->Adesc;
         cublasLtMatrixLayout_t Bdesc = stream_found->Bdesc;
         cublasLtMatrixLayout_t Cdesc = stream_found->Cdesc;
         size_t workspaceSize = stream_found->workspaceSize;
         void *workspace = stream_found->workspace;
-        cublasLtMatmulHeuristicResult_t heuristicResultsArray = stream_found->heuristicResultsArray;
+        cublasLtMatmulHeuristicResult_t heuristicResultsArray = stream_found->heuristic_scaled;
 
         if( DENSE_DP == params_tlr->decisions[idx_C] || use_padded_fp8 ) {
             float alpha = 1.0f, beta = 0.0f;
