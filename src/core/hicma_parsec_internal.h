@@ -667,6 +667,7 @@ typedef struct hicma_parsec_params_s {
     uint16_t *decisions;      /**< Precision decisions for each tile */
     uint16_t *decisions_gemm_last; /**< A*B precision of the last local GEMM for each tile */
     uint16_t *decisions_gemm_first; /**< A*B precision of the GEMM at k == 0 for each tile */
+    size_t *tile_host_bytes;  /**< adaptive_memory: bytes of each host tile buffer when not FP64-sized (0 = FP64 size from generation) */
     uint16_t *decisions_storage_final; /**< Final stored precision after POTRF/TRSM for each tile */
     uint16_t *decisions_send; /**< Data conversion decisions for each tile */
     uint16_t *decisions_gemm_gpu; /**< GPU GEMM type decisions for each tile */

@@ -1258,6 +1258,7 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
     params->decisions = (uint16_t *)calloc(params->MT * params->NT, sizeof(uint16_t));      // Main matrix decisions
     params->decisions_gemm_last = (uint16_t *)calloc(params->MT * params->NT, sizeof(uint16_t));
     params->decisions_gemm_first = (uint16_t *)calloc(params->MT * params->NT, sizeof(uint16_t));
+    params->tile_host_bytes = (size_t *)calloc((size_t)params->MT * params->NT, sizeof(size_t));
     params->decisions_storage_final = (uint16_t *)calloc(params->MT * params->NT, sizeof(uint16_t));
 
     // Data type conversion decisions
@@ -2877,6 +2878,7 @@ void hicma_parsec_free_memory( parsec_context_t *parsec,
     free( params->decisions );
     free( params->decisions_gemm_last );
     free( params->decisions_gemm_first );
+    free( params->tile_host_bytes );
     free( params->decisions_storage_final );
     free( params->decisions_send);
     free( params->decisions_gemm_gpu);

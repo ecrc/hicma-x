@@ -984,6 +984,9 @@ int potrf_L_dense_mp_gpu_fp8_adaptive( parsec_context_t *parsec,
         parsec_context_start(parsec);
         parsec_context_wait(parsec);
         
+        // Release host buffers replaced by FP64 promotions (deferred frees)
+        hicma_parsec_host_deferred_free_flush();
+
         // Clean up resources
         potrf_L_dense_mp_gpu_fp8_adaptive_Destruct( hicma_potrf );
         

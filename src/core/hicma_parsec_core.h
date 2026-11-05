@@ -72,6 +72,12 @@ void hicma_parsec_arenas_use_pinned_memory(parsec_arena_datatype_t *arenas,
  */
 void hicma_parsec_host_tile_free(void *ptr, int gpus);
 
+/**
+ * @brief Free host tile buffers replaced by FP64 promotions during the last
+ *        factorization (their cudaFreeHost was deferred to avoid device syncs).
+ */
+void hicma_parsec_host_deferred_free_flush(void);
+
 /* ============================================================================
  * Utility and debugging functions
  * ============================================================================ */

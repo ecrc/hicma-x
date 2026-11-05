@@ -106,6 +106,9 @@ BODY
                 free( this_task->data._f_A.data_out->device_private );
             }
             this_task->data._f_A.data_out->device_private = new_memory;
+            /* Remember the real host capacity: a later FP64 promotion must
+             * reallocate this tile, unlike tiles still FP64-sized. */
+            params_tlr->tile_host_bytes[n*params_tlr->NT+m] = (size_t)descA->mb * size * sizeof(float);
         }
         // Update element count for single precision
         this_task->data._f_A.data_out->original->nb_elts = descA->mb * size * sizeof(float);
@@ -151,6 +154,9 @@ hicma_parsec_convert_d2s_New(parsec_context_t *parsec,
 
     parsec_taskpool_t* convert_d2s_taskpool;
     parsec_convert_d2s_taskpool_t* taskpool = NULL;
+
+    /* Host tiles are FP64-sized again after (re)generation */
+    memset(params_tlr->tile_host_bytes, 0, (size_t)params_tlr->MT * params_tlr->NT * sizeof(size_t));
 
     taskpool = parsec_convert_d2s_new(A, Ar, params_tlr);
     convert_d2s_taskpool = (parsec_taskpool_t*)taskpool;

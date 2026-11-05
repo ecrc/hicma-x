@@ -8,6 +8,7 @@
  **/
 
 #include "hicma_parsec.h"
+#include <pthread.h>
 #include "hicma_kernel_time.h"
 #include "potrf_L_dense_mp_gpu_fp8_adaptive.h"
 
@@ -407,14 +408,61 @@ static int hicma_reallocate_tile_on_gpu(parsec_device_cuda_module_t *cuda_device
 }
 #endif /* PARSEC_HAVE_DEV_CUDA_SUPPORT || PARSEC_HAVE_DEV_HIP_SUPPORT */
 
-static int hicma_reallocate_tile_on_cpu(parsec_data_copy_t *cpu_copy,
+/* Host buffers replaced by an FP64 promotion. Freeing pinned memory
+ * (cudaFreeHost) synchronizes the whole device, so they are released after
+ * the factorization instead (hicma_parsec_host_deferred_free_flush). */
+static pthread_mutex_t hicma_host_deferred_lock = PTHREAD_MUTEX_INITIALIZER;
+static void **hicma_host_deferred = NULL;
+static size_t hicma_host_deferred_count = 0, hicma_host_deferred_cap = 0;
+
+static void hicma_host_deferred_push(void *ptr)
+{
+    pthread_mutex_lock(&hicma_host_deferred_lock);
+    if( hicma_host_deferred_count == hicma_host_deferred_cap ) {
+        size_t cap = hicma_host_deferred_cap ? 2 * hicma_host_deferred_cap : 64;
+        void **grown = (void **)realloc(hicma_host_deferred, cap * sizeof(void *));
+        if( NULL == grown ) {
+            pthread_mutex_unlock(&hicma_host_deferred_lock);
+            hicma_parsec_host_tile_free(ptr, 1);  /* fall back to an immediate free */
+            return;
+        }
+        hicma_host_deferred = grown;
+        hicma_host_deferred_cap = cap;
+    }
+    hicma_host_deferred[hicma_host_deferred_count++] = ptr;
+    pthread_mutex_unlock(&hicma_host_deferred_lock);
+}
+
+void hicma_parsec_host_deferred_free_flush(void)
+{
+    pthread_mutex_lock(&hicma_host_deferred_lock);
+    for( size_t i = 0; i < hicma_host_deferred_count; i++ ) {
+        hicma_parsec_host_tile_free(hicma_host_deferred[i], 1);
+    }
+    free(hicma_host_deferred);
+    hicma_host_deferred = NULL;
+    hicma_host_deferred_count = hicma_host_deferred_cap = 0;
+    pthread_mutex_unlock(&hicma_host_deferred_lock);
+}
+
+/* Grow the host copy of tile (m, n) to target_bytes for an FP64 promotion.
+ * Only tiles that convert_d2s gave an SP-sized buffer need it: tiles still
+ * in their FP64 generation buffer (tile_host_bytes == 0) are only downcast
+ * in place. The host data need not be preserved: the GPU copy is the newest
+ * version and is written back over it. */
+static int hicma_reallocate_tile_on_cpu(hicma_parsec_params_t *params_tlr,
+                                        parsec_data_copy_t *cpu_copy,
                                         size_t target_bytes,
                                         int m, int n, int k)
 {
     void *new_cpu_ptr = NULL;
+    size_t *capacity = &params_tlr->tile_host_bytes[(size_t)n * params_tlr->NT + m];
 
     if( NULL == cpu_copy ) {
         return 0;
+    }
+    if( 0 == *capacity || *capacity >= target_bytes ) {
+        return 0;  /* already large enough */
     }
 
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
@@ -445,22 +493,10 @@ static int hicma_reallocate_tile_on_cpu(parsec_data_copy_t *cpu_copy,
     }
 
     if( NULL != cpu_copy->device_private ) {
-#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
-        if( parsec_device_cuda_enabled > 0 ) {
-            cudaFreeHost(cpu_copy->device_private);
-        } else
-#endif
-#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
-        if( parsec_device_hip_enabled > 0 ) {
-            hipHostFree(cpu_copy->device_private);
-        } else
-#endif
-        {
-            free(cpu_copy->device_private);
-        }
+        hicma_host_deferred_push(cpu_copy->device_private);
     }
-
     cpu_copy->device_private = new_cpu_ptr;
+    *capacity = 0;  /* FP64-sized again */
     return 0;
 }
 
@@ -4092,7 +4128,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
                  * adaptive_memory allocated them one-by-one with cudaMallocHost. */
                 if( params_tlr->adaptive_memory ) {
                     if( NULL != cpu_copy && cpu_copy != active_copy ) {
-                        if( 0 != hicma_reallocate_tile_on_cpu(cpu_copy, target_bytes, m, n, k) ) {
+                        if( 0 != hicma_reallocate_tile_on_cpu(params_tlr, cpu_copy, target_bytes, m, n, k) ) {
                             HICMA_GPU_TIME_RETURN;
                         }
                     }
