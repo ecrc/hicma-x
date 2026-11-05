@@ -366,6 +366,8 @@ BODY [type=CUDA]
         hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
         double2float_GPU( descA->mb, descA->nb, T0, descA->mb, T, descA->mb, cuda_stream->cuda_stream );
         this_task->data._f_T.data_out->original->nb_elts = descA->mb * descA->nb * sizeof(float);
+        /* Remote TRSMs read the host copy of this NEW buffer */
+        HICMA_PARSEC_GPU_PUSHOUT(gpu_task, "T");
     }
 #endif
 }
@@ -379,6 +381,8 @@ BODY [type=HIP]
         hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
         double2float_GPU( descA->mb, descA->nb, T0, descA->mb, T, descA->mb, cuda_stream->cuda_stream );
         this_task->data._f_T.data_out->original->nb_elts = descA->mb * descA->nb * sizeof(float);
+        /* Remote TRSMs read the host copy of this NEW buffer */
+        HICMA_PARSEC_GPU_PUSHOUT(gpu_task, "T");
     } 
 #endif
 }
@@ -647,6 +651,8 @@ BODY [type=CUDA]
     if( hicma_parsec_convert_in_trsm(params_tlr, m, k) ) {
         /* Update element count for converted data */
         this_task->data._f_C.data_out->original->nb_elts = this_task->locals.size.value;
+        /* Remote GEMMs read the host copy of this NEW buffer */
+        HICMA_PARSEC_GPU_PUSHOUT(gpu_task, "C");
 
         /* GPU-accelerated precision conversion */
         if( DENSE_SP == params_tlr->decisions_send[k*params_tlr->NT+m] && DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
@@ -701,6 +707,8 @@ BODY [type=HIP]
     if( hicma_parsec_convert_in_trsm(params_tlr, m, k) ) {
         /* Update element count for converted data */
         this_task->data._f_C.data_out->original->nb_elts = this_task->locals.size.value;
+        /* Remote GEMMs read the host copy of this NEW buffer */
+        HICMA_PARSEC_GPU_PUSHOUT(gpu_task, "C");
 
         /* HIP-accelerated precision conversion */
         if( DENSE_SP == params_tlr->decisions_send[k*params_tlr->NT+m] && DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {

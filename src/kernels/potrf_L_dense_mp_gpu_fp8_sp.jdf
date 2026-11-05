@@ -448,6 +448,8 @@ BODY [type=CUDA]
         double2float_GPU( descA->mb, descA->nb, T0, descA->mb, T, descA->mb, cuda_stream->cuda_stream );
         /* Update the data size information for the output buffer */
         this_task->data._f_T.data_out->original->nb_elts = descA->mb * descA->nb * sizeof(float);
+        /* Remote TRSMs read the host copy of this NEW buffer */
+        HICMA_PARSEC_GPU_PUSHOUT(gpu_task, "T");
     }
 #endif
 }
@@ -465,6 +467,8 @@ BODY [type=HIP]
         double2float_GPU( descA->mb, descA->nb, T0, descA->mb, T, descA->mb, cuda_stream->cuda_stream );
         /* Update the data size information for the output buffer */
         this_task->data._f_T.data_out->original->nb_elts = descA->mb * descA->nb * sizeof(float);
+        /* Remote TRSMs read the host copy of this NEW buffer */
+        HICMA_PARSEC_GPU_PUSHOUT(gpu_task, "T");
     } 
 #endif
 }
@@ -742,6 +746,8 @@ BODY [type=CUDA]
         //printf("Convert GPU %d %d\n", m, k);
         /* Update nb_elts */
         this_task->data._f_C.data_out->original->nb_elts = this_task->locals.size.value;
+        /* Remote GEMMs read the host copy of this NEW buffer */
+        HICMA_PARSEC_GPU_PUSHOUT(gpu_task, "C");
 
         if( DENSE_SP == params_tlr->decisions_send[k*params_tlr->NT+m] && DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
             hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
@@ -795,6 +801,8 @@ BODY [type=HIP]
         //printf("Convert GPU HIP %d %d\n", m, k);
         /* Update nb_elts */
         this_task->data._f_C.data_out->original->nb_elts = this_task->locals.size.value;
+        /* Remote GEMMs read the host copy of this NEW buffer */
+        HICMA_PARSEC_GPU_PUSHOUT(gpu_task, "C");
 
         if( DENSE_SP == params_tlr->decisions_send[k*params_tlr->NT+m] && DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
             hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));

@@ -895,6 +895,22 @@ static inline int hicma_fp8_tile_bytes(int mb)
     return hicma_fp8_ld(mb) * hicma_fp8_ld(mb) + HICMA_FP8_SCALE_FLOATS * (int)sizeof(float);
 }
 
+/**
+ * Have PaRSEC copy flow _flow_name of a GPU task back to the host after the
+ * task. jdf2c only does that for flows written back to a collection or read
+ * by a task without a GPU body, but a NEW buffer filled on the GPU is also
+ * read from its host copy by remote ranks and CPU bodies.
+ */
+#define HICMA_PARSEC_GPU_PUSHOUT(_gpu_task, _flow_name) do {                     \
+        for( int _f = 0; _f < (_gpu_task)->ec->task_class->nb_flows; _f++ ) {   \
+            if( NULL != (_gpu_task)->flow[_f]                                    \
+                    && 0 == strcmp((_gpu_task)->flow[_f]->name, (_flow_name)) ) { \
+                (_gpu_task)->pushout |= (1U << _f);                              \
+                break;                                                           \
+            }                                                                    \
+        }                                                                        \
+    } while(0)
+
 /** Scale {amax, s, 1/s, 0} after the entries of an FP8 tile */
 static inline float *hicma_fp8_tile_scale(void *tile, int mb)
 {
