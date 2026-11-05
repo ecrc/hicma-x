@@ -39,25 +39,26 @@ int hicma_parsec_gpu_counter_id(hicma_parsec_params_t *params_tlr,
  * for: use the workspace's private non-blocking stream instead of cudaMemcpy,
  * whose legacy default stream waits for every blocking stream of the device. */
 static void hicma_gpu_read_norm_meta(parsec_potrf_stream_workspace_t *ws,
-                                     const void *A_norm, double A_meta[2],
-                                     const void *B_norm, double B_meta[2])
+                                     const void *A_norm, hicma_tile_meta_t *A_meta,
+                                     const void *B_norm, hicma_tile_meta_t *B_meta)
 {
     if( NULL == ws || NULL == ws->norm_meta_stream || NULL == ws->norm_meta_host ) {
-        if( NULL != A_norm ) cudaMemcpy(A_meta, A_norm, 2 * sizeof(double), cudaMemcpyDeviceToHost);
-        if( NULL != B_norm ) cudaMemcpy(B_meta, B_norm, 2 * sizeof(double), cudaMemcpyDeviceToHost);
+        if( NULL != A_norm ) cudaMemcpy(A_meta, A_norm, sizeof(hicma_tile_meta_t), cudaMemcpyDeviceToHost);
+        if( NULL != B_norm ) cudaMemcpy(B_meta, B_norm, sizeof(hicma_tile_meta_t), cudaMemcpyDeviceToHost);
         return;
     }
+    hicma_tile_meta_t *host = (hicma_tile_meta_t *)ws->norm_meta_host;  /* room for two records */
     if( NULL != A_norm ) {
-        cudaMemcpyAsync(ws->norm_meta_host, A_norm, 2 * sizeof(double),
+        cudaMemcpyAsync(&host[0], A_norm, sizeof(hicma_tile_meta_t),
                         cudaMemcpyDeviceToHost, ws->norm_meta_stream);
     }
     if( NULL != B_norm ) {
-        cudaMemcpyAsync(ws->norm_meta_host + 2, B_norm, 2 * sizeof(double),
+        cudaMemcpyAsync(&host[1], B_norm, sizeof(hicma_tile_meta_t),
                         cudaMemcpyDeviceToHost, ws->norm_meta_stream);
     }
     cudaStreamSynchronize(ws->norm_meta_stream);
-    if( NULL != A_norm ) { A_meta[0] = ws->norm_meta_host[0]; A_meta[1] = ws->norm_meta_host[1]; }
-    if( NULL != B_norm ) { B_meta[0] = ws->norm_meta_host[2]; B_meta[1] = ws->norm_meta_host[3]; }
+    if( NULL != A_norm ) *A_meta = host[0];
+    if( NULL != B_norm ) *B_meta = host[1];
 }
 #endif
 
@@ -456,7 +457,7 @@ static int hicma_reallocate_tile_on_cpu(hicma_parsec_params_t *params_tlr,
                                         int m, int n, int k)
 {
     void *new_cpu_ptr = NULL;
-    size_t *capacity = &params_tlr->tile_host_bytes[(size_t)n * params_tlr->NT + m];
+    size_t *capacity = &params_tlr->tile_host_bytes[hicma_tile_idx(params_tlr, m, n)];
 
     if( NULL == cpu_copy ) {
         return 0;
@@ -1270,7 +1271,7 @@ void hicma_parsec_core_syrk_runtime_decision_cpu( parsec_tiled_matrix_t* descA,
     int counter_id = es->th_id;
     int tempmm = m == descA->mt-1 ? descA->m - m*descA->mb : descA->mb;
     int ldam = BLKLDD( descA, m );
-    uint16_t Aprecision = (params_tlr->adaptive_decision_runtime)? (uint16_t)(((double *)A_norm)[1]): -1;
+    uint16_t Aprecision = (params_tlr->adaptive_decision_runtime)? hicma_tile_meta_precision(A_norm): (uint16_t)-1;
 
     /* No recursive, dense SYRK or low rank LR_SYRK */
     if( IS_DENSE(m, k) ) {
@@ -1724,10 +1725,10 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
     void *A_use = A;
     void *B_use = B;
     void *A_d, *A_s, *B_d, *B_s, *A_h, *B_h, *C_h;
-    double Anorm = (params_tlr->adaptive_decision_runtime)? ((double *)A_norm)[0]: 0;
-    double Bnorm = (params_tlr->adaptive_decision_runtime)? ((double *)B_norm)[0]: 0;
-    uint16_t Aprecision = (params_tlr->adaptive_decision_runtime)? (uint16_t)(((double *)A_norm)[1]): -1;
-    uint16_t Bprecision = (params_tlr->adaptive_decision_runtime)? (uint16_t)(((double *)B_norm)[1]): -1;
+    double Anorm = (params_tlr->adaptive_decision_runtime)? hicma_tile_meta_norm(A_norm): 0;
+    double Bnorm = (params_tlr->adaptive_decision_runtime)? hicma_tile_meta_norm(B_norm): 0;
+    uint16_t Aprecision = (params_tlr->adaptive_decision_runtime)? hicma_tile_meta_precision(A_norm): (uint16_t)-1;
+    uint16_t Bprecision = (params_tlr->adaptive_decision_runtime)? hicma_tile_meta_precision(B_norm): (uint16_t)-1;
     int verbose = params_tlr->verbose;
     int counter_stride = params_tlr->counter_stride;
     int tid = es->th_id;
@@ -3418,9 +3419,9 @@ void hicma_parsec_core_syrk_runtime_decision_gpu( parsec_tiled_matrix_t* descA,
                                                             &gpu_time_start, &gpu_time_stop);
 #endif
 
-    double A_meta[2] = {0.0, (double)DENSE_DP};
-    hicma_gpu_read_norm_meta(stream_found, A_norm, A_meta, NULL, NULL);
-    uint16_t Aprecision = (uint16_t)A_meta[1];
+    hicma_tile_meta_t A_meta = { 0.0, (double)DENSE_DP };
+    hicma_gpu_read_norm_meta(stream_found, A_norm, &A_meta, NULL, NULL);
+    uint16_t Aprecision = hicma_tile_meta_precision(&A_meta);
 
     if( IS_DENSE(m, k) ) {
         if( DENSE_DP == params_tlr->decisions[m*descA->lmt+m] ) {
@@ -3972,15 +3973,15 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
 
     /* Fetch runtime {norm, precision} metadata from TRSM outputs. */
     if( NULL != A_norm || NULL != B_norm ) {
-        double A_meta[2], B_meta[2];
-        hicma_gpu_read_norm_meta(stream_found, A_norm, A_meta, B_norm, B_meta);
+        hicma_tile_meta_t A_meta, B_meta;
+        hicma_gpu_read_norm_meta(stream_found, A_norm, &A_meta, B_norm, &B_meta);
         if( NULL != A_norm ) {
-            Anorm = A_meta[0];
-            Aprecision = (uint16_t)A_meta[1];
+            Anorm = A_meta.norm;
+            Aprecision = hicma_tile_meta_precision(&A_meta);
         }
         if( NULL != B_norm ) {
-            Bnorm = B_meta[0];
-            Bprecision = (uint16_t)B_meta[1];
+            Bnorm = B_meta.norm;
+            Bprecision = hicma_tile_meta_precision(&B_meta);
         }
     }
     hicma_parsec_get_precision_tile(params_tlr, &new_decision, Anorm * Bnorm, m, n);
@@ -3999,7 +4000,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
         uint16_t storage_decision = (uint16_t)Cprecision;
         /* C is untouched before its first GEMM: reuse the norm from
          * matrix_compress instead of a synchronous nrm2 on the GPU. */
-        double C_norm = params_tlr->norm_tile[n*params_tlr->NT+m];
+        double C_norm = params_tlr->norm_tile[hicma_tile_idx(params_tlr, m, n)];
         hicma_parsec_get_precision_tile(params_tlr, &storage_decision, C_norm, m, n);
         if( params_tlr->verbose > 100 ) {
             printf("k 0 m %d n %d C_norm %lf storage_decision %d gemm_decision %d old_decision %d\n",

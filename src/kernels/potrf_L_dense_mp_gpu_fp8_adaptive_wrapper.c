@@ -378,9 +378,9 @@ static void hicma_trim_remote_operand(parsec_data_copy_t *tile,
     if( NULL == tile || NULL == meta ) return;   /* no runtime decision flow */
     parsec_data_t *original = tile->original;
     if( NULL == original || NULL != original->dc ) return;
-    const double *tile_meta = (const double *)PARSEC_DATA_COPY_GET_PTR(meta);
+    const void *tile_meta = PARSEC_DATA_COPY_GET_PTR(meta);
     if( NULL == tile_meta ) return;
-    if( DENSE_SP == (uint16_t)tile_meta[1] && original->nb_elts > sp_bytes ) {
+    if( DENSE_SP == hicma_tile_meta_precision(tile_meta) && original->nb_elts > sp_bytes ) {
         original->nb_elts = sp_bytes;
     }
 }
@@ -806,9 +806,10 @@ potrf_L_dense_mp_gpu_fp8_adaptive_New( parsec_context_t *parsec,
             1, 1, 1, 1,
             PARSEC_ARENA_ALIGNMENT_SSE, -1 );
 
+    /* NORM: one hicma_tile_meta_t {norm, precision} per tile, as doubles */
     parsec_add2arena(&hicma_dpotrf->arenas_datatypes[PARSEC_potrf_L_dense_mp_gpu_fp8_adaptive_NORM_ADT_IDX],
             parsec_datatype_double_t, PARSEC_MATRIX_FULL,
-            1, 2, 1, 2,
+            1, (int)(sizeof(hicma_tile_meta_t) / sizeof(double)), 1, (int)(sizeof(hicma_tile_meta_t) / sizeof(double)),
             PARSEC_ARENA_ALIGNMENT_SSE, -1 );
 
     if( params->arena_pinned_memory && nb > 0 ) {

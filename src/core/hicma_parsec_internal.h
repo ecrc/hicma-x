@@ -823,6 +823,34 @@ typedef struct hicma_parsec_params_s {
     int current_hamming_id;      /**< Current Hamming distance ID */
 } hicma_parsec_params_t;
 
+/**
+ * @brief {norm, precision} record of one tile in runtime-decision mode
+ *
+ * Produced by TRSM for L(m, k) and read by SYRK/GEMM (the NORM flow). Kept as
+ * two doubles so the NORM arena, its MPI type and the device-side writes stay
+ * plain doubles; precision holds a DENSE_* value (DENSE_DP or DENSE_SP).
+ */
+typedef struct hicma_tile_meta_s {
+    double norm;       /**< Frobenius norm of the tile */
+    double precision;  /**< Storage precision of the tile, as a DENSE_* value */
+} hicma_tile_meta_t;
+
+static inline double hicma_tile_meta_norm(const void *meta)
+{
+    return ((const hicma_tile_meta_t *)meta)->norm;
+}
+
+static inline uint16_t hicma_tile_meta_precision(const void *meta)
+{
+    return (uint16_t)((const hicma_tile_meta_t *)meta)->precision;
+}
+
+/** Linear index of tile (m, n) in the per-tile arrays (decisions, norm_tile, ...). */
+static inline size_t hicma_tile_idx(const hicma_parsec_params_t *params, int m, int n)
+{
+    return (size_t)n * params->NT + m;
+}
+
 /* ============================================================================
  * GPU workspace configuration
  * ============================================================================ */

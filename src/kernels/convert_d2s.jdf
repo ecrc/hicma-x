@@ -108,7 +108,7 @@ BODY
             this_task->data._f_A.data_out->device_private = new_memory;
             /* Remember the real host capacity: a later FP64 promotion must
              * reallocate this tile, unlike tiles still FP64-sized. */
-            params_tlr->tile_host_bytes[n*params_tlr->NT+m] = (size_t)descA->mb * size * sizeof(float);
+            params_tlr->tile_host_bytes[hicma_tile_idx(params_tlr, m, n)] = (size_t)descA->mb * size * sizeof(float);
         }
         // Update element count for single precision
         this_task->data._f_A.data_out->original->nb_elts = descA->mb * size * sizeof(float);

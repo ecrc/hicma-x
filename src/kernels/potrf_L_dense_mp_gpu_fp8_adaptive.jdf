@@ -492,7 +492,7 @@ BODY [type=CUDA]
         /* Column-0 tiles are untouched since generation: reuse the norm that
          * matrix_compress computed (all-reduced on every rank) instead of a
          * synchronous host-pointer-mode nrm2 on the GPU manager thread. */
-        double C_norm_host = params_tlr->norm_tile[k*params_tlr->NT+m];
+        double C_norm_host = params_tlr->norm_tile[hicma_tile_idx(params_tlr, m, k)];
         float *C_s = (float *)stream_found->gpu_buffer_C;
         hicma_parsec_get_precision_tile(params_tlr, &decision, C_norm_host, m, k);
         if( params_tlr->verbose > 100 ) {
@@ -516,14 +516,14 @@ BODY [type=CUDA]
     if(params_tlr->adaptive_decision_runtime) {
         if( DENSE_DP == decision ) {
             double C_precision_dp = (double)DENSE_DP;
-            cublasDnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, (double *)C_norm);
-            set_device_double(((double *)C_norm) + 1, C_precision_dp, cuda_stream->cuda_stream);
+            cublasDnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, &((hicma_tile_meta_t *)C_norm)->norm);
+            set_device_double(&((hicma_tile_meta_t *)C_norm)->precision, C_precision_dp, cuda_stream->cuda_stream);
         } else {
             double C_precision_sp = (double)DENSE_SP;
             float *norm_sp_device = (float *)stream_found->gpu_buffer_C;
             cublasSnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, norm_sp_device);
-            copy_device_float_to_device_double((double *)C_norm, norm_sp_device, cuda_stream->cuda_stream);
-            set_device_double(((double *)C_norm) + 1, C_precision_sp, cuda_stream->cuda_stream);
+            copy_device_float_to_device_double(&((hicma_tile_meta_t *)C_norm)->norm, norm_sp_device, cuda_stream->cuda_stream);
+            set_device_double(&((hicma_tile_meta_t *)C_norm)->precision, C_precision_sp, cuda_stream->cuda_stream);
         }
         /* C_norm is a NEW buffer with no write-back to a collection, so PaRSEC
          * would not copy it back to the host after this task; remote ranks and
@@ -563,7 +563,7 @@ BODY [type=HIP]
         /* Column-0 tiles are untouched since generation: reuse the norm that
          * matrix_compress computed (all-reduced on every rank) instead of a
          * synchronous host-pointer-mode nrm2 on the GPU manager thread. */
-        double C_norm_host = params_tlr->norm_tile[k*params_tlr->NT+m];
+        double C_norm_host = params_tlr->norm_tile[hicma_tile_idx(params_tlr, m, k)];
         float *C_s = (float *)stream_found->gpu_buffer_C;
         hicma_parsec_get_precision_tile(params_tlr, &decision, C_norm_host, m, k);
         if( params_tlr->verbose > 100 ) {
@@ -588,14 +588,14 @@ BODY [type=HIP]
     if(params_tlr->adaptive_decision_runtime) {
         if( DENSE_DP == decision ) {
             double C_precision_dp = (double)DENSE_DP;
-            cublasDnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, (double *)C_norm);
-            set_device_double(((double *)C_norm) + 1, C_precision_dp, cuda_stream->cuda_stream);
+            cublasDnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, &((hicma_tile_meta_t *)C_norm)->norm);
+            set_device_double(&((hicma_tile_meta_t *)C_norm)->precision, C_precision_dp, cuda_stream->cuda_stream);
         } else {
             double C_precision_sp = (double)DENSE_SP;
             float *norm_sp_device = (float *)stream_found->gpu_buffer_C;
             cublasSnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, norm_sp_device);
-            copy_device_float_to_device_double((double *)C_norm, norm_sp_device, cuda_stream->cuda_stream);
-            set_device_double(((double *)C_norm) + 1, C_precision_sp, cuda_stream->cuda_stream);
+            copy_device_float_to_device_double(&((hicma_tile_meta_t *)C_norm)->norm, norm_sp_device, cuda_stream->cuda_stream);
+            set_device_double(&((hicma_tile_meta_t *)C_norm)->precision, C_precision_sp, cuda_stream->cuda_stream);
         }
         /* C_norm is a NEW buffer with no write-back to a collection, so PaRSEC
          * would not copy it back to the host after this task; remote ranks and
@@ -681,15 +681,15 @@ BODY
     if( DENSE_DP == params_tlr->decisions[k*descA->lmt+m] ) {
         this_task->locals.size.value = descA->mb * descA->mb * sizeof(double);
         if(params_tlr->adaptive_decision_runtime) {
-            ((double *)C_norm)[0] = LAPACKE_dlange(LAPACK_COL_MAJOR, 'F', descA->mb, descA->nb, C, descA->mb);
-            ((double *)C_norm)[1] = (double)DENSE_DP; 
+            ((hicma_tile_meta_t *)C_norm)->norm = LAPACKE_dlange(LAPACK_COL_MAJOR, 'F', descA->mb, descA->nb, C, descA->mb);
+            ((hicma_tile_meta_t *)C_norm)->precision = (double)DENSE_DP;
         }
     } else if( DENSE_SP == params_tlr->decisions[k*descA->lmt+m] || DENSE_HP == params_tlr->decisions[k*descA->lmt+m] || DENSE_FP8 == params_tlr->decisions[k*descA->lmt+m] ) {
         this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
         if(params_tlr->adaptive_decision_runtime) {
             float C_norm_sp = LAPACKE_slange(LAPACK_COL_MAJOR, 'F', descA->mb, descA->nb, C, descA->mb);
-            ((double *)C_norm)[0] = C_norm_sp; 
-            ((double *)C_norm)[1] = (double)DENSE_SP; 
+            ((hicma_tile_meta_t *)C_norm)->norm = C_norm_sp;
+            ((hicma_tile_meta_t *)C_norm)->precision = (double)DENSE_SP;
         }
     } else if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+m] ) {
         this_task->locals.size.value = descA->mb * ((int *)Cr)[0] * 2 * sizeof(double);
@@ -1293,8 +1293,8 @@ BODY
     int Crank = IS_DENSE(m, n)? 0: ((int*)Cr)[0];
     int Arank = IS_DENSE(m, k)? 0: ((int*)Ar)[0];
     int Brank = IS_DENSE(n, k)? 0: ((int*)Br)[0];
-    double Anorm = (params_tlr->adaptive_decision_runtime)? ((double *)A_norm)[0]: 0; 
-    double Bnorm = (params_tlr->adaptive_decision_runtime)? ((double *)B_norm)[0]: 0; 
+    double Anorm = (params_tlr->adaptive_decision_runtime)? hicma_tile_meta_norm(A_norm): 0; 
+    double Bnorm = (params_tlr->adaptive_decision_runtime)? hicma_tile_meta_norm(B_norm): 0; 
 
     /* Calculate actual matrix dimensions */
     int tempmm = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
