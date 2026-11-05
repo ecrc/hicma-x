@@ -45,6 +45,15 @@ BODY
     }
 
     hicma_parsec_get_precision_tile(params_tlr, &new_decisions[n*descA->lmt+m], params_tlr->norm_tile[n*params_tlr->NT+m], m, n);
+
+    /* DENSE_SP_HP_BAND and DENSE_MP_GPU_FP8_SP keep every tile, the diagonal
+     * included, in FP32 or lower (band_size_dense_dp = 0): their tasks read
+     * an FP64 tile as FP32. Cap their decisions at FP32. */
+    if( DENSE_DP == new_decisions[n*descA->lmt+m]
+            && (DENSE_SP_HP_BAND == params_tlr->kind_of_cholesky
+                || DENSE_MP_GPU_FP8_SP == params_tlr->kind_of_cholesky) ) {
+        new_decisions[n*descA->lmt+m] = DENSE_SP;
+    }
 }
 END
 
