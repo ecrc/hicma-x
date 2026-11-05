@@ -255,7 +255,13 @@ extern "C" {  /**< Enable C linkage for C++ compatibility */
 
 /* Conditional feature flags - enable features based on available hardware */
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+/* FP8 (E4M3) GEMMs are built with -DHICMA_PARSEC_HAVE_FP8=ON; at runtime they
+ * are used only if every GPU has compute capability >= 8.9 (fp8_enabled). */
+#if defined(HICMA_PARSEC_HAVE_FP8)
+#define HAVE_FP8 1  /**< Enable FP8 precision on CUDA (8-bit floating point) */
+#else
 #define HAVE_FP8 0  /**< Enable FP8 precision on CUDA (8-bit floating point) */
+#endif
 #define HAVE_I8  1  /**< Enable INT8 precision on CUDA (8-bit integer) */
 #else
 #define HAVE_FP8 0  /**< FP8 precision not available (no CUDA support) */
