@@ -9,6 +9,7 @@
 
 #include "hicma_parsec.h"
 #include "hicma_kernel_time.h"
+#include <stdatomic.h>
 
 typedef struct hicma_kernel_time_entry_s {
     const void *task;
@@ -18,6 +19,8 @@ typedef struct hicma_kernel_time_entry_s {
 
 static pthread_mutex_t hicma_kernel_time_lock = PTHREAD_MUTEX_INITIALIZER;
 static hicma_kernel_time_entry_t *hicma_kernel_time_table[HICMA_KERNEL_TIME_BUCKETS];
+/* Entries in the locked overflow table; lets take() skip the lock when empty. */
+static _Atomic long hicma_kernel_time_overflow = 0;
 
 static size_t hicma_kernel_time_hash(const void *task)
 {
@@ -26,7 +29,7 @@ static size_t hicma_kernel_time_hash(const void *task)
     return (size_t)(key % HICMA_KERNEL_TIME_BUCKETS);
 }
 
-void hicma_kernel_time_record(const void *task, double start_time)
+static void hicma_kernel_time_record_locked(const void *task, double start_time)
 {
     size_t bucket = hicma_kernel_time_hash(task);
     hicma_kernel_time_entry_t *entry;
@@ -46,11 +49,12 @@ void hicma_kernel_time_record(const void *task, double start_time)
         entry->start_time = start_time;
         entry->next = hicma_kernel_time_table[bucket];
         hicma_kernel_time_table[bucket] = entry;
+        atomic_fetch_add(&hicma_kernel_time_overflow, 1);
     }
     pthread_mutex_unlock(&hicma_kernel_time_lock);
 }
 
-double hicma_kernel_time_take(const void *task, double fallback_start_time)
+static double hicma_kernel_time_take_locked(const void *task, double fallback_start_time)
 {
     size_t bucket = hicma_kernel_time_hash(task);
     hicma_kernel_time_entry_t **entryp;
@@ -64,12 +68,76 @@ double hicma_kernel_time_take(const void *task, double fallback_start_time)
             start_time = entry->start_time;
             *entryp = entry->next;
             free(entry);
+            atomic_fetch_sub(&hicma_kernel_time_overflow, 1);
             break;
         }
     }
     pthread_mutex_unlock(&hicma_kernel_time_lock);
 
     return start_time;
+}
+
+/*
+ * Lock-free start-time table used on every task begin/complete (the GEMM
+ * wrappers time every GEMM for gather_time). A task claims a slot in a
+ * bounded window by CAS on the key and releases it when it completes, so
+ * the common path takes no lock and allocates nothing; the locked list
+ * above only catches the rare overflow when a window is full.
+ */
+#define HICMA_KT_SLOTS  16384   /* power of two, >> tasks in flight */
+#define HICMA_KT_WINDOW 64
+
+static _Atomic(const void *) hicma_kt_keys[HICMA_KT_SLOTS];
+static _Atomic double hicma_kt_times[HICMA_KT_SLOTS];
+
+static inline size_t hicma_kt_slot(const void *task)
+{
+    uintptr_t x = (uintptr_t)task;
+    x ^= x >> 17;
+    x *= (uintptr_t)0x9E3779B97F4A7C15ULL;
+    return (size_t)(x >> 13) & (HICMA_KT_SLOTS - 1);
+}
+
+void hicma_kernel_time_record(const void *task, double start_time)
+{
+    size_t base = hicma_kt_slot(task);
+    /* Same task recorded again (e.g. a re-executed hook): update in place. */
+    for( size_t i = 0; i < HICMA_KT_WINDOW; i++ ) {
+        size_t idx = (base + i) & (HICMA_KT_SLOTS - 1);
+        if( atomic_load_explicit(&hicma_kt_keys[idx], memory_order_acquire) == task ) {
+            atomic_store_explicit(&hicma_kt_times[idx], start_time, memory_order_release);
+            return;
+        }
+    }
+    for( size_t i = 0; i < HICMA_KT_WINDOW; i++ ) {
+        size_t idx = (base + i) & (HICMA_KT_SLOTS - 1);
+        const void *expected = NULL;
+        if( atomic_compare_exchange_strong_explicit(&hicma_kt_keys[idx], &expected, task,
+                                                    memory_order_acq_rel, memory_order_relaxed) ) {
+            atomic_store_explicit(&hicma_kt_times[idx], start_time, memory_order_release);
+            return;
+        }
+    }
+    hicma_kernel_time_record_locked(task, start_time);
+}
+
+double hicma_kernel_time_take(const void *task, double fallback_start_time)
+{
+    size_t base = hicma_kt_slot(task);
+    for( size_t i = 0; i < HICMA_KT_WINDOW; i++ ) {
+        size_t idx = (base + i) & (HICMA_KT_SLOTS - 1);
+        if( atomic_load_explicit(&hicma_kt_keys[idx], memory_order_acquire) == task ) {
+            double t = atomic_load_explicit(&hicma_kt_times[idx], memory_order_acquire);
+            atomic_store_explicit(&hicma_kt_keys[idx], NULL, memory_order_release);
+            return t;
+        }
+    }
+    /* Tasks whose begin was never recorded (e.g. CPU chores of wrapped GPU
+     * hooks) end here: skip the lock unless something overflowed. */
+    if( 0 == atomic_load(&hicma_kernel_time_overflow) ) {
+        return fallback_start_time;
+    }
+    return hicma_kernel_time_take_locked(task, fallback_start_time);
 }
 
 static double hicma_kernel_time_add_interval(hicma_kernel_time_interval_t **intervals,
