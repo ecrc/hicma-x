@@ -33,7 +33,14 @@ int main(int argc, char ** argv)
 
     /* Initialize HiCMA parameters */
     hicma_parsec_params_init(&params, argv);
-    
+
+    /* A is M x M and its decisions use the NT x NT layout of N */
+    if( params.M != params.N ) {
+        if( 0 == params.rank )
+            fprintf(stderr, "testing_trmm: --M (%d) must equal --N (%d); B is N x K\n", params.M, params.N);
+        exit(1);
+    }
+
     /* Initialize PaRSEC */
     parsec = hicma_parsec_setup_parsec(argc, argv, &params);
     
@@ -359,7 +366,7 @@ static int check_solution( parsec_context_t *parsec, int loud,
                            double fixedacc, hicma_parsec_params_t *params )
 {
     int info_solution = 1;
-    double Anorm, Cinitnorm, Cdplasmanorm, Clapacknorm, Rnorm;
+    double Anorm, Cinitnorm, Cdplasmanorm, Clapacknorm, Rnorm, Rfro;
     double eps, result;
     int MB = dcCfinal->super.mb;
     int NB = dcCfinal->super.nb;
@@ -376,12 +383,15 @@ static int check_solution( parsec_context_t *parsec, int loud,
     
     eps = LAPACKE_dlamch_work('e');
 
+    /* Tile storage: the reference is distributed on the same P x Q grid as
+     * the result (LAPACK storage with the global leading dimension is only
+     * valid on a 1 x 1 grid). */
     PASTE_CODE_ALLOCATE_MATRIX(dcA, 1,
-        parsec_matrix_block_cyclic, (&dcA, PARSEC_MATRIX_DOUBLE, PARSEC_MATRIX_LAPACK,
+        parsec_matrix_block_cyclic, (&dcA, PARSEC_MATRIX_DOUBLE, PARSEC_MATRIX_TILE,
                                rank, MB, NB, LDA, An, 0, 0,
                                Am, An, P, nodes/P, KP, KQ, IP, JQ));
     PASTE_CODE_ALLOCATE_MATRIX(dcC, 1,
-        parsec_matrix_block_cyclic, (&dcC, PARSEC_MATRIX_DOUBLE, PARSEC_MATRIX_LAPACK,
+        parsec_matrix_block_cyclic, (&dcC, PARSEC_MATRIX_DOUBLE, PARSEC_MATRIX_TILE,
                                rank, MB, NB, LDC, N, 0, 0,
                                M, N, P, nodes/P, KP, KQ, IP, JQ));
 
@@ -406,7 +416,9 @@ static int check_solution( parsec_context_t *parsec, int loud,
     parsec_dtrmm = dplasma_dtrmm_New(side, uplo, trans, diag, alpha, (parsec_tiled_matrix_t*)&dcA, (parsec_tiled_matrix_t*)&dcC);
     if ( parsec_dtrmm != NULL )
     {
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
         hicma_parsec_disable_GPU(parsec_dtrmm);
+#endif
         parsec_context_add_taskpool( parsec, (parsec_taskpool_t*)parsec_dtrmm);
         dplasma_wait_until_completion(parsec);
         dplasma_dtrmm_Destruct( parsec_dtrmm );
@@ -432,16 +444,21 @@ static int check_solution( parsec_context_t *parsec, int loud,
 
     Rnorm = dplasma_dlange( parsec, dplasmaMaxNorm, (parsec_tiled_matrix_t*)&dcC );
 
+    /* dlange skips NaN entries; a sum of squares does not */
+    Rfro = hicma_parsec_matrix_norm_get(parsec, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcC,
+            params, params->norm_tileB, &params->norm_globalB, "double");
+
     result = Rnorm / (Clapacknorm * max(M,N) * fmax(fixedacc, eps));
 
     if ( rank == 0 ) {
         if ( loud > 2 ) {
             printf("  ||A||_inf = %e, ||C||_inf = %e\n"
-                   "  ||lapack(a*A*C)||_inf = %e, ||HiCMA-x(a*A*C)||_inf = %e, ||R||_m = %e, res = %e\n",
-                   Anorm, Cinitnorm, Clapacknorm, Cdplasmanorm, Rnorm, result);
+                   "  ||lapack(a*A*C)||_inf = %e, ||HiCMA-x(a*A*C)||_inf = %e, ||R||_m = %e, ||R||_F = %e, res = %e\n",
+                   Anorm, Cinitnorm, Clapacknorm, Cdplasmanorm, Rnorm, Rfro, result);
         }
 
         if (  isinf(Clapacknorm) || isinf(Cdplasmanorm) ||
+              isnan(Rfro) || isinf(Rfro) ||
               isnan(result) || isinf(result) || (result > 10.0) ) {
             info_solution = 1;
         }

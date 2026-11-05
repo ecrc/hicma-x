@@ -26,6 +26,15 @@ int main(int argc, char **argv)
     params.adaptive_memory = 0;
 
     hicma_parsec_params_init(&params, argv);
+
+    /* A is M x M and its decisions use the NT x NT layout of N */
+    if (params.M != params.N) {
+        if (0 == params.rank)
+            fprintf(stderr, "testing_trmm_performance: --M (%d) must equal --N (%d); C is N x K\n",
+                    params.M, params.N);
+        exit(1);
+    }
+
     parsec = hicma_parsec_setup_parsec(argc, argv, &params);
     hicma_parsec_params_print_initial(&params);
 
