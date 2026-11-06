@@ -8,7 +8,7 @@ static int check_solution( parsec_context_t *parsec, int loud,
                            int Am, int An, int Aseed,
                            int M,  int N,  int Cseed,
                            parsec_matrix_block_cyclic_t *dcCfinal,
-                           double fixedacc, hicma_parsec_params_t *params );
+                           hicma_parsec_params_t *params );
 
 /* hicma_parsec_trmm, except that with HICMA_TRMM_CPU_ONLY=1 in the
  * environment the GPUs are disabled for its taskpool: its CPU kernels then
@@ -342,7 +342,7 @@ int main(int argc, char ** argv)
                     side, uplo, trans, diags[d],
                     alpha, Am, Am, Aseed,
                     M,  K,  Cseed,
-                    &dcC, params.fixedacc, &params);
+                    &dcC, &params);
             if ( rank == 0 ) {
                 if (info_solution == 0) {
                     printf(" ---- TESTING DTRMM (%s, %s, %s, %s) ...... PASSED !\n",
@@ -400,17 +400,47 @@ int main(int argc, char ** argv)
 /*------------------------------------------------------------------------
  *  Check the accuracy of the solution
  */
+/*
+ * The check compares the result with DPLASMA's FP64 TRMM: it passes if
+ * ||R||_F / ||C_ref||_F, R = C - C_ref, is below TRMM_CHECK_MAX_ROUNDOFFS
+ * unit roundoffs u of the lowest precision used by the tiles (FP64 2^-53,
+ * FP32 2^-24, FP16 2^-11). Correct results measured 0.5 to 5 u (N = K up to
+ * 16384, FP16 accumulation included); a TRMM that did nothing is about 1/u
+ * off (2048 u in FP16).
+ */
+#define TRMM_CHECK_MAX_ROUNDOFFS 50.0
+
+/* 0 for FP64, 1 for FP32, 2 for FP16 */
+static int trmm_precision_level( uint16_t decision )
+{
+    return DENSE_HP == decision ? 2 : DENSE_SP == decision ? 1 : 0;
+}
+
+/* Unit roundoff of the lowest precision of A's lower triangle (MT x MT tiles)
+ * and of B (MT x KT tiles) */
+static double trmm_lowest_unit_roundoff( const hicma_parsec_params_t *params, int MT, int KT )
+{
+    int lowest = 0;
+    for( int n = 0; n < MT; n++ )
+        for( int m = n; m < MT; m++ )
+            lowest = max( lowest, trmm_precision_level( params->decisions[(size_t)n*params->NT+m] ) );
+    for( int n = 0; n < KT; n++ )
+        for( int m = 0; m < MT; m++ )
+            lowest = max( lowest, trmm_precision_level( params->decisionsB[(size_t)n*params->NT+m] ) );
+    return ldexp( 1.0, 2 == lowest ? -11 : 1 == lowest ? -24 : -53 );
+}
+
 static int check_solution( parsec_context_t *parsec, int loud,
                            dplasma_enum_t side, dplasma_enum_t uplo, dplasma_enum_t trans, dplasma_enum_t diag,
                            double alpha,
                            int Am, int An, int Aseed,
                            int M,  int N,  int Cseed,
                            parsec_matrix_block_cyclic_t *dcCfinal,
-                           double fixedacc, hicma_parsec_params_t *params )
+                           hicma_parsec_params_t *params )
 {
     int info_solution = 1;
-    double Anorm, Cinitnorm, Cdplasmanorm, Clapacknorm, Rnorm, Rfro;
-    double eps, result;
+    double Anorm, Cinitnorm, Cdplasmanorm, Clapacknorm, Crefnorm, Rnorm, Rfro;
+    double u, result;
     int MB = dcCfinal->super.mb;
     int NB = dcCfinal->super.nb;
     int LDA = Am;
@@ -424,7 +454,7 @@ static int check_solution( parsec_context_t *parsec, int loud,
     int IP = dcCfinal->grid.ip;
     int JQ = dcCfinal->grid.jq;
 
-    eps = LAPACKE_dlamch_work('e');
+    u = trmm_lowest_unit_roundoff( params, (M + MB - 1) / MB, (N + NB - 1) / NB );
 
     /* Tile storage: the reference is distributed on the same P x Q grid as
      * the result (LAPACK storage with the global leading dimension is only
@@ -464,7 +494,7 @@ static int check_solution( parsec_context_t *parsec, int loud,
     }
 
     SYNC_TIME_START();
-    hicma_parsec_matrix_norm_get(parsec, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcC,
+    Crefnorm = hicma_parsec_matrix_norm_get(parsec, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcC,
             params, params->norm_tileB, &params->norm_globalB, "double");
     SYNC_TIME_PRINT(params->rank, ("hicma_parsec_matrix_norm_get in check DPLASMA/LAPACK: uplo= %d norm_global %lf\n", dplasmaUpperLower, params->norm_globalB));
 
@@ -480,18 +510,20 @@ static int check_solution( parsec_context_t *parsec, int loud,
     Rfro = hicma_parsec_matrix_norm_get(parsec, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcC,
             params, params->norm_tileB, &params->norm_globalB, "double");
 
-    result = Rnorm / (Clapacknorm * max(M,N) * fmax(fixedacc, eps));
+    /* In units of u */
+    result = Rfro / Crefnorm / u;
 
     if ( rank == 0 ) {
         if ( loud > 2 ) {
             printf("  ||A||_inf = %e, ||C||_inf = %e\n"
-                   "  ||lapack(a*A*C)||_inf = %e, ||HiCMA-x(a*A*C)||_inf = %e, ||R||_m = %e, ||R||_F = %e, res = %e\n",
-                   Anorm, Cinitnorm, Clapacknorm, Cdplasmanorm, Rnorm, Rfro, result);
+                   "  ||lapack(a*A*C)||_inf = %e, ||HiCMA-x(a*A*C)||_inf = %e, ||R||_m = %e\n"
+                   "  ||R||_F / ||lapack(a*A*C)||_F = %e, lowest precision u = %.3e, res = %e u (passes below %g)\n",
+                   Anorm, Cinitnorm, Clapacknorm, Cdplasmanorm, Rnorm, Rfro / Crefnorm, u, result, TRMM_CHECK_MAX_ROUNDOFFS);
         }
 
         if (  isinf(Clapacknorm) || isinf(Cdplasmanorm) ||
               isnan(Rfro) || isinf(Rfro) ||
-              isnan(result) || isinf(result) || (result > 10.0) ) {
+              isnan(result) || isinf(result) || !(result < TRMM_CHECK_MAX_ROUNDOFFS) ) {
             info_solution = 1;
         }
         else {
