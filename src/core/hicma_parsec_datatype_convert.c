@@ -2153,6 +2153,18 @@ void float2half_CPU( int nrows, int ncols,
 }
 
 
+uint16_t hicma_parsec_float_to_half_bits(float value) {
+    FP32 f;
+    f.f = value;
+    return float_to_half_rtne( f ).u;
+}
+
+float hicma_parsec_half_bits_to_float(uint16_t value) {
+    FP16 h;
+    h.u = value;
+    return half_to_float( h ).f;
+}
+
 int convert_datatype_adaptive_unary_CPU(void *A, int mb, int nb, int lda, uint16_t decision, int convert_direction, int enable_stochastic_rounding, size_t *size) {
     (void)lda;
     /* Validate input parameters */

@@ -10,6 +10,32 @@ static int check_solution( parsec_context_t *parsec, int loud,
                            parsec_matrix_block_cyclic_t *dcCfinal,
                            double fixedacc, hicma_parsec_params_t *params );
 
+/* hicma_parsec_trmm, except that with HICMA_TRMM_CPU_ONLY=1 in the
+ * environment the GPUs are disabled for its taskpool: its CPU kernels then
+ * run every tile, including the FP16 tiles of a run with --gpus > 0 */
+static int run_trmm( parsec_context_t *parsec,
+                     dplasma_enum_t side, dplasma_enum_t uplo,
+                     dplasma_enum_t trans, dplasma_enum_t diag, double alpha,
+                     const parsec_tiled_matrix_t *A, parsec_tiled_matrix_t *B,
+                     hicma_parsec_data_t *data, hicma_parsec_params_t *params )
+{
+    const char *cpu_only = getenv("HICMA_TRMM_CPU_ONLY");
+    if( NULL == cpu_only || 0 == atoi(cpu_only) ) {
+        return hicma_parsec_trmm( parsec, side, uplo, trans, diag, alpha, A, B, data, params );
+    }
+    parsec_taskpool_t *tp = hicma_parsec_trmm_New( side, uplo, trans, diag, alpha, A, B, data, params );
+    if( NULL == tp ) {
+        return -101;
+    }
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    hicma_parsec_disable_GPU( tp );
+#endif
+    parsec_context_add_taskpool( parsec, tp );
+    dplasma_wait_until_completion( parsec );
+    hicma_parsec_trmm_Destruct( tp );
+    return 0;
+}
+
 int main(int argc, char ** argv)
 {
     parsec_context_t* parsec;
@@ -266,7 +292,7 @@ int main(int argc, char ** argv)
 
             /* Compute */
             if(loud > 2 && 0 == rank) printf("Compute ... ... ");
-            if (hicma_parsec_trmm(parsec, side, uplo, trans, diags[d],
+            if (run_trmm(parsec, side, uplo, trans, diags[d],
                         alpha, dcA, (parsec_tiled_matrix_t *)&dcC, &data, &params) != 0) {
                 if (rank == 0) {
                     printf("hicma_parsec_trmm execution failed\n");

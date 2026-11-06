@@ -345,6 +345,25 @@ int hicma_parsec_trmm(parsec_context_t *parsec,
                       hicma_parsec_data_t *data,
                       hicma_parsec_params_t *params);
 
+/**
+ * @brief Taskpool of hicma_parsec_trmm, for parsec_context_add_taskpool()
+ *
+ * Same arguments as hicma_parsec_trmm without the context. Returns NULL if
+ * they are not supported (see trmm_mp_wrapper.c).
+ */
+parsec_taskpool_t *hicma_parsec_trmm_New(dplasma_enum_t side, dplasma_enum_t uplo,
+                                         dplasma_enum_t trans, dplasma_enum_t diag,
+                                         double alpha,
+                                         const parsec_tiled_matrix_t *A,
+                                         parsec_tiled_matrix_t *B,
+                                         hicma_parsec_data_t *data,
+                                         hicma_parsec_params_t *params);
+
+/**
+ * @brief Free a taskpool of hicma_parsec_trmm_New
+ */
+void hicma_parsec_trmm_Destruct(parsec_taskpool_t *tp);
+
 #ifdef __cplusplus
 }
 #endif

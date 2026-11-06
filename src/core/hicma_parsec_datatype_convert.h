@@ -1345,6 +1345,19 @@ void hicma_parsec_convert_2h_bit(void *A, float *A_use, int mb, int nb, uint16_t
  */
 void float2half_CPU(int nrows, int ncols, const float *_source, int ld_s, void *_target, int ld_t);
 
+/**
+ * @brief FP32 to IEEE binary16 in software, rounding to nearest even
+ *
+ * For CPUs without a native FP16 type (HAVE_HP_CPU): returns the bits of
+ * the FP16 value. Overflow gives infinity, NaN stays NaN.
+ */
+uint16_t hicma_parsec_float_to_half_bits(float value);
+
+/**
+ * @brief IEEE binary16 (its bits) to FP32 in software, exactly
+ */
+float hicma_parsec_half_bits_to_float(uint16_t value);
+
 int convert_datatype_adaptive_unary_CPU(void *A, int mb, int nb, int lda, uint16_t decision, int convert_direction, int enable_stochastic_rounding, size_t *size);
 
 /**

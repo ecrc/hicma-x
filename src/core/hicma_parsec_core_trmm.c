@@ -23,7 +23,8 @@
  *  - GEMM C(i,n) += A(i,k) * B(k,n) computes in the precision of C(i,n). An
  *    FP16 GEMM accumulates in FP16, or with --accumulation_fp32 takes FP16
  *    operands and accumulates in FP32 into the FP32 C (on the CPU, which has
- *    no such GEMM, it is an FP32 GEMM).
+ *    no such GEMM, it is an FP32 GEMM). A CPU without FP16 (HAVE_HP_CPU)
+ *    computes an FP16 GEMM in FP32 too, converting C to FP32 and back.
  *  - The GEMMs read B(k,n) in place, or from an operand copy in its
  *    precision decision (copy_b): the GEMMs on other ranks, and all of them
  *    when --accumulation_fp32 stores the FP16 tile in FP32, which is then
@@ -32,9 +33,13 @@
  *
  * Operands in another precision are converted into a workspace buffer first,
  * with stochastic rounding for down-conversions if enabled (except the CPU's
- * FP16 conversions, HAVE_HP_CPU only, which round to nearest). Every
- * conversion keeps the operand's leading dimension, so the BLAS calls use the
- * tile's.
+ * FP16 conversions, which round to nearest, in software without HAVE_HP_CPU).
+ * Every conversion keeps the operand's leading dimension, so the BLAS calls
+ * use the tile's.
+ *
+ * The tasks have CPU and GPU versions, and PaRSEC runs FP16 tiles on the CPU
+ * too when it picks the CPU version (no GPU enabled for the taskpool, or
+ * device_load_balance_allow_cpu), so the CPU kernels handle every precision.
  */
 
 #include "hicma_parsec.h"
@@ -95,6 +100,26 @@ static void hicma_parsec_trmm_cpu_convert_into(const void *X, uint16_t from, uin
     }
     if( DENSE_HP == from && DENSE_DP == to ) {
         convert_h2d_binary_CPU( Y, (__fp16 *)X, ld, cols );
+        return;
+    }
+#else
+    /* No FP16 type: convert its bits in software */
+    if( DENSE_SP == from && DENSE_HP == to ) {
+        const float *F = (const float *)X;
+        uint16_t *H = (uint16_t *)Y;
+        for( int j = 0; j < cols; j++ )
+            for( int i = 0; i < rows; i++ )
+                H[(size_t)j*ld+i] = hicma_parsec_float_to_half_bits( F[(size_t)j*ld+i] );
+        return;
+    }
+    if( DENSE_HP == from && (DENSE_SP == to || DENSE_DP == to) ) {
+        const uint16_t *H = (const uint16_t *)X;
+        for( int j = 0; j < cols; j++ )
+            for( int i = 0; i < rows; i++ ) {
+                float f = hicma_parsec_half_bits_to_float( H[(size_t)j*ld+i] );
+                if( DENSE_SP == to ) ((float *)Y)[(size_t)j*ld+i] = f;
+                else                 ((double *)Y)[(size_t)j*ld+i] = (double)f;
+            }
         return;
     }
 #endif
@@ -189,11 +214,9 @@ void hicma_parsec_trmm_core_trmm_lln_cpu(
         CORE_strmm( side, uplo, trans, diag, mb, nb,
                     (float)lalpha, A_use, lda,
                                    B_use, ldb );
-#if HAVE_HP_CPU
         if( B_use != B ) {
-            convert_s2h_binary_CPU( (__fp16 *)B, (float *)B_use, ldb, nb );
+            hicma_parsec_trmm_cpu_convert_into( B_use, DENSE_SP, storageB, mb, nb, ldb, sr, B );
         }
-#endif
         hicma_parsec_trmm_cpu_release( &tA );
         hicma_parsec_trmm_cpu_release( &tB );
     } else {
@@ -222,41 +245,55 @@ void hicma_parsec_trmm_core_gemm_lln_cpu(
     /* B is the operand copy of B(k,n), in its precision decision */
     uint16_t operandB = params_tlr->decisionsB[n*NT+k];
     uint16_t storageC = hicma_parsec_trmm_storage_precision(params_tlr, params_tlr->decisionsB, n*NT+(NT-1)-m);
-    hicma_parsec_trmm_tmp_t tA, tB;
+    hicma_parsec_trmm_tmp_t tA, tB, tC;
 
     /* A is mb x kb, B is kb x nb, C is mb x nb; compute in C's storage
-     * precision (FP32 for an FP16 C with --accumulation_fp32) */
-    void *A_use = hicma_parsec_trmm_cpu_convert( A, storageA, storageC, mb, kb, lda, sr,
+     * precision (FP32 for an FP16 C with --accumulation_fp32), or in FP32
+     * for an FP16 C on a CPU without FP16 */
+    uint16_t compute = storageC;
+#if !HAVE_HP_CPU
+    if( DENSE_HP == compute ) {
+        compute = DENSE_SP;
+    }
+#endif
+    void *A_use = hicma_parsec_trmm_cpu_convert( A, storageA, compute, mb, kb, lda, sr,
             p_work_full_dp, p_work_full_sp, p_work_full_hp, &tA );
-    void *B_use = hicma_parsec_trmm_cpu_convert( B, operandB, storageC, kb, nb, ldb, sr,
+    void *B_use = hicma_parsec_trmm_cpu_convert( B, operandB, compute, kb, nb, ldb, sr,
             p_work_full_dp, p_work_full_sp, p_work_full_hp, &tB );
+    void *C_use = hicma_parsec_trmm_cpu_convert( C, storageC, compute, mb, nb, ldc, sr,
+            p_work_full_dp, p_work_full_sp, p_work_full_hp, &tC );
 
-    if( DENSE_DP == storageC ) {
+    if( DENSE_DP == compute ) {
         CORE_dgemm( transA, transB, mb, nb, kb,
                     lalpha, A_use, lda,
                             B_use, ldb,
-                    lbeta,  C,     ldc );
-    } else if( DENSE_SP == storageC ) {
+                    lbeta,  C_use, ldc );
+    } else if( DENSE_SP == compute ) {
         CORE_sgemm( transA, transB, mb, nb, kb,
                     (float)lalpha, A_use, lda,
                                    B_use, ldb,
-                    (float)lbeta,  C,     ldc );
+                    (float)lbeta,  C_use, ldc );
     }
 #if HAVE_HP_CPU
-    else if( DENSE_HP == storageC ) {
+    else if( DENSE_HP == compute ) {
         fjcblas_gemm_r16( CblasColMajor, transA, transB,
                           mb, nb, kb,
                           (__fp16)lalpha, A_use, lda,
                                           B_use, ldb,
-                          (__fp16)lbeta,  C,     ldc );
+                          (__fp16)lbeta,  C_use, ldc );
     }
 #endif
     else {
         hicma_parsec_trmm_bad_precision( "hicma_parsec_trmm_core_gemm_lln_cpu", storageC, storageC );
     }
 
+    if( C_use != C ) {
+        hicma_parsec_trmm_cpu_convert_into( C_use, compute, storageC, mb, nb, ldc, sr, C );
+    }
+
     hicma_parsec_trmm_cpu_release( &tA );
     hicma_parsec_trmm_cpu_release( &tB );
+    hicma_parsec_trmm_cpu_release( &tC );
 }
 
 
