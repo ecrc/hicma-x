@@ -297,12 +297,12 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         {"grid_cols", "Same as --Q", 0, &params->Q},
         {"KP", "Block rows (KP) in the PxQ process grid (default: 1)", 0, &params->KP},
         {"KQ", "Block columns (KQ) in the PxQ process grid (default: 1)", 0, &params->KQ},
-        {"M", "Row dimension (M) of the matrices (required)", 0, &params->M},
+        {"M", "Row dimension (M) of the matrices; must equal N (default: N)", 0, &params->M},
         {"N", "Column dimension (N) of the matrices (required)", 0, &params->N},
-        {"K", "Dimension (K) of the matrices (required)", 0, &params->K},
-        {"MB", "Row tile size (required)", 0, &params->MB},
-        {"NB", "Column tile size (required)", 0, &params->NB},
-        {"KB", "Column tile size (required)", 0, &params->KB},
+        {"K", "Columns (K) of B in the TRMM (default: N)", 0, &params->K},
+        {"MB", "Row tile size; must equal NB (default: NB)", 0, &params->MB},
+        {"NB", "Tile size (required)", 0, &params->NB},
+        {"KB", "Tile size along K; must equal NB (default: NB)", 0, &params->KB},
         {"check", "Verify the results (--check, or --check 0|1)", 3, &params->check},
         {"verbose", "Extra verbose output: 1=normal, >1=more verbose about decisions", 0, &params->verbose},
         {"help", "Show this help message", 3, NULL},
@@ -344,9 +344,9 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         {"datatype_convert", "Convert datatype: 0=receiver convert always, 1=sender convert always (only in DENSE_MP_BAND), 2=adaptive", 0, &params->datatype_convert},
         {"band_size_termination", "Band size auto-tuning termination on GPU, default 3.0", 1, &params->band_size_auto_tuning_termination},
         {"left_looking", "Modified left-looking Cholesky (row)", 0, &params->left_looking},
-        {"enable_stochastic_rounding", "Enable stochastic rounding in supported kernels (requires value: 0 or 1)", 0, &params->enable_stochastic_rounding},
+        {"enable_stochastic_rounding", "Stochastic rounding for the down-conversions (0 or 1); not with FP8 GEMMs", 0, &params->enable_stochastic_rounding},
         {"nruns", "The number of runs of Cholesky", 0, &params->nruns},
-        {"accumulation_fp32", "Accumulation type for FP16 and lower", 0, &params->accumulation_fp32},
+        {"accumulation_fp32", "TRMM: store the FP16 tiles of B in FP32 and accumulate their GEMMs in FP32 (0 or 1)", 0, &params->accumulation_fp32},
         
         // Kernel parameters
         {"time_slots", "Time slots in kernels", 0, &params->time_slots},
@@ -826,8 +826,16 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
         params->KB = params->NB;
     }
 
-    assert(params->MB == params->NB);
-    assert(params->MB == params->KB);
+    /* One tile size, and M == N: the decision arrays are MT x NT, and every
+     * driver (TRMM included) assumes MT == NT */
+    if( params->MB != params->NB || params->KB != params->NB || params->M != params->N ) {
+        if( 0 == params->rank ) {
+            fprintf(stderr, "--MB and --KB must equal --NB, and --M must equal --N "
+                    "(M= %d N= %d MB= %d NB= %d KB= %d)\n",
+                    params->M, params->N, params->MB, params->NB, params->KB);
+        }
+        exit(1);
+    }
 
     /* Diagonal Regularization Setup */
     // Set diagonal regularization to matrix size if not specified (for numerical stability)
@@ -1121,6 +1129,15 @@ parsec_context_t* hicma_parsec_setup_parsec(int argc, char **argv, hicma_parsec_
                    || DENSE_MP_GPU_FP8_SP == params->kind_of_cholesky
                    || DENSE_MP_GPU_FP8_ADAPTIVE == params->kind_of_cholesky;
     params->fp8_enabled = fp8_gpus_ok && params->fp8 && fp8_kind;
+    /* The FP8 GEMMs have no stochastic rounding: refuse here rather than in
+     * the middle of the factorization (every rank has the same values) */
+    if( params->fp8_enabled && params->enable_stochastic_rounding ) {
+        if( 0 == params->rank ) {
+            fprintf(stderr, "--enable_stochastic_rounding is not supported with FP8 GEMMs "
+                    "(kinds 8, 9 and 10 on GPUs with compute capability >= 8.9): add --fp8 0\n");
+        }
+        exit(1);
+    }
     /* Every CUDA build has FP8 GEMMs: on V100/A100 warn only for kinds 8 and
      * 9, which exist to use FP8 (hicma_parsec_params_print_initial prints
      * fp8_enabled for every kind) */
@@ -1261,14 +1278,14 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
     if (params->trmm_window == -1) {
         if (params->nodes == 1) {
             params->trmm_window = 0;
-            if (params->rank == 0) {
+            if (params->rank == 0 && params->verbose) {
                 fprintf(stderr,
                         RED "Set TRMM window to 0 (unbounded shared-memory default)\n" RESET);
             }
         } else {
             const int grid_span = hicma_parsec_max(params->P, params->Q);
             params->trmm_window = hicma_parsec_min(params->MT, 4 * grid_span);
-            if (params->rank == 0) {
+            if (params->rank == 0 && params->verbose) {
                 fprintf(stderr,
                         RED "Set TRMM window to %d = min(MT=%d, 4 * max(P=%d, Q=%d))\n" RESET,
                         params->trmm_window, params->MT, params->P, params->Q);

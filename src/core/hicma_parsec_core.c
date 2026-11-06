@@ -148,6 +148,15 @@ void hicma_parsec_arenas_use_pinned_memory(parsec_arena_datatype_t *arenas,
     }
 }
 
+/* The CPU's FP16 GEMMs round to nearest: say so once, not on every GEMM */
+static void hicma_parsec_warn_sr_hp_cpu(void)
+{
+    static int32_t warned = 0;
+    if( 0 == __atomic_exchange_n(&warned, 1, __ATOMIC_RELAXED) ) {
+        fprintf(stderr, "stochastic_rounding is not supported in HP on CPU: rounding to nearest\n");
+    }
+}
+
 /* Every early exit of the GPU GEMM kernels below is an error path (unsupported
  * precision, failed reallocation, failed cuBLASLt call). Returning would let the
  * task complete with C never updated, i.e. a silently wrong factorization that
@@ -1592,9 +1601,9 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_cpu( parsec_tiled_matrix_t* des
     /* Convert A and B in 16-bit and call sgemm */
     //else if( DENSE_HP == params_tlr->decisions[n*descA->lmt+m] ){
     else{
-		if( params_tlr->enable_stochastic_rounding ) {
-			fprintf(stderr, "stochastic_rounding is not supported in HP on CPU\n");
-		}
+        if( params_tlr->enable_stochastic_rounding ) {
+            hicma_parsec_warn_sr_hp_cpu();
+        }
 
         /* Convert datatype, A */
         A_use = parsec_private_memory_pop( p_work_full_sp );
@@ -1622,9 +1631,9 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_cpu( parsec_tiled_matrix_t* des
         A_h = parsec_private_memory_pop( p_work_full_hp );
         B_h = parsec_private_memory_pop( p_work_full_hp );
 
-		if( params_tlr->enable_stochastic_rounding ) {
-			fprintf(stderr, "stochastic_rounding is not supported in HP on CPU\n");
-		}
+        if( params_tlr->enable_stochastic_rounding ) {
+            hicma_parsec_warn_sr_hp_cpu();
+        }
 
         /* Convert datatype, A */
         if( DENSE_DP == params_tlr->decisions[k*descA->lmt+m] ) {
