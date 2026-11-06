@@ -35,7 +35,7 @@ diag      [type = "dplasma_enum_t"]
 alpha     [type = "double"]
 
 descA     [type = "const parsec_tiled_matrix_t*"]
-descB     [type = "parsec_tiled_matrix_t*" ] 
+descB     [type = "parsec_tiled_matrix_t*" ]
 
 params_tlr   [ type = "hicma_parsec_params_t *" ]
 
@@ -49,7 +49,7 @@ P            [ type = "int" hidden = on default = "params_tlr->P" ]
 Q            [ type = "int" hidden = on default = "params_tlr->Q" ]
 
 p_work_full_dp        [ type = "parsec_memory_pool_t *" hidden = on default = NULL ]  /* Double precision full matrix memory pool - allocates memory for dense double precision matrices */
-p_work_full_sp        [ type = "parsec_memory_pool_t *" hidden = on default = NULL ]  /* Single precision full matrix memory pool - allocates memory for dense single precision matrices */       
+p_work_full_sp        [ type = "parsec_memory_pool_t *" hidden = on default = NULL ]  /* Single precision full matrix memory pool - allocates memory for dense single precision matrices */
 p_work_full_hp        [ type = "parsec_memory_pool_t *" hidden = on default = NULL ]  /* Half precision full matrix memory pool - allocates memory for dense half precision matrices */
 
 /* GPU-related variables */
@@ -103,7 +103,7 @@ read_A(m, k) [profile = off]
   /* Locality */
   : descA((descB->mt-1)-m, k)
 
-  READ  A    <- descA((descB->mt-1)-m, k) 
+  READ  A    <- descA((descB->mt-1)-m, k)
              -> (k == (descB->mt-1-m)) ? A dtrmm(m, 0..(descB->nt-1))    [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr, params_tlr->decisions, (descB->mt-1)-m, k, descA->lmt)]; %} ]
              -> (k != (descB->mt-1-m)) ? A dgemm(m, 0..(descB->nt-1), k) [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr, params_tlr->decisions, (descB->mt-1)-m, k, descA->lmt)]; %} ]
 
@@ -218,9 +218,9 @@ dtrmm(m, n) [ flops = inline_c %{ return FLOPS_DTRMM(side, CLEAN_MB(descB, m), C
   : descB((descB->mt-1)-m,n)
 
   READ  A    <- A read_A(m, descB->mt-1-m)                      [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr, params_tlr->decisions, (descB->mt-1)-m, (descB->mt-1)-m, descA->lmt)]; %} ]
-  RW    B    <- descB((descB->mt-1)-m,n)                        
+  RW    B    <- descB((descB->mt-1)-m,n)
              -> (m <  (descB->mt-1)) ? C dgemm(m, n, descB->mt-m-2) [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr, params_tlr->decisionsB, (descB->mt-1)-m, n, descB->lmt)]; %} ]
-             -> (m == (descB->mt-1)) ? descB((descB->mt-1)-m,n) 
+             -> (m == (descB->mt-1)) ? descB((descB->mt-1)-m,n)
 
   /* Overwrite B(i,n) once its operand copy, if any, is made and every GEMM
    * reading it in place is done (the last row is read by no GEMM) */
@@ -360,7 +360,7 @@ BODY [type=CUDA]
 #else
     cublasStatus_t status;
     cublasSetKernelStream( parsec_body.stream );
-    cublasDgemm( dplasma_lapack_const(trans), 'N', 
+    cublasDgemm( dplasma_lapack_const(trans), 'N',
                  tempmm, tempnn, descB->mb,
                  lalpha, (double*)A, lda,
                          (double*)B, ldb,
@@ -383,7 +383,7 @@ BODY [type=HIP]
 
 #if 1
     hicma_parsec_trmm_core_gemm_lln_gpu(
-            params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream, 
+            params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream,
             trans, dplasmaNoTrans, tempmm, tempnn, descB->mb,
             lalpha, A, lda,
             B, ldb, lbeta, C, ldc,

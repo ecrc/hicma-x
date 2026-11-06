@@ -1593,9 +1593,9 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_cpu( parsec_tiled_matrix_t* des
     //else if( DENSE_HP == params_tlr->decisions[n*descA->lmt+m] ){
     else{
 		if( params_tlr->enable_stochastic_rounding ) {
-			fprintf(stderr, "stochastic_rounding is not supported in HP on CPU\n");	
+			fprintf(stderr, "stochastic_rounding is not supported in HP on CPU\n");
 		}
-	
+
         /* Convert datatype, A */
         A_use = parsec_private_memory_pop( p_work_full_sp );
         hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
@@ -1623,7 +1623,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_cpu( parsec_tiled_matrix_t* des
         B_h = parsec_private_memory_pop( p_work_full_hp );
 
 		if( params_tlr->enable_stochastic_rounding ) {
-			fprintf(stderr, "stochastic_rounding is not supported in HP on CPU\n");	
+			fprintf(stderr, "stochastic_rounding is not supported in HP on CPU\n");
 		}
 
         /* Convert datatype, A */

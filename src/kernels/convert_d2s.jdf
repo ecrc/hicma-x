@@ -76,7 +76,7 @@ BODY
         // Perform conversion based on memory management strategy
         if( params_tlr->check || !params_tlr->adaptive_memory ) {
             if( params_tlr->enable_stochastic_rounding ) {
-                convert_datatype_adaptive_unary_CPU(A, descA->mb, descA->nb, descA->mb, DENSE_SP, 0, params_tlr->enable_stochastic_rounding, &this_task->data._f_A.data_out->original->nb_elts); 
+                convert_datatype_adaptive_unary_CPU(A, descA->mb, descA->nb, descA->mb, DENSE_SP, 0, params_tlr->enable_stochastic_rounding, &this_task->data._f_A.data_out->original->nb_elts);
             } else {
                 // In-place conversion (unary operation)
                 convert_d2s_unary_CPU(A, descA->mb, size);

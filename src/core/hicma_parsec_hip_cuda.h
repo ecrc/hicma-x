@@ -76,7 +76,7 @@
 #define cublasZdotu hipblasZdotu    // Complex double precision dot product (unconjugated)
 #define cublasDaxpy hipblasDaxpy    // Double precision axpy operation
 #define cublasDtrmm hipblasDtrmm
-#define cublasStrmm hipblasStrmm 
+#define cublasStrmm hipblasStrmm
 
 /* ============================================================================
  * CUDA to HIP type mappings
@@ -140,7 +140,7 @@
 
 // CUDA Func
 #define curand_uniform hiprand_uniform
-#define curandState hiprandState 
+#define curandState hiprandState
 #define curand_init hiprand_init
 
 /* ============================================================================
@@ -232,7 +232,7 @@
 #define CUBLAS_OP_N HIPBLAS_OP_N                           // No transpose operation
 #define CUBLAS_FILL_MODE_LOWER HIPBLAS_FILL_MODE_LOWER     // Lower triangular fill mode
 #define CUBLAS_SIDE_RIGHT HIPBLAS_SIDE_RIGHT               // Right side operation
-#define dplasma_cublas_op dplasma_hipblas_op               
+#define dplasma_cublas_op dplasma_hipblas_op
 #define dplasma_cublas_side dplasma_hipblas_side
 #define dplasma_cublas_fill dplasma_hipblas_fill
 #define dplasma_cublas_diag dplasma_hipblas_diag

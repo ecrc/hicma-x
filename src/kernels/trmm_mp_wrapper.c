@@ -96,17 +96,17 @@ hicma_parsec_trmm_New( dplasma_enum_t side,  dplasma_enum_t uplo,
 
     /* GPU device management */
     int nb = 0, *dev_index;
-#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT) 
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
     /* Find and initialize available GPU devices */
     hicma_parsec_find_cuda_devices(&dev_index, &nb);
-                
+
 #if !GPU_BUFFER_ONCE
     /* Allocate GPU workspace buffers if not already allocated */
     gpu_temporay_buffer_init(data, params, A->mb, A->nb, 0, 0);
     //fprintf(stderr, "GPU_BUFFER_ONCE need enable in trmm\n");
     //return NULL;
-#endif          
-#endif  
+#endif
+#endif
 
     parsec_trmm_mp_LLN_taskpool_t *parsec_trmm = parsec_trmm_mp_LLN_new(
         side, uplo, trans, diag, alpha, A, B, params);
@@ -202,7 +202,7 @@ hicma_parsec_trmm_Destruct( parsec_taskpool_t *tp )
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
     /* Clean up GPU resources if devices were used */
     if( otrmm->_g_nb_cuda_devices > 0 ) {
-#if !GPU_BUFFER_ONCE 
+#if !GPU_BUFFER_ONCE
         /* Free GPU workspace memory if not managed globally */
         workspace_memory_free( otrmm->_g_ws_gpu );
 #endif

@@ -25,7 +25,7 @@ Task(m, n)
 
 // Iterate over lower triangular matrix tiles (m >= n)
 m = 0 .. descA->lmt-1  // Row index from 0 to number of tiles in rows - 1
-//n = 0 .. %{ return ((uplo == dplasmaUpper) ? m: descA->lnt-1); %}             
+//n = 0 .. %{ return ((uplo == dplasmaUpper) ? m: descA->lnt-1); %}
 n = %{ return (uplo == dplasmaUpper) ? m : 0; %} .. %{ return (uplo == dplasmaLower) ? m : descA->lnt-1; %}
 
 : descA(m, n)  // Depend on the matrix tile at position (m,n)
@@ -35,13 +35,13 @@ BODY
 {
     // Initialize new decision with current decision
     if(uplo == dplasmaUpperLower) {
-        new_decisions[n*descA->lmt+m] = DENSE_DP; 
+        new_decisions[n*descA->lmt+m] = DENSE_DP;
     } else {
         new_decisions[n*descA->lmt+m] = params_tlr->decisions[n*descA->lmt+m];
     }
 
     /* Diagonal tiles are always computed in double precision (DP) */
-    if( m == n && uplo != dplasmaUpperLower ) { 
+    if( m == n && uplo != dplasmaUpperLower ) {
 #if GENOMICS
         // For gene computation, use single precision on GPU
         params_tlr->decisions_gemm_gpu[n*descA->lmt+m] = MASK_FP32;
@@ -54,13 +54,13 @@ BODY
 
     // Calculate scaling factor based on number of tiles
     double scalar_factore = (double)params_tlr->NT;
-    
+
     // Determine precision decisions based on tile norm relative to global norm and tolerance
     // Each decision checks if the normalized tile norm is below the precision-specific threshold
     bool decision_hp_gpu = norm_tile[n*params_tlr->NT+m] * scalar_factore / norm_global  < params_tlr->fixedacc / EPS_HP_GPU;
-    bool decision_hp = norm_tile[n*params_tlr->NT+m] * scalar_factore / norm_global  < params_tlr->fixedacc / EPS_HP; 
-    bool decision_sp = norm_tile[n*params_tlr->NT+m] * scalar_factore / norm_global  < params_tlr->fixedacc / EPS_SP; 
-    bool decision_fp8 = norm_tile[n*params_tlr->NT+m] * scalar_factore / norm_global  < params_tlr->fixedacc / EPS_FP8; 
+    bool decision_hp = norm_tile[n*params_tlr->NT+m] * scalar_factore / norm_global  < params_tlr->fixedacc / EPS_HP;
+    bool decision_sp = norm_tile[n*params_tlr->NT+m] * scalar_factore / norm_global  < params_tlr->fixedacc / EPS_SP;
+    bool decision_fp8 = norm_tile[n*params_tlr->NT+m] * scalar_factore / norm_global  < params_tlr->fixedacc / EPS_FP8;
 
     /* Protect on CPU */
     if(params_tlr->gpus < 1) {
@@ -92,8 +92,8 @@ BODY
         else if( decision_hp ) {
             new_decisions[n*descA->lmt+m] = DENSE_HP;
         } else if( decision_sp ) {
-#else   
-        if( decision_sp ) { 
+#else
+        if( decision_sp ) {
 #endif // HAVE_HP
 
 #else
@@ -101,9 +101,9 @@ BODY
 #if HAVE_HP
         if( decision_hp ) {
             new_decisions[n*descA->lmt+m] = DENSE_HP;
-        } else if( decision_sp ) { 
+        } else if( decision_sp ) {
 #else
-        if( decision_sp ) { 
+        if( decision_sp ) {
 #endif // HAVE_HP
 
 #endif // HAVE_FP8
@@ -132,10 +132,10 @@ BODY
     if( uplo != dplasmaUpperLower && params_tlr->gpus > 0 && IS_DENSE(m, n) ) {
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
         // CUDA-specific GPU precision selection
-        if( decision_hp_gpu && ENABLE_TF16_A16_B16_C16_OP16 ) { 
-            params_tlr->decisions_gemm_gpu[n*descA->lmt+m] = MASK_TF16_A16_B16_C16_OP16; 
+        if( decision_hp_gpu && ENABLE_TF16_A16_B16_C16_OP16 ) {
+            params_tlr->decisions_gemm_gpu[n*descA->lmt+m] = MASK_TF16_A16_B16_C16_OP16;
             //printf("%d %d : %g %g\n", m, n, norm_tile[n*params_tlr->NT+m], norm_global);
-        } else if( decision_hp ) { 
+        } else if( decision_hp ) {
 #elif defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
         // HIP-specific GPU precision selection
         if( decision_hp ) {
@@ -143,15 +143,15 @@ BODY
         // No GPU support
         if( 0 ) {
 #endif
-            params_tlr->decisions_gemm_gpu[n*descA->lmt+m] = MASK_TF16_A16_B16_C32_OP32; 
-        } else if( decision_sp ) { 
-            params_tlr->decisions_gemm_gpu[n*descA->lmt+m] = MASK_FP32; 
+            params_tlr->decisions_gemm_gpu[n*descA->lmt+m] = MASK_TF16_A16_B16_C32_OP32;
+        } else if( decision_sp ) {
+            params_tlr->decisions_gemm_gpu[n*descA->lmt+m] = MASK_FP32;
         } else {
             // Fall back to highest precision based on build configuration
 #if GENOMICS
-            params_tlr->decisions_gemm_gpu[n*descA->lmt+m] = MASK_FP32; 
+            params_tlr->decisions_gemm_gpu[n*descA->lmt+m] = MASK_FP32;
 #else
-            params_tlr->decisions_gemm_gpu[n*descA->lmt+m] = MASK_FP64; 
+            params_tlr->decisions_gemm_gpu[n*descA->lmt+m] = MASK_FP64;
 #endif
         }
     }
@@ -235,7 +235,7 @@ int hicma_parsec_decision_make_comp(parsec_context_t *parsec,
 
     // Reduce decisions across all MPI processes and update parameters
     MPI_Allreduce(MPI_IN_PLACE, new_decisions, A->lmt * A->lnt, MPI_UNSIGNED_SHORT, MPI_SUM, MPI_COMM_WORLD);
-    memcpy( (void *)decisions, (void *)new_decisions, A->lmt * A->lnt * sizeof(uint16_t) ); 
+    memcpy( (void *)decisions, (void *)new_decisions, A->lmt * A->lnt * sizeof(uint16_t) );
     free( new_decisions );
 
     return 0;

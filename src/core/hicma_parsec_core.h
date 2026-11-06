@@ -878,7 +878,7 @@ double hicma_parsec_core_matrix_norm_get(const void *data, int tempmm, int tempn
 
 void hicma_parsec_trmm_core_gemm_lln_cpu(
         hicma_parsec_params_t *params_tlr,
-        parsec_execution_stream_t *es,               
+        parsec_execution_stream_t *es,
         parsec_memory_pool_t *p_work_full_dp,
         parsec_memory_pool_t *p_work_full_sp,
         parsec_memory_pool_t *p_work_full_hp,

@@ -185,7 +185,7 @@ double hicma_parsec_matrix_norm_get( parsec_context_t *parsec,
     memset( norm_tile, 0, A->lmt * A->lnt * sizeof(double) );
 
     // Create and execute the norm computation taskpool
-    parsec_matrix_norm_get = hicma_parsec_matrix_norm_get_New( parsec, uplo, A, params_tlr, norm_tile, datatype_str, norm_tmp ); 
+    parsec_matrix_norm_get = hicma_parsec_matrix_norm_get_New( parsec, uplo, A, params_tlr, norm_tile, datatype_str, norm_tmp );
 
     parsec_context_add_taskpool(parsec, parsec_matrix_norm_get);
     parsec_context_start(parsec);

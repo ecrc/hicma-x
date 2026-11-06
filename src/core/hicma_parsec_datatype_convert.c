@@ -2246,7 +2246,7 @@ int convert_datatype_adaptive_unary_GPU(parsec_potrf_workspace_t *ws_gpu,
 
     /* Validate input parameters */
     if (!A || !size) {
-        return -1; 
+        return -1;
     }
 
     /* Find workspace */
@@ -2255,7 +2255,7 @@ int convert_datatype_adaptive_unary_GPU(parsec_potrf_workspace_t *ws_gpu,
     void *A_tmp = stream_found->gpu_buffer_A;
 
     //cublasSetStream( handle, cuda_stream->cuda_stream );
-    
+
     /* High precision -> low precision */
     if(0 == convert_direction) {
         /* Handle different conversion types with appropriate function calls */
@@ -2267,8 +2267,8 @@ int convert_datatype_adaptive_unary_GPU(parsec_potrf_workspace_t *ws_gpu,
             }
             memcpy_float_GPU(mb, nb, A_tmp, A, cuda_stream->cuda_stream);
             *size = mb * nb * sizeof(float);
-        } 
-        else if (DENSE_HP == decision) { 
+        }
+        else if (DENSE_HP == decision) {
             if(enable_stochastic_rounding) {
                 double2half_round_GPU(mb, nb, A, mb, A_tmp, mb, cuda_stream->cuda_stream);
             } else {

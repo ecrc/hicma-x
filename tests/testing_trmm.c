@@ -43,10 +43,10 @@ int main(int argc, char ** argv)
 
     /* Initialize PaRSEC */
     parsec = hicma_parsec_setup_parsec(argc, argv, &params);
-    
+
     /* Print initial parameters */
     hicma_parsec_params_print_initial(&params);
-    
+
     SYNC_TIME_PRINT(params.rank, ("HiCMA and PaRSEC initialization completed in %.6f seconds\n", sync_time_elapsed));
 
     int M = params.M;
@@ -88,7 +88,7 @@ int main(int argc, char ** argv)
                                M, K, P, nodes/P, KP, KQ, IP, JQ));
 
     /* Allocate memory for GPU workspace */
-#if (defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)) && GPU_BUFFER_ONCE 
+#if (defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)) && GPU_BUFFER_ONCE
     gpu_temporay_buffer_init( &data, &params, MB, NB, 0, params.kind_of_cholesky );
 #endif
 
@@ -96,7 +96,7 @@ int main(int argc, char ** argv)
     {
         dplasma_enum_t side  = dplasmaLeft;
         dplasma_enum_t trans = dplasmaNoTrans;
-        uplo = dplasmaLower; 
+        uplo = dplasmaLower;
         int sidx = 0; /* dplasmaLeft */
         int uidx = 1; /* dplasmaLower */
         int tidx = 0; /* dplasmaNoTrans */
@@ -213,11 +213,11 @@ int main(int argc, char ** argv)
         /* Get norm and decisions */
         if( params.adaptive_decision ) {
             SYNC_TIME_START();
-            hicma_parsec_matrix_norm_get(parsec, params.uplo, dcA, &params, params.norm_tile, &params.norm_global, "double"); 
+            hicma_parsec_matrix_norm_get(parsec, params.uplo, dcA, &params, params.norm_tile, &params.norm_global, "double");
             SYNC_TIME_PRINT(params.rank, ("hicma_parsec_matrix_norm_get A: uplo= %d norm_global %lf\n", params.uplo, params.norm_global));
 
             SYNC_TIME_START();
-            hicma_parsec_decision_make_comp(parsec, params.uplo, dcA, &params, params.norm_tile, params.norm_global, params.decisions); 
+            hicma_parsec_decision_make_comp(parsec, params.uplo, dcA, &params, params.norm_tile, params.norm_global, params.decisions);
             SYNC_TIME_PRINT(params.rank, ("hicma_parsec_decision_make_comp A: uplo= %d norm_global %lf\n", params.uplo, params.norm_global));
 
             SYNC_TIME_START();
@@ -249,7 +249,7 @@ int main(int argc, char ** argv)
 
                 SYNC_TIME_START();
                 hicma_parsec_decision_make_comp(parsec, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcC,
-                        &params, params.norm_tileB, params.norm_globalB, params.decisionsB); 
+                        &params, params.norm_tileB, params.norm_globalB, params.decisionsB);
                 SYNC_TIME_PRINT(params.rank, ("hicma_parsec_decision_make_comp B: uplo= %d norm_global %lf\n", dplasmaUpperLower, params.norm_globalB));
 
                 SYNC_TIME_START();
@@ -334,7 +334,7 @@ int main(int argc, char ** argv)
     free(params.norm_tileB);
 
     /* GPU workspace */
-#if (defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)) && GPU_BUFFER_ONCE 
+#if (defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)) && GPU_BUFFER_ONCE
     gpu_temporay_buffer_fini( &data, params.kind_of_cholesky );
 #endif
 
@@ -380,7 +380,7 @@ static int check_solution( parsec_context_t *parsec, int loud,
     int KQ = dcCfinal->grid.kcols;
     int IP = dcCfinal->grid.ip;
     int JQ = dcCfinal->grid.jq;
-    
+
     eps = LAPACKE_dlamch_work('e');
 
     /* Tile storage: the reference is distributed on the same P x Q grid as

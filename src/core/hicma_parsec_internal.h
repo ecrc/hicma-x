@@ -1172,7 +1172,7 @@ parsec_context_t *hicma_parsec_setup_parsec(int argc, char* argv[], hicma_parsec
  * @note CUDA handles are automatically cleaned up by the CUDA runtime
  * @note All allocated memory should be freed before calling this function
  */
-void hicma_parsec_cleanup_parsec(parsec_context_t* parsec, hicma_parsec_params_t *params); 
+void hicma_parsec_cleanup_parsec(parsec_context_t* parsec, hicma_parsec_params_t *params);
 
 /**
  * @brief Parse command line arguments for HiCMA configuration

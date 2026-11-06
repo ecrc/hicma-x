@@ -679,8 +679,8 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     // Matrix dimensions (must be set by user via command line)
     params->P = 0;                          // Row process grid (auto-set to number of nodes if 0)
     params->Q = 0;                          // Column process grid (nodes / P if 0)
-    params->KP = 1;                         // Row block cyclic 1 
-    params->KQ = 1;                         // Column block cyclic 1 
+    params->KP = 1;                         // Row block cyclic 1
+    params->KQ = 1;                         // Column block cyclic 1
     params->M = 0;                          // Matrix size M (must be specified, defaults to N if not set)
     params->N = 0;                          // Matrix size N (must be specified, typically square matrices)
     params->K = 0;                          // Matrix size K (must be specified, defaults to N if not set)
@@ -712,7 +712,7 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     params->left_looking = 0;               // Disable left-looking Cholesky (0=right-looking, 1=left-looking)
     params->enable_stochastic_rounding = 0; // Disable stochastic rounding by default
     params->nruns = 1;                      // Number of execution runs (for performance measurement) 
-    params->accumulation_fp32 = 0;          // False 
+    params->accumulation_fp32 = 0;          // False
 
     /* ===========================================
      * Kernel-specific parameters
@@ -1202,7 +1202,7 @@ parsec_context_t* hicma_parsec_setup_parsec(int argc, char **argv, hicma_parsec_
  * @note This function should be called before program termination
  * @note CUDA handles are automatically cleaned up by the CUDA runtime
  */
-void hicma_parsec_cleanup_parsec(parsec_context_t* parsec, hicma_parsec_params_t *params) 
+void hicma_parsec_cleanup_parsec(parsec_context_t* parsec, hicma_parsec_params_t *params)
 {
     // Cleanup CUDA handles if CUDA support is available
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
@@ -1253,7 +1253,7 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
     // Calculate number of tiles in each dimension (round up if not evenly divisible)
     params->MT = (params->M % params->MB == 0) ? (params->M/params->MB) : (params->M/params->MB + 1);
     params->NT = (params->N % params->NB == 0) ? (params->N/params->NB) : (params->N/params->NB + 1);
-    params->KT = (params->K % params->KB == 0) ? (params->K/params->KB) : (params->K/params->KB + 1);    
+    params->KT = (params->K % params->KB == 0) ? (params->K/params->KB) : (params->K/params->KB + 1);
 
     /* There is no inter-process panel traffic in shared memory, so retain the
      * fully concurrent DAG.  For distributed runs, keep four process-grid
