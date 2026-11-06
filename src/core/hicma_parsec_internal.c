@@ -678,6 +678,7 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     
     // Matrix dimensions (must be set by user via command line)
     params->P = 0;                          // Row process grid (auto-set to number of nodes if 0)
+    params->Q = 0;                          // Column process grid (nodes / P if 0)
     params->KP = 1;                         // Row block cyclic 1 
     params->KQ = 1;                         // Column block cyclic 1 
     params->M = 0;                          // Matrix size M (must be specified, defaults to N if not set)
@@ -768,6 +769,10 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     }
 
     /* Process Grid Validation and Setup */
+    // --P alone: Q = NP/P, as documented
+    if( params->P > 0 && 0 == params->Q && 0 == params->nodes % params->P ) {
+        params->Q = params->nodes / params->P;
+    }
     // Ensure process grid dimensions are valid and consistent with number of nodes
     if( 0 == params->P
             || params->Q * params->P != params->nodes ) {
