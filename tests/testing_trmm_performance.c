@@ -185,6 +185,22 @@ int main(int argc, char **argv)
     for (int run = 0; run < nruns; run++) {
         struct timeval tstart, tend;
 
+        /* Every run starts from the same C, regenerated outside the timing:
+         * back to FP64, generated, and converted again */
+        if (run > 0) {
+            if (params.adaptive_decision) {
+                parsec_datatype_convert_dense_adaptive(parsec, &data, &params,
+                        dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcC,
+                        params.decisionsB, 1);
+            }
+            dplasma_dplrnt(parsec, 0, (parsec_tiled_matrix_t *)&dcC, Cseed);
+            if (params.adaptive_decision) {
+                parsec_datatype_convert_dense_adaptive(parsec, &data, &params,
+                        dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcC,
+                        params.decisionsB, 0);
+            }
+        }
+
 #if defined(PARSEC_HAVE_MPI)
         MPI_Barrier(MPI_COMM_WORLD);
 #endif

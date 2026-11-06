@@ -464,6 +464,14 @@ int main(int argc, char **argv)
     for (int run = 0; run < params.nruns; run++) {
         struct timeval start, end;
 
+        /* Every run starts from the same B, initialized again outside the
+         * timing (in place: the tiles are already allocated) */
+        if (run > 0) {
+            hicma_parsec_memory_allocation_dense_decision(
+                    parsec, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcB,
+                    params.decisionsB, 0, 0, params.accumulation_fp32, 0, Bseed);
+        }
+
 #if defined(PARSEC_HAVE_MPI)
         MPI_Barrier(MPI_COMM_WORLD);
 #endif
