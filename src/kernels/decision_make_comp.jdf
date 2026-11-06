@@ -13,8 +13,11 @@ extern "C" %{
 %}
 
 // Input parameters for the decision making computation task
+uplo            [type = "dplasma_enum_t"]
 descA           [ type = "parsec_tiled_matrix_t*" ]  // Matrix descriptor for the tiled matrix
 params_tlr      [ type = "hicma_parsec_params_t *" ] // TLR (Tile Low Rank) parameters containing precision decisions
+norm_tile       [ type = "double *" ]
+norm_global     [ type = "double " ]
 new_decisions   [ type = "uint16_t *" ]              // Output array to store new precision decisions
 
 // Task definition for computing precision decisions for each matrix tile
@@ -22,7 +25,8 @@ Task(m, n)
 
 // Iterate over lower triangular matrix tiles (m >= n)
 m = 0 .. descA->lmt-1  // Row index from 0 to number of tiles in rows - 1
-n = 0 .. m             // Column index from 0 to current row (lower triangular)
+//n = 0 .. %{ return ((uplo == dplasmaUpper) ? m: descA->lnt-1); %}
+n = %{ return (uplo == dplasmaUpper) ? m : 0; %} .. %{ return (uplo == dplasmaLower) ? m : descA->lnt-1; %}
 
 : descA(m, n)  // Depend on the matrix tile at position (m,n)
 
@@ -30,10 +34,14 @@ n = 0 .. m             // Column index from 0 to current row (lower triangular)
 BODY
 {
     // Initialize new decision with current decision
-    new_decisions[n*descA->lmt+m] = params_tlr->decisions[n*descA->lmt+m];
+    if(uplo == dplasmaUpperLower) {
+        new_decisions[n*descA->lmt+m] = DENSE_DP;
+    } else {
+        new_decisions[n*descA->lmt+m] = params_tlr->decisions[n*descA->lmt+m];
+    }
 
     /* Diagonal tiles are always computed in double precision (DP) */
-    if( m == n ) { 
+    if( m == n && uplo != dplasmaUpperLower ) {
 #if GENOMICS
         // For gene computation, use single precision on GPU
         params_tlr->decisions_gemm_gpu[n*descA->lmt+m] = MASK_FP32;
@@ -44,7 +52,105 @@ BODY
         return PARSEC_HOOK_RETURN_DONE;
     }
 
-    hicma_parsec_get_precision_tile(params_tlr, &new_decisions[n*descA->lmt+m], params_tlr->norm_tile[n*params_tlr->NT+m], m, n);
+    // Calculate scaling factor based on number of tiles
+    double scalar_factore = (double)params_tlr->NT;
+
+    // Determine precision decisions based on tile norm relative to global norm and tolerance
+    // Each decision checks if the normalized tile norm is below the precision-specific threshold
+    bool decision_hp_gpu = norm_tile[n*descA->lmt+m] * scalar_factore / norm_global  < params_tlr->fixedacc / EPS_HP_GPU;
+    bool decision_hp = norm_tile[n*descA->lmt+m] * scalar_factore / norm_global  < params_tlr->fixedacc / EPS_HP;
+    bool decision_sp = norm_tile[n*descA->lmt+m] * scalar_factore / norm_global  < params_tlr->fixedacc / EPS_SP;
+    bool decision_fp8 = norm_tile[n*descA->lmt+m] * scalar_factore / norm_global  < params_tlr->fixedacc / EPS_FP8;
+
+    /* No FP16 or FP8 without a GPU (unless the CPU has FP16): same rule as
+     * hicma_parsec_get_precision_tile */
+    if(params_tlr->gpus < 1) {
+        decision_hp_gpu = false;
+        decision_fp8 = false;
+    }
+
+    if(params_tlr->gpus < 1 && !HAVE_HP_CPU) {
+        decision_hp = false;
+    }
+
+    /* Make precision decisions based on current tile type */
+    // Handle dense tile precision decisions (DP, SP, HP, FP8)
+    if( uplo == dplasmaUpperLower
+            || DENSE_DP == params_tlr->decisions[n*descA->lmt+m]
+            || DENSE_SP == params_tlr->decisions[n*descA->lmt+m]
+            || DENSE_HP == params_tlr->decisions[n*descA->lmt+m]
+            || DENSE_FP8 == params_tlr->decisions[n*descA->lmt+m] ) {
+        // Precision selection hierarchy: FP8 -> HP -> SP -> DP (if supported)
+#if HAVE_FP8
+        if( decision_fp8 && params_tlr->fp8_enabled ) {
+            new_decisions[n*descA->lmt+m] = DENSE_FP8;
+        }
+#if HAVE_HP
+        else if( decision_hp ) {
+            new_decisions[n*descA->lmt+m] = DENSE_HP;
+        } else if( decision_sp ) {
+#else
+        if( decision_sp ) {
+#endif // HAVE_HP
+
+#else
+        // FP8 not supported, check HP and SP
+#if HAVE_HP
+        if( decision_hp ) {
+            new_decisions[n*descA->lmt+m] = DENSE_HP;
+        } else if( decision_sp ) {
+#else
+        if( decision_sp ) {
+#endif // HAVE_HP
+
+#endif // HAVE_FP8
+
+            new_decisions[n*descA->lmt+m] = DENSE_SP;
+        } else {
+            // Fall back to highest precision based on build configuration
+#if GENOMICS
+            new_decisions[n*descA->lmt+m] = DENSE_SP;
+#else
+            new_decisions[n*descA->lmt+m] = DENSE_DP;
+#endif
+        }
+    } else if( LOW_RANK_DP == params_tlr->decisions[n*descA->lmt+m] || LOW_RANK_SP == params_tlr->decisions[n*descA->lmt+m] ) {
+        // Handle low-rank tile precision decisions
+        if( decision_sp ) {
+            new_decisions[n*descA->lmt+m] = LOW_RANK_SP;
+        } else {
+            new_decisions[n*descA->lmt+m] = LOW_RANK_DP;
+        }
+    }
+
+    // GPU precision decisions for dense tiles only. They are the Cholesky's
+    // (params_tlr->decisions layout): skip them for a general (UpperLower)
+    // matrix such as the TRMM's B, whose tiles may lie outside that array.
+    if( uplo != dplasmaUpperLower && params_tlr->gpus > 0 && IS_DENSE(m, n) ) {
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+        // CUDA-specific GPU precision selection
+        if( decision_hp_gpu && ENABLE_TF16_A16_B16_C16_OP16 ) {
+            params_tlr->decisions_gemm_gpu[n*descA->lmt+m] = MASK_TF16_A16_B16_C16_OP16;
+        } else if( decision_hp ) {
+#elif defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+        // HIP-specific GPU precision selection
+        if( decision_hp ) {
+#else
+        // No GPU support
+        if( 0 ) {
+#endif
+            params_tlr->decisions_gemm_gpu[n*descA->lmt+m] = MASK_TF16_A16_B16_C32_OP32;
+        } else if( decision_sp ) {
+            params_tlr->decisions_gemm_gpu[n*descA->lmt+m] = MASK_FP32;
+        } else {
+            // Fall back to highest precision based on build configuration
+#if GENOMICS
+            params_tlr->decisions_gemm_gpu[n*descA->lmt+m] = MASK_FP32;
+#else
+            params_tlr->decisions_gemm_gpu[n*descA->lmt+m] = MASK_FP64;
+#endif
+        }
+    }
 
     /* DENSE_SP_HP_BAND and DENSE_MP_GPU_FP8_SP keep every tile, the diagonal
      * included, in FP32 or lower (band_size_dense_dp = 0): their tasks read
@@ -67,15 +173,18 @@ extern "C" %{
  * @return the parsec taskpool object to schedule
  */
 parsec_taskpool_t*
-parsec_decision_make_comp_New(parsec_tiled_matrix_t *A,
+parsec_decision_make_comp_New(dplasma_enum_t uplo,
+        parsec_tiled_matrix_t *A,
         hicma_parsec_params_t *params,
+        double *norm_tile,
+        double norm_global,
         uint16_t *new_decisions )
 {
     parsec_taskpool_t* decision_make_comp_taskpool;
     parsec_decision_make_comp_taskpool_t* taskpool = NULL;
 
     // Create the taskpool for decision making computation
-    taskpool = parsec_decision_make_comp_new( A, params, new_decisions );
+    taskpool = parsec_decision_make_comp_new( uplo, A, params, norm_tile, norm_global, new_decisions );
     decision_make_comp_taskpool = (parsec_taskpool_t*)taskpool;
 
     return decision_make_comp_taskpool;
@@ -99,15 +208,19 @@ void parsec_decision_make_comp_Destruct(parsec_taskpool_t *taskpool)
  * @return 0 on success
  */
 int hicma_parsec_decision_make_comp(parsec_context_t *parsec,
-                         parsec_tiled_matrix_t *A,
-                         hicma_parsec_params_t *params )
+        dplasma_enum_t uplo,
+        parsec_tiled_matrix_t *A,
+        hicma_parsec_params_t *params,
+        double *norm_tile,
+        double norm_global,
+        uint16_t *decisions )
 {
     parsec_taskpool_t *parsec_decision_make_comp = NULL;
     // Allocate array to store new precision decisions
     uint16_t *new_decisions = (uint16_t *)calloc( sizeof(uint16_t), A->lmt * A->lnt );
     
     // Create and schedule the decision making taskpool
-    parsec_decision_make_comp = parsec_decision_make_comp_New( A, params, new_decisions );
+    parsec_decision_make_comp = parsec_decision_make_comp_New( uplo, A, params, norm_tile, norm_global, new_decisions );
 
     if( parsec_decision_make_comp != NULL ){
         parsec_context_add_taskpool(parsec, parsec_decision_make_comp);
@@ -118,7 +231,7 @@ int hicma_parsec_decision_make_comp(parsec_context_t *parsec,
 
     // Reduce decisions across all MPI processes and update parameters
     MPI_Allreduce(MPI_IN_PLACE, new_decisions, A->lmt * A->lnt, MPI_UNSIGNED_SHORT, MPI_SUM, MPI_COMM_WORLD);
-    memcpy( (void *)params->decisions, (void *)new_decisions, A->lmt * A->lnt * sizeof(uint16_t) ); 
+    memcpy( (void *)decisions, (void *)new_decisions, A->lmt * A->lnt * sizeof(uint16_t) );
     free( new_decisions );
 
     return 0;

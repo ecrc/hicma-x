@@ -1,0 +1,164 @@
+extern "C" %{
+/**
+ * @file change_nb_elts.jdf
+ * @brief Update the byte count recorded for every matrix tile in uplo
+ */
+#include "hicma_parsec.h"
+
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+#include "parsec/data_internal.h"
+#include "parsec/mca/device/device_gpu.h"
+#include "parsec/utils/zone_malloc.h"
+#endif
+
+%}
+
+uplo         [ type = "dplasma_enum_t" ]
+descA        [ type = "parsec_tiled_matrix_t *" ]
+element_size [ type = "size_t" ]
+
+Change_nb_elts(m, n)
+
+/* The tiles of uplo only: a triangular descriptor has no others */
+m = 0 .. descA->lmt-1
+n = %{ return (uplo == dplasmaUpper) ? m : 0; %} .. %{ return (uplo == dplasmaLower) ? m : descA->lnt-1; %}
+
+: descA(m, n)
+
+READ A <- descA(m, n)
+
+BODY
+{
+    (void)A;
+    this_task->data._f_A.data_out->original->nb_elts =
+        descA->mb * descA->nb * element_size;
+}
+END
+
+extern "C" %{
+
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+static int
+hicma_parsec_change_nb_elts_release_gpu_copies(dplasma_enum_t uplo, parsec_tiled_matrix_t *A)
+{
+    parsec_data_collection_t *dc = (parsec_data_collection_t *)A;
+
+    for (int n = 0; n < A->lnt; ++n) {
+        for (int m = 0; m < A->lmt; ++m) {
+            if ((dplasmaLower == uplo && m < n) || (dplasmaUpper == uplo && m > n)) {
+                continue;
+            }
+            if (dc->myrank != dc->rank_of(dc, m, n)) {
+                continue;
+            }
+
+            parsec_data_t *original = dc->data_of(dc, m, n);
+            for (int device_index = 1;
+                 device_index < (int)parsec_nb_devices;
+                 ++device_index) {
+                parsec_device_module_t *device =
+                    parsec_mca_device_get(device_index);
+                if (NULL == device || !PARSEC_DEV_IS_GPU(device->type)) {
+                    continue;
+                }
+
+                parsec_device_gpu_module_t *gpu_device =
+                    (parsec_device_gpu_module_t *)device;
+                parsec_atomic_lock(&original->lock);
+                parsec_data_copy_t *gpu_copy =
+                    PARSEC_DATA_GET_COPY(original, device_index);
+
+                if (NULL != gpu_copy) {
+                    /*
+                     * The CPU-only taskpool has completed, so the host copy is
+                     * current and no GPU operation may still use this copy.
+                     */
+                    assert(0 == gpu_copy->readers);
+                    assert(PARSEC_DATA_STATUS_UNDER_TRANSFER !=
+                           gpu_copy->data_transfer_status);
+                    assert(0 !=
+                           (gpu_copy->flags & PARSEC_DATA_FLAG_PARSEC_OWNED));
+
+                    parsec_list_item_ring_chop(
+                        (parsec_list_item_t *)gpu_copy);
+                    PARSEC_LIST_ITEM_SINGLETON(gpu_copy);
+                    parsec_data_copy_detach(
+                        original, gpu_copy, device_index);
+
+#if defined(PARSEC_GPU_ALLOC_PER_TILE)
+                    gpu_device->memory_free(
+                        gpu_device, gpu_copy->device_private);
+#else
+                    zone_free(
+                        gpu_device->memory, gpu_copy->device_private);
+#endif
+                    gpu_copy->device_private = NULL;
+                    PARSEC_OBJ_RELEASE(gpu_copy);
+                    gpu_device->data_avail_epoch++;
+                }
+                parsec_atomic_unlock(&original->lock);
+            }
+        }
+    }
+
+    return 0;
+}
+#endif
+
+parsec_taskpool_t *
+hicma_parsec_change_nb_elts_New(dplasma_enum_t uplo, parsec_tiled_matrix_t *A, size_t element_size)
+{
+    parsec_change_nb_elts_taskpool_t *taskpool =
+        parsec_change_nb_elts_new(uplo, A, element_size);
+
+    parsec_add2arena(
+        &taskpool->arenas_datatypes[PARSEC_change_nb_elts_DEFAULT_ADT_IDX],
+        parsec_datatype_int8_t, PARSEC_MATRIX_FULL,
+        1, A->mb * element_size, A->nb, A->mb * element_size,
+        PARSEC_ARENA_ALIGNMENT_SSE, -1);
+
+    return (parsec_taskpool_t *)taskpool;
+}
+
+void
+hicma_parsec_change_nb_elts_Destruct(parsec_taskpool_t *taskpool)
+{
+    parsec_change_nb_elts_taskpool_t *change_nb_elts_taskpool =
+        (parsec_change_nb_elts_taskpool_t *)taskpool;
+
+    parsec_del2arena(
+        &change_nb_elts_taskpool
+             ->arenas_datatypes[PARSEC_change_nb_elts_DEFAULT_ADT_IDX]);
+    parsec_taskpool_free(taskpool);
+}
+
+int
+hicma_parsec_change_nb_elts(parsec_context_t *parsec,
+                            dplasma_enum_t uplo,
+                            parsec_tiled_matrix_t *A,
+                            size_t element_size)
+{
+    parsec_taskpool_t *taskpool =
+        hicma_parsec_change_nb_elts_New(uplo, A, element_size);
+
+    if (NULL != taskpool) {
+        parsec_context_add_taskpool(parsec, taskpool);
+        parsec_context_start(parsec);
+        parsec_context_wait(parsec);
+        hicma_parsec_change_nb_elts_Destruct(taskpool);
+
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+        /*
+         * A cached GPU allocation retains its old capacity when nb_elts
+         * changes.  Drop only this descriptor's copies so a later GPU BODY
+         * allocates buffers with the new size; persistent HiCMA workspaces are
+         * intentionally left intact.
+         */
+        hicma_parsec_change_nb_elts_release_gpu_copies(uplo, A);
+#endif
+    }
+
+    return 0;
+}
+
+%}

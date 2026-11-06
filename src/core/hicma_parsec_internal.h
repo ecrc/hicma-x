@@ -458,7 +458,7 @@ typedef int64_t hicma_parsec_int64_t;  /**< Standard 64-bit integer type */
  * ============================================================================ */
 
 /* FLOPS calculation macro - compute floating point operations */
-#define PASTE_CODE_FLOPS( FORMULA, PARAMS, flops ) \
+#define HICMA_PASTE_CODE_FLOPS( FORMULA, PARAMS, flops ) \
     flops = FORMULA PARAMS;  /**< Calculate FLOPS using specified formula and parameters */
 
 typedef uint16_t hicma_parsec_decision_enum_t; 
@@ -536,6 +536,8 @@ typedef struct hicma_parsec_params_s {
     int gpu_type;             /**< NVIDIA GPU architecture type */
     int P;                    /**< Number of rows in process grid */
     int Q;                    /**< Number of columns in process grid */
+    int KP;                   /**< Number of block rows in process grid */
+    int KQ;                   /**< Number of block columns in process grid */
     int mpi_initialized_by_hicma; /**< Whether HiCMA performed MPI_Init */
     
     /* ========================================================================
@@ -543,15 +545,16 @@ typedef struct hicma_parsec_params_s {
      * ======================================================================== */
     int M;                    /**< Number of rows in the matrix */
     int N;                    /**< Number of columns in the matrix */
-    int K;                    /**< K dimension for GEMM operations */
-    int MB;                   /**< Number of rows in a tile */
+    int K;                    /**< K dimension for GEMM operations, also N of B in TRMM */
+    int MB;                   /**< Number of rows in a tile, right now MB = NB = KB */
     int NB;                   /**< Number of columns in a tile */
+    int KB;                   /**< Number of K rows in a tile */
     int NP;                   /**< Number of processes */
     int HMB;                  /**< Small MB for recursive H-DAGs */
     int HNB;                  /**< Small NB for recursive H-DAGs */
     int MT;                   /**< Number of tiles in row dimension */
     int NT;                   /**< Number of tiles in column dimension */
-    int KT;                   /**< Number of tiles in K dimension */
+    int KT;                   /**< Number of tiles in K dimension, also the column dimension in B of TRMM */
     int RHS;                  /**< Right hand side vector size */
     
     /* ========================================================================
@@ -568,6 +571,7 @@ typedef struct hicma_parsec_params_s {
     int adaptive_memory;      /**< Enable adaptive memory allocation: 0=memory allocated once; 1=memory reallocated per tile after precision decision */
     int arena_pinned_memory;  /**< Use pinned host memory for arenas when GPUs are enabled */
     int lookahead;            /**< Lookahead depth */
+    int trmm_window;           /**< Soft TRMM A-panel lookahead; -1 is topology-aware, 0 is unbounded */
     int kind_of_problem;      /**< Type of problem being solved */
     int send_full_tile;       /**< Send full tile instead of compressed */
     int reorder_gemm;         /**< Enable GEMM reordering */
@@ -576,7 +580,9 @@ typedef struct hicma_parsec_params_s {
     int sparse;               /**< Enable sparse matrix handling */
     int adaptive_maxrank;     /**< Enable adaptive maxrank adjustment */
     int left_looking;         /**< Use left-looking algorithm */
+    int enable_stochastic_rounding; /**< Enable stochastic rounding kernels when available */
     int nruns;                /**< Number of benchmark runs */
+    int accumulation_fp32;    /**< Accumulation type in GEMM, for FP16 and lower */
     
     /* ========================================================================
      * Band configuration
@@ -677,6 +683,7 @@ typedef struct hicma_parsec_params_s {
     uint16_t *decisions_storage_final; /**< Final stored precision after POTRF/TRSM for each tile */
     uint16_t *decisions_send; /**< Data conversion decisions for each tile */
     uint16_t *decisions_gemm_gpu; /**< GPU GEMM type decisions for each tile */
+    uint16_t *decisionsB;      /**< Precision decisions for each tile */
 
     /* ========================================================================
      * Problem type strings
@@ -708,8 +715,10 @@ typedef struct hicma_parsec_params_s {
      * ======================================================================== */
     int band_size_norm;       /**< Band size for norm calculation */
     double norm_global;       /**< Global matrix norm */
+    double norm_globalB;
     double norm_global_diff;  /**< Global norm difference */
     double* norm_tile;        /**< Per-tile norm array */
+    double* norm_tileB;
 
     /* ========================================================================
      * Log-likelihood calculations
@@ -1140,7 +1149,7 @@ typedef struct hicma_parsec_matrix_analysis_s {
  * @note The function modifies params to reflect the actual system configuration
  * @note MPI must be initialized before calling this function
  */
-parsec_context_t *setup_parsec(int argc, char* argv[], hicma_parsec_params_t *params);
+parsec_context_t *hicma_parsec_setup_parsec(int argc, char* argv[], hicma_parsec_params_t *params);
 
 /**
  * @brief Clean up and finalize PaRSEC runtime system
@@ -1163,7 +1172,7 @@ parsec_context_t *setup_parsec(int argc, char* argv[], hicma_parsec_params_t *pa
  * @note CUDA handles are automatically cleaned up by the CUDA runtime
  * @note All allocated memory should be freed before calling this function
  */
-void cleanup_parsec(parsec_context_t* parsec, hicma_parsec_params_t *params); 
+void hicma_parsec_cleanup_parsec(parsec_context_t* parsec, hicma_parsec_params_t *params);
 
 /**
  * @brief Parse command line arguments for HiCMA configuration
@@ -1518,6 +1527,21 @@ int hicma_parsec_rank_check(parsec_context_t *parsec,
 int hicma_parsec_rank_print(parsec_context_t *parsec,
                       parsec_tiled_matrix_t *dcRank,
                       int band_size_dense);
+
+/**
+ * @brief Update the byte count stored in the PaRSEC data object of every tile
+ * of A in uplo, and drop their GPU copies
+ *
+ * @param [in] parsec PaRSEC context
+ * @param [in] uplo dplasmaLower, dplasmaUpper or dplasmaUpperLower
+ * @param [inout] A Tiled matrix whose metadata is updated
+ * @param [in] element_size Size in bytes of one matrix element
+ * @return 0 on success
+ */
+int hicma_parsec_change_nb_elts(parsec_context_t *parsec,
+        dplasma_enum_t uplo,
+        parsec_tiled_matrix_t *A,
+        size_t element_size);
 
 /**
  * @brief Warm up system for POTRF computation
@@ -2423,6 +2447,7 @@ int dplasma_isyrk( parsec_context_t *parsec,
                hicma_parsec_params_t * params_tlr, 
                hicma_parsec_data_t *data);
 
+
 /**
  * @brief Single precision symmetric rank-k update operation
  * 
@@ -2739,6 +2764,24 @@ int hicma_parsec_memory_allocation_dense_static(parsec_context_t *parsec,
         dplasma_enum_t uplo,
         parsec_tiled_matrix_t *A,
         char *allocate_type);
+
+int hicma_parsec_memory_allocation_dense_decision(
+        parsec_context_t *parsec,
+        dplasma_enum_t uplo,
+        parsec_tiled_matrix_t *A,
+        uint16_t *decisions,
+        int matrix_is_symmetric,
+        int hp_allocate_as_sp,
+        int hp_store_as_sp,
+        int use_pinned_memory,
+        unsigned long long int seed);
+
+int hicma_parsec_memory_free_dense_decision(
+        parsec_context_t *parsec,
+        dplasma_enum_t uplo,
+        parsec_tiled_matrix_t *A,
+        hicma_parsec_params_t *params,
+        int use_pinned_memory);
 
 /**
  * @brief Test performance of CPU vs GPU computation

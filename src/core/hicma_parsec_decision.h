@@ -70,8 +70,12 @@ int hicma_parsec_decision_init(hicma_parsec_params_t *params);
  * @return 0 on success, non-zero on failure
  */
 int hicma_parsec_decision_make_comp(parsec_context_t *parsec,
-                         parsec_tiled_matrix_t *A,
-                         hicma_parsec_params_t *params);
+        dplasma_enum_t uplo,
+        parsec_tiled_matrix_t *A,
+        hicma_parsec_params_t *params,
+        double *norm_tile,
+        double norm_global,
+        uint16_t *decisions);
 
 /**
  * @brief Make decisions about datatype sending
@@ -337,7 +341,7 @@ void hicma_parsec_decisions_gemm_gpu_init(hicma_parsec_params_t *params);
  * 
  * @param[in] params HICMA PaRSEC parameters
  */
-void print_decisions(hicma_parsec_params_t *params);
+void print_decisions(hicma_parsec_params_t *params, uint16_t *decisions, int uplo, int m, int n);
 void print_first_local_gemm_decisions(const hicma_parsec_params_t *params);
 void print_last_local_gemm_decisions(const hicma_parsec_params_t *params);
 void print_final_storage_decisions(const hicma_parsec_params_t *params);
@@ -422,6 +426,40 @@ float hicma_parsec_matrix_ssum(parsec_context_t *parsec,
  */
 void hicma_parsec_get_precision_tile(hicma_parsec_params_t *params_tlr,
         hicma_parsec_decision_enum_t *new_decision, double norm_tile, int m, int n);
+
+/**
+ * @brief Storage precision of a TRMM tile
+ *
+ * A tile is stored in its precision decision, except with --accumulation_fp32:
+ * a tile of B whose decision is FP16 is then stored in FP32. B's tiles are the
+ * C of the GEMMs, which take FP16 operands and accumulate into the FP32 tile;
+ * when such a tile is a GEMM operand, it is converted to FP16 for that GEMM.
+ * A's FP16 tiles stay in FP16.
+ *
+ * @param [in] decisions params->decisions (tiles of A) or params->decisionsB
+ *                       (tiles of B)
+ * @param [in] idx       index of the tile in decisions
+ */
+static inline uint16_t hicma_parsec_trmm_storage_precision(const hicma_parsec_params_t *params,
+                                                           const uint16_t *decisions, size_t idx)
+{
+    uint16_t decision = decisions[idx];
+    if( params->accumulation_fp32 && DENSE_HP == decision && decisions == params->decisionsB )
+        return DENSE_SP;
+    return decision;
+}
+
+/**
+ * @brief Arena index of TRMM tile (m, n), from its storage precision
+ */
+int decision_datatype_tile_trmm_mp_LLN(const hicma_parsec_params_t *params,
+                                       const uint16_t *decisions, int m, int n, int NT);
+
+/**
+ * @brief Arena index of TRMM tile (m, n) in its precision decision (the
+ * operand copies of B, which the GEMMs read)
+ */
+int decision_datatype_tile_trmm_operand_LLN(const uint16_t *decisions, int m, int n, int NT);
 
 #ifdef __cplusplus
 }

@@ -134,9 +134,9 @@ int main(int argc, char **argv)
 
     /* Compute matrix norms for analysis */
     if (params.band_size_dense >= params.NT && params.auto_band == 0 && !params.adaptive_memory) {
-        hicma_parsec_matrix_norm_get(parsec, dplasmaLower, (parsec_tiled_matrix_t *)&data.dcAd, &params, "float");
+        hicma_parsec_matrix_norm_get(parsec, dplasmaLower, (parsec_tiled_matrix_t *)&data.dcAd, &params, params.norm_tile, &params.norm_global, "float");
     } else {
-        hicma_parsec_matrix_norm_get(parsec, dplasmaLower, (parsec_tiled_matrix_t *)&data.dcA, &params, "float");
+        hicma_parsec_matrix_norm_get(parsec, dplasmaLower, (parsec_tiled_matrix_t *)&data.dcA, &params, params.norm_tile, &params.norm_global, "float");
     }
 
     /* Analyze matrix before Cholesky decomposition */

@@ -1,0 +1,217 @@
+extern "C" %{
+/**
+ * @file datatype_convert_dense_adaptive.jdf
+ * @brief Static datatype conversion for dense matrices
+ *
+ * This file defines the PaRSEC task for converting datatypes in dense matrices.
+ * The conversion is performed in-place on the matrix tiles.
+ *
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2018-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ */
+#include "hicma_parsec.h"
+#include "src/include/dplasma/constants.h"
+
+%}
+
+// Task parameters for datatype conversion
+uplo          [ type = "dplasma_enum_t" ]        // Upper/lower triangular specification (dplasmaUpper, dplasmaLower, or dplasmaFull)
+descA         [ type = "parsec_tiled_matrix_t *" ] // Matrix descriptor for input/output matrix
+decisions     [type = "uint16_t *"]                   // Type of conversion to perform (e.g., "double_to_float", "float_to_double")
+convert_direction [type = "int"]                   // Type of conversion to perform (e.g., "double_to_float", "float_to_double")
+enable_stochastic_rounding [type = "int"]          // Enable stochastic rounding for down-conversion paths
+params_tlr   [ type = "hicma_parsec_params_t *" ]
+
+/* GPU-related variables */
+ws_gpu       [ type = "void *" hidden = on default = NULL ]  /* GPU workspace memory */
+nb_cuda_devices      [ type = "int"   hidden = on default = 0 ]  /* Number of available CUDA devices */
+cuda_device_index    [ type = "int *" hidden = on default = "NULL"]  /* Array of CUDA device indices for load balancing */
+
+/**
+ * @brief PaRSEC task for converting datatypes in dense matrix tiles
+ *
+ * This task performs in-place datatype conversion on matrix tiles.
+ * The iteration space is determined by the uplo parameter:
+ * - For upper triangular: only process elements where n >= m
+ * - For lower triangular: only process elements where n <= m
+ * - For full matrix: process all elements
+ */
+Convert_task(m, n)
+
+// Iteration space: process all tiles in the matrix
+m = 0 .. descA->lmt-1  // Row index from 0 to number of tiles in rows - 1
+// For triangular matrices, limit column range based on uplo parameter
+// Upper triangular: n >= m (only process upper triangle)
+// Lower triangular: n <= m (only process lower triangle)
+// Full matrix: process all elements (n from 0 to lnt-1)
+n = %{ return (uplo == dplasmaUpper) ? m : 0; %} .. %{ return (uplo == dplasmaLower) ? m : descA->lnt-1; %}
+
+// Data dependencies: read and write the same tile
+: descA(m, n)
+
+// Read-write access to matrix tile A
+// Input: read from matrix tile at position (m,n)
+// Output: write back to the same matrix tile (in-place conversion)
+RW A <- descA(m, n)
+     -> descA(m, n)
+
+
+BODY [ type = CUDA ]
+{
+    // Perform the datatype conversion on the tile
+    // This function handles the actual conversion logic based on decisions
+    uint16_t current_decision = hicma_parsec_trmm_storage_precision(params_tlr, decisions, (size_t)n*descA->lmt+m);
+    convert_datatype_adaptive_unary_GPU(ws_gpu, cuda_device, gpu_task, cuda_stream, A, descA->mb, descA->nb, descA->mb, current_decision, convert_direction, enable_stochastic_rounding, hicma_parsec_sr_seed(m, n), &this_task->data._f_A.data_out->original->nb_elts);
+}
+END
+
+BODY [ type = HIP ]
+{
+    // Perform the datatype conversion on the tile
+    // This function handles the actual conversion logic based on decisions
+    uint16_t current_decision = hicma_parsec_trmm_storage_precision(params_tlr, decisions, (size_t)n*descA->lmt+m);
+    convert_datatype_adaptive_unary_GPU(ws_gpu, cuda_device, gpu_task, cuda_stream, A, descA->mb, descA->nb, descA->mb, current_decision, convert_direction, enable_stochastic_rounding, hicma_parsec_sr_seed(m, n), &this_task->data._f_A.data_out->original->nb_elts);
+}
+END
+
+BODY
+{
+    // Perform the datatype conversion on the tile
+    // This function handles the actual conversion logic based on decisions
+    uint16_t current_decision = hicma_parsec_trmm_storage_precision(params_tlr, decisions, (size_t)n*descA->lmt+m);
+    convert_datatype_adaptive_unary_CPU(A, descA->mb, descA->nb, descA->mb, current_decision, convert_direction, enable_stochastic_rounding, hicma_parsec_sr_seed(m, n), &this_task->data._f_A.data_out->original->nb_elts);
+}
+END
+
+extern "C" %{
+
+/**
+ * @brief Create a new datatype conversion taskpool for dense matrices
+ * @param [in] uplo: Upper or lower triangular part to convert
+ * @param [in] A: The matrix to convert, already distributed and allocated
+ * @param [in] decisions: Type of conversion to perform
+ * @return The parsec object to schedule
+ */
+parsec_taskpool_t*
+parsec_datatype_convert_dense_adaptive_New(hicma_parsec_data_t *data,
+        hicma_parsec_params_t *params,
+        dplasma_enum_t uplo,
+        parsec_tiled_matrix_t *A,
+        uint16_t *decisions,
+        int convert_direction)
+{
+    parsec_datatype_convert_dense_adaptive_taskpool_t* datatype_convert_dense_adaptive_taskpool = NULL;
+
+    // GPU device detection and initialization
+    int nb = 0, *dev_index;
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    // Find and initialize available GPU devices
+    hicma_parsec_find_cuda_devices( &dev_index, &nb);
+
+#if !GPU_BUFFER_ONCE
+    // Allocate GPU workspace buffers if not already allocated
+    gpu_temporay_buffer_init( data, params, A->mb, A->nb, 0, params->kind_of_cholesky );
+#endif
+#endif
+
+    // Create the taskpool for datatype conversion
+    datatype_convert_dense_adaptive_taskpool = parsec_datatype_convert_dense_adaptive_new(uplo, A, decisions, convert_direction, params->enable_stochastic_rounding, params);
+
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    // Configure GPU workspace and device information
+    datatype_convert_dense_adaptive_taskpool->_g_ws_gpu = (void *)data->ws_gpu;
+    datatype_convert_dense_adaptive_taskpool->_g_nb_cuda_devices = nb;
+    datatype_convert_dense_adaptive_taskpool->_g_cuda_device_index = dev_index;
+#endif
+
+    // Add arena for double precision data type
+    // This arena manages memory allocation and data type handling for the conversion
+    parsec_add2arena(&datatype_convert_dense_adaptive_taskpool->arenas_datatypes[PARSEC_datatype_convert_dense_adaptive_DEFAULT_ADT_IDX],
+                            parsec_datatype_double_t, PARSEC_MATRIX_FULL,
+                            1, A->mb, A->nb, A->mb,
+                            PARSEC_ARENA_ALIGNMENT_SSE, -1 );
+
+    return (parsec_taskpool_t*)datatype_convert_dense_adaptive_taskpool;
+}
+
+/**
+ * @brief Destroy the datatype conversion taskpool
+ * @param [inout] taskpool: The parsec object to destroy
+ */
+void parsec_datatype_convert_dense_adaptive_Destruct(parsec_taskpool_t *taskpool)
+{
+    parsec_datatype_convert_dense_adaptive_taskpool_t *datatype_convert_dense_adaptive_taskpool = (parsec_datatype_convert_dense_adaptive_taskpool_t *)taskpool;
+
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    /* Clean up GPU resources if devices were used */
+    if( datatype_convert_dense_adaptive_taskpool->_g_nb_cuda_devices > 0 ) {
+#if !GPU_BUFFER_ONCE
+        /* Free GPU workspace memory if not managed globally */
+        workspace_memory_free( datatype_convert_dense_adaptive_taskpool->_g_ws_gpu );
+#endif
+
+        /* Free GPU device index array */
+        if( NULL != datatype_convert_dense_adaptive_taskpool->_g_cuda_device_index )
+            free(datatype_convert_dense_adaptive_taskpool->_g_cuda_device_index);
+    }
+#endif
+
+    // Remove the arena for double precision data type
+    parsec_del2arena(&datatype_convert_dense_adaptive_taskpool->arenas_datatypes[PARSEC_datatype_convert_dense_adaptive_DEFAULT_ADT_IDX]);
+
+    // Free the taskpool memory
+    parsec_taskpool_free(taskpool);
+}
+
+/**
+ * @brief Perform datatype conversion on a dense matrix
+ *
+ * @param [in] parsec: The PaRSEC context
+ * @param [in] uplo: Upper or lower triangular part to convert
+ * @param [inout] A: The matrix to convert, already distributed and allocated
+ * @param [in] decisions: Type of conversion to perform
+ * @param [in] convert_direction: 0: high->low; 1: low->high
+ * @return 0 on success
+ */
+int parsec_datatype_convert_dense_adaptive(parsec_context_t *parsec,
+        hicma_parsec_data_t *data,
+        hicma_parsec_params_t *params,
+        dplasma_enum_t uplo,
+        parsec_tiled_matrix_t *A,
+        uint16_t *decisions,
+        int convert_direction)
+{
+    parsec_taskpool_t *parsec_datatype_convert_dense_adaptive = NULL;
+
+    /*
+     * Restore the full double-precision tile size before conversion.  This is
+     * a separate CPU-only JDF so every local tile's PaRSEC metadata is updated
+     * before the conversion taskpool is created and scheduled.
+     */
+    hicma_parsec_change_nb_elts(parsec, uplo, A, sizeof(double));
+
+    // Create the taskpool for datatype conversion
+    parsec_datatype_convert_dense_adaptive = parsec_datatype_convert_dense_adaptive_New(data, params, uplo, A, decisions, convert_direction);
+
+    if( parsec_datatype_convert_dense_adaptive != NULL ){
+        // Add the taskpool to the PaRSEC context for execution
+        parsec_context_add_taskpool(parsec, parsec_datatype_convert_dense_adaptive);
+
+        // Start the execution of tasks
+        parsec_context_start(parsec);
+
+        // Wait for all tasks to complete
+        parsec_context_wait(parsec);
+
+        // Clean up the taskpool
+        parsec_datatype_convert_dense_adaptive_Destruct(parsec_datatype_convert_dense_adaptive);
+    }
+
+    return 0;
+}
+
+%}

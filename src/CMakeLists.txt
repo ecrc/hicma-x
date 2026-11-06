@@ -11,6 +11,7 @@ set(SRC
     core/hicma_parsec.c
     core/hicma_parsec_internal.c
     core/hicma_parsec_core.c
+    core/hicma_parsec_core_trmm.c
     core/hicma_parsec_gpu.c
     kernels/hicma_kernel_time.c
     
@@ -25,6 +26,7 @@ set(SRC
     kernels/potrf_L_dense_mp_gpu_fp8_wrapper.c
     kernels/potrf_L_dense_mp_gpu_fp8_sp_wrapper.c
     kernels/potrf_L_dense_mp_gpu_fp8_adaptive_wrapper.c
+    kernels/trmm_mp_wrapper.c
     kernels/isyrk_wrapper.c
     kernels/gemm_wrapper.c
     kernels/gemmex_wrapper.c
@@ -37,6 +39,7 @@ set(SRC
     core/hicma_parsec_distribution.c
     core/hicma_parsec_decision.c
     core/hicma_parsec_flat_file.c
+    core/hicma_parsec_stochastic_rounding.c
     core/hicma_parsec_datatype_convert.c
     core/hicma_parsec_io.c
     
@@ -80,6 +83,7 @@ set(JDF
     kernels/potrf_L_dense_mp_gpu_fp8.jdf
     kernels/potrf_L_dense_mp_gpu_fp8_sp.jdf
     kernels/potrf_L_dense_mp_gpu_fp8_adaptive.jdf
+    kernels/trmm_mp_LLN.jdf
     
     # GEMM and related JDF files
     kernels/isyrk_LT.jdf
@@ -105,8 +109,12 @@ set(JDF
     # Conversion JDF files
     kernels/convert_d2s.jdf
     kernels/convert_s2d.jdf
+    kernels/change_nb_elts.jdf
     kernels/datatype_convert_dense_static.jdf
+    kernels/datatype_convert_dense_adaptive.jdf
     kernels/memory_allocation_dense_static.jdf
+    kernels/memory_allocation_dense_decision.jdf
+    kernels/memory_free_dense_decision.jdf
     kernels/matrix_dsum.jdf
     kernels/matrix_check_norm_diff.jdf
     kernels/matrix_det.jdf
@@ -168,11 +176,15 @@ if(HICMA_PARSEC_HAVE_CUDA)
     if(ENABLE_CUTLASS)
         list(APPEND SRC 
             core/hicma_parsec.cu 
+            core/hicma_parsec_stochastic_rounding.cu
             core/hamming_distance.cu
         )
         message(STATUS "Adding CUDA files with CUTLASS support")
     else(ENABLE_CUTLASS)
-        list(APPEND SRC core/hicma_parsec.cu)
+        list(APPEND SRC
+            core/hicma_parsec.cu
+            core/hicma_parsec_stochastic_rounding.cu
+        )
         message(STATUS "Adding CUDA files")
     endif(ENABLE_CUTLASS)
 endif(HICMA_PARSEC_HAVE_CUDA)
@@ -181,7 +193,12 @@ endif(HICMA_PARSEC_HAVE_CUDA)
 if(HICMA_PARSEC_HAVE_HIP)
     set_source_files_properties(core/hicma_parsec_hip.cu PROPERTIES LANGUAGE HIP)
     set_source_files_properties(core/hicma_parsec_hip.cu PROPERTIES COMPILE_FLAGS "-x hip")
-    list(APPEND SRC core/hicma_parsec_hip.cu)
+    set_source_files_properties(core/hicma_parsec_stochastic_rounding_hip.cu PROPERTIES LANGUAGE HIP)
+    set_source_files_properties(core/hicma_parsec_stochastic_rounding_hip.cu PROPERTIES COMPILE_FLAGS "-x hip")
+    list(APPEND SRC
+        core/hicma_parsec_hip.cu
+        core/hicma_parsec_stochastic_rounding_hip.cu
+    )
     message(STATUS "Adding HIP files")
 endif(HICMA_PARSEC_HAVE_HIP)
 

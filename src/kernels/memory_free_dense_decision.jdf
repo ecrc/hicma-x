@@ -1,0 +1,83 @@
+extern "C" %{
+/** Free every locally allocated tile in a symmetric or general descriptor. */
+#include "hicma_parsec.h"
+#include "src/include/dplasma/constants.h"
+
+%}
+
+uplo       [ type = "dplasma_enum_t" ]
+descA      [ type = "parsec_tiled_matrix_t *" ]
+params_tlr [ type = "hicma_parsec_params_t *" ]
+use_pinned_memory [ type = "int" ]
+
+free_tile(m, n)
+
+m = 0 .. descA->lmt-1
+n = %{ return (uplo == dplasmaUpper) ? m : 0; %} .. %{ return (uplo == dplasmaLower) ? m : descA->lnt-1; %}
+
+: descA(m, n)
+
+BODY
+{
+    parsec_data_t *data = data_of_descA(m, n);
+    parsec_data_copy_t *copy = parsec_data_get_copy(data, 0);
+    void *pointer = PARSEC_DATA_COPY_GET_PTR(copy);
+
+    if (pointer != NULL) {
+        if (use_pinned_memory && params_tlr->gpus > 0) {
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+            cudaFreeHost(pointer);
+#else
+            free(pointer);
+#endif
+        } else {
+            free(pointer);
+        }
+        copy->device_private = NULL;
+        copy->original->nb_elts = 0;
+    }
+}
+END
+
+extern "C" %{
+
+parsec_taskpool_t *
+hicma_parsec_memory_free_dense_decision_New(
+        dplasma_enum_t uplo,
+        parsec_tiled_matrix_t *A,
+        hicma_parsec_params_t *params,
+        int use_pinned_memory)
+{
+    parsec_memory_free_dense_decision_taskpool_t *taskpool =
+        parsec_memory_free_dense_decision_new(
+                uplo, A, params, use_pinned_memory);
+    return (parsec_taskpool_t *)taskpool;
+}
+
+void hicma_parsec_memory_free_dense_decision_Destruct(
+        parsec_taskpool_t *taskpool)
+{
+    parsec_taskpool_free(taskpool);
+}
+
+int hicma_parsec_memory_free_dense_decision(
+        parsec_context_t *parsec,
+        dplasma_enum_t uplo,
+        parsec_tiled_matrix_t *A,
+        hicma_parsec_params_t *params,
+        int use_pinned_memory)
+{
+    parsec_taskpool_t *taskpool =
+        hicma_parsec_memory_free_dense_decision_New(
+                uplo, A, params, use_pinned_memory);
+
+    if (taskpool != NULL) {
+        parsec_context_add_taskpool(parsec, taskpool);
+        parsec_context_start(parsec);
+        parsec_context_wait(parsec);
+        hicma_parsec_memory_free_dense_decision_Destruct(taskpool);
+    }
+    return 0;
+}
+
+%}

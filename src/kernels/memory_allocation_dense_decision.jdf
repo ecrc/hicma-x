@@ -1,0 +1,206 @@
+extern "C" %{
+/** Allocate and deterministically initialize dense tiles from a precision map. */
+#include "hicma_parsec.h"
+#include "src/include/dplasma/constants.h"
+
+static inline uint64_t
+static_value_key(int row, int column, int symmetric,
+                 unsigned long long int seed)
+{
+    uint64_t row_key = (uint64_t)row;
+    uint64_t column_key = (uint64_t)column;
+
+    if (symmetric && row_key > column_key) {
+        uint64_t temporary = row_key;
+        row_key = column_key;
+        column_key = temporary;
+    }
+    return row_key * UINT64_C(131) + column_key * UINT64_C(17) + seed;
+}
+
+static inline double
+static_tile_value(int row, int column, int symmetric,
+                  unsigned long long int seed)
+{
+    uint64_t key;
+    unsigned int level;
+    double value;
+
+    if (symmetric && row == column) {
+        return 1.0;
+    }
+    key = static_value_key(row, column, symmetric, seed);
+    level = 1U + (unsigned int)(key & UINT64_C(3));
+    value = symmetric ? (double)level / 1024.0 : (double)level / 64.0;
+    return ((key >> 2) & UINT64_C(1)) ? -value : value;
+}
+
+static inline uint16_t
+static_tile_half(int row, int column, int symmetric,
+                 unsigned long long int seed)
+{
+    static const uint16_t symmetric_magnitude[5] = {
+        0x0000, 0x1400, 0x1800, 0x1a00, 0x1c00
+    };
+    static const uint16_t general_magnitude[5] = {
+        0x0000, 0x2400, 0x2800, 0x2a00, 0x2c00
+    };
+    uint64_t key;
+    unsigned int level;
+    uint16_t value;
+
+    if (symmetric && row == column) {
+        return UINT16_C(0x3c00); /* 1.0 in IEEE binary16. */
+    }
+    key = static_value_key(row, column, symmetric, seed);
+    level = 1U + (unsigned int)(key & UINT64_C(3));
+    value = symmetric ? symmetric_magnitude[level]
+                      : general_magnitude[level];
+    return ((key >> 2) & UINT64_C(1)) ? (uint16_t)(value | UINT16_C(0x8000))
+                                      : value;
+}
+
+%}
+
+uplo                [ type = "dplasma_enum_t" ]
+descA               [ type = "parsec_tiled_matrix_t *" ]
+decisions           [ type = "uint16_t *" ]
+matrix_is_symmetric [ type = "int" ]
+hp_allocate_as_sp   [ type = "int" ]   /* FP16 tile in an FP32-sized buffer */
+hp_store_as_sp      [ type = "int" ]   /* FP16 tile stored in FP32 (TRMM B with --accumulation_fp32) */
+use_pinned_memory   [ type = "int" ]
+seed                [ type = "unsigned long long int" ]
+
+allocate_initialize(m, n)
+
+m = 0 .. descA->lmt-1
+n = %{ return (uplo == dplasmaUpper) ? m : 0; %} .. %{ return (uplo == dplasmaLower) ? m : descA->lnt-1; %}
+
+: descA(m, n)
+
+RW A <- descA(m, n)
+     -> descA(m, n)
+
+BODY
+{
+    parsec_data_copy_t *copy = this_task->data._f_A.data_out;
+    const uint16_t decision = (hp_store_as_sp && decisions[n * descA->lmt + m] == DENSE_HP)
+                              ? DENSE_SP : decisions[n * descA->lmt + m];
+    const int tempmm = (m == descA->mt - 1) ? descA->m - m * descA->mb : descA->mb;
+    const int tempnn = (n == descA->nt - 1) ? descA->n - n * descA->nb : descA->nb;
+    const int lda = descA->mb;
+    const size_t tile_elements = (size_t)descA->mb * (size_t)descA->nb;
+    const int m0 = m * descA->mb;
+    const int n0 = n * descA->nb;
+    const char *allocation_type;
+
+    if (decision == DENSE_DP) {
+        allocation_type = "double";
+    } else if (decision == DENSE_SP) {
+        allocation_type = "float";
+    } else if (decision == DENSE_HP) {
+        allocation_type = hp_allocate_as_sp ? "float" : "half";
+    } else {
+        fprintf(stderr,
+                "Unsupported dense decision %u for tile (%d,%d)\n",
+                (unsigned int)decision, m, n);
+        abort();
+    }
+
+    copy->original->nb_elts =
+        tile_elements * get_datatype_size(allocation_type);
+    if (copy->device_private == NULL) {
+        if (use_pinned_memory) {
+            hicma_parsec_core_memory_allocation(&copy->device_private,
+                                                tile_elements,
+                                                (char *)allocation_type,
+                                                &copy->original->nb_elts);
+        } else {
+            copy->device_private = malloc(copy->original->nb_elts);
+        }
+    }
+    if (copy->device_private == NULL) {
+        fprintf(stderr, "Tile allocation failed for (%d,%d)\n", m, n);
+        abort();
+    }
+
+    if (decision == DENSE_DP) {
+        double *tile = (double *)copy->device_private;
+        for (int column = 0; column < tempnn; column++)
+            for (int row = 0; row < tempmm; row++)
+                tile[(size_t)column * lda + row] =
+                    static_tile_value(m0 + row, n0 + column,
+                                      matrix_is_symmetric, seed);
+    } else if (decision == DENSE_SP) {
+        float *tile = (float *)copy->device_private;
+        for (int column = 0; column < tempnn; column++)
+            for (int row = 0; row < tempmm; row++)
+                tile[(size_t)column * lda + row] = (float)
+                    static_tile_value(m0 + row, n0 + column,
+                                      matrix_is_symmetric, seed);
+    } else {
+        uint16_t *tile = (uint16_t *)copy->device_private;
+        for (int column = 0; column < tempnn; column++)
+            for (int row = 0; row < tempmm; row++)
+                tile[(size_t)column * lda + row] =
+                    static_tile_half(m0 + row, n0 + column,
+                                     matrix_is_symmetric, seed);
+
+        /* The A allocation has SP capacity, but its active payload is FP16. */
+        copy->original->nb_elts = tile_elements * get_datatype_size("half");
+    }
+}
+END
+
+extern "C" %{
+
+parsec_taskpool_t *
+hicma_parsec_memory_allocation_dense_decision_New(
+        dplasma_enum_t uplo,
+        parsec_tiled_matrix_t *A,
+        uint16_t *decisions,
+        int matrix_is_symmetric,
+        int hp_allocate_as_sp,
+        int hp_store_as_sp,
+        int use_pinned_memory,
+        unsigned long long int seed)
+{
+    parsec_memory_allocation_dense_decision_taskpool_t *taskpool =
+        parsec_memory_allocation_dense_decision_new(
+                uplo, A, decisions, matrix_is_symmetric,
+                hp_allocate_as_sp, hp_store_as_sp, use_pinned_memory, seed);
+    return (parsec_taskpool_t *)taskpool;
+}
+
+void hicma_parsec_memory_allocation_dense_decision_Destruct(
+        parsec_taskpool_t *taskpool)
+{
+    parsec_taskpool_free(taskpool);
+}
+
+int hicma_parsec_memory_allocation_dense_decision(
+        parsec_context_t *parsec,
+        dplasma_enum_t uplo,
+        parsec_tiled_matrix_t *A,
+        uint16_t *decisions,
+        int matrix_is_symmetric,
+        int hp_allocate_as_sp,
+        int hp_store_as_sp,
+        int use_pinned_memory,
+        unsigned long long int seed)
+{
+    parsec_taskpool_t *taskpool =
+        hicma_parsec_memory_allocation_dense_decision_New(
+                uplo, A, decisions, matrix_is_symmetric,
+                hp_allocate_as_sp, hp_store_as_sp, use_pinned_memory, seed);
+
+    if (taskpool != NULL) {
+        parsec_context_add_taskpool(parsec, taskpool);
+        parsec_context_start(parsec);
+        parsec_context_wait(parsec);
+        hicma_parsec_memory_allocation_dense_decision_Destruct(taskpool);
+    }
+    return 0;
+}
+
+%}

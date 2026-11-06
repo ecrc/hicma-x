@@ -246,6 +246,17 @@ main() {
         #    "./tests/testing_potrf_tlr --N 2700 --NB 270 --fixedacc 1e-8 --maxrank 130 --kind_of_problem 2 --verbose 3 --band_dense 1000 --adaptive_decision 1 --adaptive_memory 1 --kind_of_cholesky 5 --gpus 1"
     fi
 
+    # Mixed-precision TRMM, checked against DPLASMA's FP64 TRMM: FP64 and
+    # adaptive precisions, with partial tiles (N and K not multiples of NB)
+    if check_executable "tests/testing_trmm_mp"; then
+        run_test "TRMM-FP64" \
+            "./tests/testing_trmm_mp --N 2000 --K 1500 --NB 256 --check 1 --adaptive_decision 0"
+        run_test "TRMM-adaptive" \
+            "./tests/testing_trmm_mp --N 2000 --K 1500 --NB 256 --check 1 --adaptive_decision 1 --fixedacc 1e-4"
+        run_test "TRMM-adaptive-stochastic-rounding" \
+            "./tests/testing_trmm_mp --N 2000 --K 1500 --NB 256 --check 1 --adaptive_decision 1 --fixedacc 1e-4 --enable_stochastic_rounding 1"
+    fi
+
     # Test 2: Statistics-3d-exp
     if check_executable "tests/testing_potrf_tlr"; then
         run_test "Statistics-3d-exp" \

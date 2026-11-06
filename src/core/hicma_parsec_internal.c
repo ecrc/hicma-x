@@ -291,11 +291,19 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         // PaRSEC specific options
         {"cores", "Number of concurrent threads (default: number of physical hyper-threads)", 0, &params->cores},
         {"gpus", "Number of GPUs (default: 0)", 0, &params->gpus},
-        {"grid_rows", "Rows (P) in the PxQ process grid (default: NP)", 0, &params->P},
-        {"grid_cols", "Columns (Q) in the PxQ process grid (default: NP/P)", 0, &params->Q},
-        {"N", "Dimension (N) of the matrices (required)", 0, &params->N},
+        {"P", "Rows (P) in the PxQ process grid (default: NP)", 0, &params->P},
+        {"Q", "Columns (Q) in the PxQ process grid (default: NP/P)", 0, &params->Q},
+        {"grid_rows", "Same as --P", 0, &params->P},
+        {"grid_cols", "Same as --Q", 0, &params->Q},
+        {"KP", "Block rows (KP) in the PxQ process grid (default: 1)", 0, &params->KP},
+        {"KQ", "Block columns (KQ) in the PxQ process grid (default: 1)", 0, &params->KQ},
+        {"M", "Row dimension (M) of the matrices; must equal N (default: N)", 0, &params->M},
+        {"N", "Column dimension (N) of the matrices (required)", 0, &params->N},
+        {"K", "Columns (K) of B in the TRMM (default: N)", 0, &params->K},
+        {"MB", "Row tile size; must equal NB (default: NB)", 0, &params->MB},
         {"NB", "Tile size (required)", 0, &params->NB},
-        {"check", "Verify the results", 3, &params->check},
+        {"KB", "Tile size along K; must equal NB (default: NB)", 0, &params->KB},
+        {"check", "Verify the results (--check, or --check 0|1)", 3, &params->check},
         {"verbose", "Extra verbose output: 1=normal, >1=more verbose about decisions", 0, &params->verbose},
         {"help", "Show this help message", 3, NULL},
         
@@ -307,6 +315,7 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         {"compmaxrank", "Maxrank limit used in allocation of buffers for HiCMA_dpotrf operation", 0, &params->compmaxrank},
         {"adddiag", "Add this number to diagonal elements to make the matrix positive definite", 1, &params->add_diag},
         {"lookahead", "Set lookahead, from -1 to NT-1; default -1, will set to auto_tuned band_size_dense", 0, &params->lookahead},
+        {"trmm_window", "TRMM soft A-panel lookahead: -1=auto (default: unbounded on one process, 4*max(P,Q) distributed), 0=unbounded, positive=explicit lookahead", 0, &params->trmm_window},
         {"kind_of_problem", "Problem type", 0, &params->kind_of_problem},
         {"send_full_tile", "Send full tile instead of compressed", 0, &params->send_full_tile},
         {"auto_band", "Auto select the most suitable band size", 0, &params->auto_band},
@@ -335,7 +344,9 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         {"datatype_convert", "Convert datatype: 0=receiver convert always, 1=sender convert always (only in DENSE_MP_BAND), 2=adaptive", 0, &params->datatype_convert},
         {"band_size_termination", "Band size auto-tuning termination on GPU, default 3.0", 1, &params->band_size_auto_tuning_termination},
         {"left_looking", "Modified left-looking Cholesky (row)", 0, &params->left_looking},
+        {"enable_stochastic_rounding", "Stochastic rounding for the down-conversions (0 or 1); not with FP8 GEMMs", 0, &params->enable_stochastic_rounding},
         {"nruns", "The number of runs of Cholesky", 0, &params->nruns},
+        {"accumulation_fp32", "TRMM: store the FP16 tiles of B in FP32 and accumulate their GEMMs in FP32 (0 or 1)", 0, &params->accumulation_fp32},
         
         // Kernel parameters
         {"time_slots", "Time slots in kernels", 0, &params->time_slots},
@@ -397,7 +408,7 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         
         printf("\nSpecial options:\n");
         printf("  --help               Show this help message\n");
-        printf("  --check              Enable correctness check\n");
+        printf("  --check [0|1]        Enable correctness check (--check alone means 1)\n");
         printf("  --verbose            Set verbosity level\n");
         exit(0);
     }
@@ -455,8 +466,12 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
             
             config_option_t *opt = find_option(options, option_name);
             if (opt) {
-                if (opt->type == 3) { // Flag
-                    parse_arg_value("1", opt->type, opt->target);
+                if (opt->type == 3) { // Flag: --opt sets 1, --opt 0|1 (or --opt=0|1) sets the value
+                    if (parse_arg_value(value ? value : "1", 0, opt->target) != 0) {
+                        fprintf(stderr, "Error: Invalid value '%s' for flag '--%s' (expected 0 or 1)\n",
+                                value, option_name);
+                        return -1;
+                    }
                 } else if (value) {
                     if (parse_arg_value(value, opt->type, opt->target) != 0) {
                         fprintf(stderr, "Error: Invalid value '%s' for option '--%s'\n", 
@@ -651,6 +666,7 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     params->adaptive_memory = 0;            // Enable adaptive memory allocation per tile (1=enabled, 0=disabled)
     params->arena_pinned_memory = 0;         // Use the default arena allocator unless explicitly enabled
     params->lookahead = -1;                 // Lookahead depth (auto-tuned based on band_size_dense)
+    params->trmm_window = -1;               // TRMM soft A-panel lookahead (-1 = topology-aware automatic value)
     
     // Problem configuration - define the computational problem
     params->kind_of_problem = 2;            // Default: statistics-2d-sqexp problem (see str_problem array)
@@ -662,10 +678,15 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     
     // Matrix dimensions (must be set by user via command line)
     params->P = 0;                          // Row process grid (auto-set to number of nodes if 0)
-    params->N = 0;                          // Matrix size N (must be specified, typically square matrices)
-    params->NB = 0;                         // Tile size (must be specified, affects memory usage and performance)
+    params->Q = 0;                          // Column process grid (nodes / P if 0)
+    params->KP = 1;                         // Row block cyclic 1
+    params->KQ = 1;                         // Column block cyclic 1
     params->M = 0;                          // Matrix size M (must be specified, defaults to N if not set)
+    params->N = 0;                          // Matrix size N (must be specified, typically square matrices)
     params->K = 0;                          // Matrix size K (must be specified, defaults to N if not set)
+    params->MB = 0;                         // Tile size (must be specified, affects memory usage and performance)
+    params->NB = 0;                         // Tile size (must be specified, affects memory usage and performance)
+    params->KB = 0;                         // Tile size (must be specified, affects memory usage and performance)
     params->RHS = 1;                        // Number of right-hand side vectors (for linear systems)
     
     // Algorithm parameters - control numerical behavior and accuracy
@@ -689,7 +710,9 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     // Validation and execution settings - control testing and execution
     params->check = 0;                      // Disable correctness checking (0=disabled, 1=enabled)
     params->left_looking = 0;               // Disable left-looking Cholesky (0=right-looking, 1=left-looking)
+    params->enable_stochastic_rounding = 0; // Disable stochastic rounding by default
     params->nruns = 1;                      // Number of execution runs (for performance measurement) 
+    params->accumulation_fp32 = 0;          // False
 
     /* ===========================================
      * Kernel-specific parameters
@@ -746,6 +769,10 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     }
 
     /* Process Grid Validation and Setup */
+    // --P alone: Q = NP/P, as documented
+    if( params->P > 0 && 0 == params->Q && 0 == params->nodes % params->P ) {
+        params->Q = params->nodes / params->P;
+    }
     // Ensure process grid dimensions are valid and consistent with number of nodes
     if( 0 == params->P
             || params->Q * params->P != params->nodes ) {
@@ -783,6 +810,31 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
         if( 0 == params->rank && params->verbose )
             fprintf(stderr, "Matrix size (K) is not set; Automatically set to N!\n");
         params->K = params->N;
+    }
+
+    // Matrix size M defaults to N if not specified
+    if( params->MB <= 0 ) {
+        if( 0 == params->rank && params->verbose )
+            fprintf(stderr, "Tile size (MB) is not set; Automatically set to NB!\n");
+        params->MB = params->NB;
+    }
+
+    // Matrix size M defaults to N if not specified
+    if( params->KB <= 0 ) {
+        if( 0 == params->rank && params->verbose )
+            fprintf(stderr, "Tile size (KB) is not set; Automatically set to NB!\n");
+        params->KB = params->NB;
+    }
+
+    /* One tile size, and M == N: the decision arrays are MT x NT, and every
+     * driver (TRMM included) assumes MT == NT */
+    if( params->MB != params->NB || params->KB != params->NB || params->M != params->N ) {
+        if( 0 == params->rank ) {
+            fprintf(stderr, "--MB and --KB must equal --NB, and --M must equal --N "
+                    "(M= %d N= %d MB= %d NB= %d KB= %d)\n",
+                    params->M, params->N, params->MB, params->NB, params->KB);
+        }
+        exit(1);
     }
 
     /* Diagonal Regularization Setup */
@@ -909,7 +961,7 @@ static void print_arguments(hicma_parsec_params_t *params)
 #endif
 
 		fprintf(stderr, "#+++++ MB x NB              : %d x %d\n",
-				params->NB, params->NB);
+				params->MB, params->NB);
 		fprintf(stderr, "#+++++ HMB x HNB            : %d x %d\n", params->HNB, params->HNB);
 	}
 }
@@ -929,7 +981,7 @@ static void print_arguments(hicma_parsec_params_t *params)
  * @note This function may exit the program if initialization fails
  * @note GPU support is automatically detected and configured if available
  */
-parsec_context_t* setup_parsec(int argc, char **argv, hicma_parsec_params_t * params)
+parsec_context_t* hicma_parsec_setup_parsec(int argc, char **argv, hicma_parsec_params_t * params)
 {
 	// Set verbose flag for rank 0 only (avoid duplicate output in parallel execution)
 	int verbose = params->verbose;
@@ -1077,6 +1129,15 @@ parsec_context_t* setup_parsec(int argc, char **argv, hicma_parsec_params_t * pa
                    || DENSE_MP_GPU_FP8_SP == params->kind_of_cholesky
                    || DENSE_MP_GPU_FP8_ADAPTIVE == params->kind_of_cholesky;
     params->fp8_enabled = fp8_gpus_ok && params->fp8 && fp8_kind;
+    /* The FP8 GEMMs have no stochastic rounding: refuse here rather than in
+     * the middle of the factorization (every rank has the same values) */
+    if( params->fp8_enabled && params->enable_stochastic_rounding ) {
+        if( 0 == params->rank ) {
+            fprintf(stderr, "--enable_stochastic_rounding is not supported with FP8 GEMMs "
+                    "(kinds 8, 9 and 10 on GPUs with compute capability >= 8.9): add --fp8 0\n");
+        }
+        exit(1);
+    }
     /* Every CUDA build has FP8 GEMMs: on V100/A100 warn only for kinds 8 and
      * 9, which exist to use FP8 (hicma_parsec_params_print_initial prints
      * fp8_enabled for every kind) */
@@ -1158,7 +1219,7 @@ parsec_context_t* setup_parsec(int argc, char **argv, hicma_parsec_params_t * pa
  * @note This function should be called before program termination
  * @note CUDA handles are automatically cleaned up by the CUDA runtime
  */
-void cleanup_parsec(parsec_context_t* parsec, hicma_parsec_params_t *params) 
+void hicma_parsec_cleanup_parsec(parsec_context_t* parsec, hicma_parsec_params_t *params)
 {
     // Cleanup CUDA handles if CUDA support is available
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
@@ -1207,9 +1268,32 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
      * =========================================== */
     
     // Calculate number of tiles in each dimension (round up if not evenly divisible)
-    params->MT = (params->M % params->NB == 0) ? (params->M/params->NB) : (params->M/params->NB + 1);
+    params->MT = (params->M % params->MB == 0) ? (params->M/params->MB) : (params->M/params->MB + 1);
     params->NT = (params->N % params->NB == 0) ? (params->N/params->NB) : (params->N/params->NB + 1);
-    params->KT = (params->K % params->NB == 0) ? (params->K/params->NB) : (params->K/params->NB + 1);    
+    params->KT = (params->K % params->KB == 0) ? (params->K/params->KB) : (params->K/params->KB + 1);
+
+    /* There is no inter-process panel traffic in shared memory, so retain the
+     * fully concurrent DAG.  For distributed runs, keep four process-grid
+     * ownership cycles ready to overlap communication with computation. */
+    if (params->trmm_window == -1) {
+        if (params->nodes == 1) {
+            params->trmm_window = 0;
+            if (params->rank == 0 && params->verbose) {
+                fprintf(stderr,
+                        RED "Set TRMM window to 0 (unbounded shared-memory default)\n" RESET);
+            }
+        } else {
+            const int grid_span = hicma_parsec_max(params->P, params->Q);
+            params->trmm_window = hicma_parsec_min(params->MT, 4 * grid_span);
+            if (params->rank == 0 && params->verbose) {
+                fprintf(stderr,
+                        RED "Set TRMM window to %d = min(MT=%d, 4 * max(P=%d, Q=%d))\n" RESET,
+                        params->trmm_window, params->MT, params->P, params->Q);
+            }
+        }
+    } else if (params->trmm_window > params->MT) {
+        params->trmm_window = params->MT;
+    }
 
     /* ===========================================
      * Extract executable path
@@ -1272,6 +1356,14 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
     params->decisions_gemm_first = (uint16_t *)calloc(params->MT * params->NT, sizeof(uint16_t));
     params->tile_host_bytes = (size_t *)calloc((size_t)params->MT * params->NT, sizeof(size_t));
     params->decisions_storage_final = (uint16_t *)calloc(params->MT * params->NT, sizeof(uint16_t));
+    params->decisionsB = (uint16_t *)calloc(params->NT * params->KT, sizeof(uint16_t));      // Main matrix decisions
+    // Set to DENSE_DP by default
+    for(size_t i = 0; i < (size_t)params->MT * params->NT; i++) {
+        params->decisions[i] = DENSE_DP;
+    }
+    for(size_t i = 0; i < (size_t)params->NT * params->KT; i++) {
+        params->decisionsB[i] = DENSE_DP;
+    }
 
     // Data type conversion decisions
     params->decisions_send = (uint16_t *)calloc(params->NT * params->NT, sizeof(uint16_t));
@@ -1285,6 +1377,7 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
     
     // Norm tracking for each tile
     params->norm_tile = (double *)calloc( params->MT * params->NT, sizeof(double) );        // Main matrix norms
+    params->norm_tileB = (double *)calloc( params->NT * params->KT, sizeof(double) );        // Main matrix norms
 
     /* ===========================================
      * Initialize problem type strings
@@ -1348,7 +1441,7 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
         params->op_path = (unsigned long *)calloc(params->cores, sizeof(unsigned long));
         params->op_offpath = (unsigned long *)calloc(params->cores, sizeof(unsigned long));
     }
-    PASTE_CODE_FLOPS(FLOPS_DPOTRF, ((double)params->N), params->flops);
+    HICMA_PASTE_CODE_FLOPS(FLOPS_DPOTRF, ((double)params->N), params->flops);
 
     /* check results accuracy */
     double result_accuracy = 0.0;
@@ -1431,19 +1524,21 @@ void hicma_parsec_params_print_initial( hicma_parsec_params_t *params )
 {
     // Only print on rank 0 to avoid duplicate output in parallel execution
     if( 0 == params->rank ) {
-        printf("\nM=%d N=%d NB=%d NB=%d HNB=%d HNB=%d\n", params->N, params->N, params->NB, params->NB, params->HNB, params->HNB);
+        printf("\nM=%d N=%d K=%d MB=%d NB=%d KB= %d HNB=%d HNB=%d\n", params->M, params->N, params->K, params->MB, params->NB, params->KB, params->HNB, params->HNB);
         printf("nodes=%d P=%d Q=%d cores=%d nb_gpus= %d gpu_type= %d verbose= %d\n", params->nodes, params->P, params->Q, params->cores, params->gpus, params->gpu_type, params->verbose);
         printf("kind_of_problem=%d %s\n", params->kind_of_problem, params->str_problem[params->kind_of_problem]);
         printf("fixedacc=%.1e add_diag=%g fixed_rk=%d wave_k=%g\n", params->fixedacc, params->add_diag, params->fixedrk, params->wave_k);
-        printf("send_full_tile=%d lookahead= %d adaptive_decision= %d adaptive_decision_runtime= %d adaptive_memory= %d arena_pinned_memory= %d\n", params->send_full_tile, params->lookahead, params->adaptive_decision, params->adaptive_decision_runtime, params->adaptive_memory, params->arena_pinned_memory);
+        printf("send_full_tile=%d lookahead= %d trmm_window= %d adaptive_decision= %d adaptive_decision_runtime= %d adaptive_memory= %d arena_pinned_memory= %d\n", params->send_full_tile, params->lookahead, params->trmm_window, params->adaptive_decision, params->adaptive_decision_runtime, params->adaptive_memory, params->arena_pinned_memory);
         printf("band_size_dist= %d band_size_dense_dp:%d band_size_dense_sp:%d band_size_dense_hp: %d band_size_dense: %d band_size_low_rank_dp:%d NT= %d band_p= %d\n", params->band_size_dist, params->band_size_dense_dp, params->band_size_dense_sp, params->band_size_dense_hp, params->band_size_dense, params->band_size_low_rank_dp, params->NT, params->band_p);
         printf("band_size_auto_tuning_termination= %lf band_size_dense_gpu_memory_max= %d exe_file_path= %s\n", params->band_size_auto_tuning_termination, params->band_size_dense_gpu_memory_max, params->exe_file_path);
         printf("max_rank=%d gen=%d comp=%d\n", params->maxrank, params->genmaxrank, params->compmaxrank);
-        printf("auto_band=%d sparse=%d kind_of_cholesky=%d tensor_gemm=%d datatype_convert=%d left_looking=%d\n", params->auto_band, params->sparse, params->kind_of_cholesky, params->tensor_gemm, params->datatype_convert, params->left_looking);
+        printf("auto_band=%d sparse=%d kind_of_cholesky=%d tensor_gemm=%d datatype_convert=%d left_looking=%d stochastic_rounding=%d\n",
+               params->auto_band, params->sparse, params->kind_of_cholesky, params->tensor_gemm,
+               params->datatype_convert, params->left_looking, params->enable_stochastic_rounding);
         printf("fp8= %d fp8_enabled= %d fp8_scaling= %d\n", params->fp8, params->fp8_enabled, params->fp8_scaling);
         if( 6 == params->kind_of_problem) printf("mesh_file=%s, rbf_kernel=%d, numobj=%d, order=%d, radius=%f, density=%f\n", params->mesh_file, params->rbf_kernel, params->numobj, params->order, params->radius, params->density);
         printf("time_slots=%d sigma=%lf beta=%lf nu=%lf beta_time=%lf nu_time=%lf nonsep_param=%lf noise= %lf\n", params->time_slots, params->sigma, params->beta, params->nu, params->beta_time, params->nu_time, params->nonsep_param, params->noise);
-        printf("numobj/L= %d gpu_rows= %d gpu_cols= %d\n\n", params->numobj, params->gpu_rows, params->gpu_cols);
+        printf("numobj/L= %d gpu_rows= %d gpu_cols= %d accumulation_fp32= %d\n\n", params->numobj, params->gpu_rows, params->gpu_cols, params->accumulation_fp32);
         fflush(stdout);
     }
 }
@@ -1500,6 +1595,7 @@ void hicma_parsec_params_print_final( int argc, char **argv,
         printf("%d %d %d %g %g %d ", params->order, params->nsnp, params->rbf_kernel, params->radius, params->density, params->adaptive_decision_runtime);
         printf("%lu %lu %lu %lu %lu %lu %lu ", params->nb_gemms[DENSE_DP*params->counter_stride], params->nb_gemms[DENSE_SP*params->counter_stride], params->nb_gemms[DENSE_HP*params->counter_stride], params->nb_gemms[LOW_RANK_DP*params->counter_stride], params->nb_gemms[LOW_RANK_SP*params->counter_stride], params->nb_gemms[DENSE_FP8*params->counter_stride], params->nb_datatype_conversions[0]);
         printf("%d ", params->arena_pinned_memory);
+        printf("%d ", params->accumulation_fp32);
 #ifdef GITHASH
         printf("%s ", xstr(GITHASH));
 #else
@@ -1856,6 +1952,7 @@ int hicma_parsec_params_check( hicma_parsec_params_t *params )
 
     // Validate lookahead parameter (must be >= -1, where -1 means auto-tune)
     assert(params->lookahead >= -1);
+    assert(params->trmm_window >= -1);
 
     /* ===========================================
      * Compile-time configuration adjustments
@@ -2500,7 +2597,7 @@ int hicma_parsec_band_size_dense_auto_tuning( parsec_context_t *parsec,
         }
 
         if( params->verbose > 9 ) {
-            print_decisions( params );
+            print_decisions( params, params->decisions, params->uplo, params->NT, params->NT );
         }
     }
 
@@ -2854,7 +2951,9 @@ void hicma_parsec_free_memory( parsec_context_t *parsec,
     free( params->decisions_storage_final );
     free( params->decisions_send);
     free( params->decisions_gemm_gpu);
+    free( params->decisionsB );
     free( params->norm_tile );
+    free( params->norm_tileB );
 
     /* Others */
     if (params->gpus > 0) {

@@ -822,11 +822,15 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t 
                     || DENSE_MP_GPU_FP8 == kind_of_cholesky
                     || DENSE_MP_GPU_FP8_ADAPTIVE == kind_of_cholesky
                     || DENSE_MP_GPU_FP8_SP == kind_of_cholesky ) {
-                data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_mbr = zone_malloc( cuda_device->super.memory, mb * maxrank * sizeof(double) );
-                HICMA_GPU_HANDLE_CHECK(NULL != data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_mbr, "GPU workspace allocation");
+                if( maxrank > 0 ) {
+                    data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_mbr =
+                        zone_malloc( cuda_device->super.memory, mb * maxrank * sizeof(double) );
+                    HICMA_GPU_HANDLE_CHECK(NULL != data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_mbr, "GPU workspace allocation");
 
-                data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_rr = zone_malloc( cuda_device->super.memory, maxrank * maxrank * sizeof(double) );
-                HICMA_GPU_HANDLE_CHECK(NULL != data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_rr, "GPU workspace allocation");
+                    data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_rr =
+                        zone_malloc( cuda_device->super.memory, maxrank * maxrank * sizeof(double) );
+                    HICMA_GPU_HANDLE_CHECK(NULL != data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_rr, "GPU workspace allocation");
+                }
             }
 
         }
@@ -844,7 +848,6 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t 
  * @param[in] kind_of_cholesky Type of Cholesky factorization
  */
 void gpu_temporay_buffer_fini( hicma_parsec_data_t *data, int kind_of_cholesky ) {
-
     /* Only free memory for cases including GPU */
 #if 0
     if( !(DENSE_TLR_DP == kind_of_cholesky

@@ -787,6 +787,49 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_gpu(parsec_tiled_matrix_t* descA,
                                                void *C, void *A, void *B, int m, int n, int k,
                                                int Crank, int Arank, int Brank);
 
+
+void hicma_parsec_trmm_core_gemm_lln_gpu(
+        hicma_parsec_params_t *params_tlr,
+        parsec_potrf_workspace_t *ws_gpu,
+        parsec_device_cuda_module_t *cuda_device,
+        parsec_gpu_task_t *gpu_task,
+        parsec_cuda_exec_stream_t *cuda_stream,
+        dplasma_enum_t transA,
+        dplasma_enum_t transB,
+        int mb, int nb, int kb,
+        double lalpha, void *A, int lda,
+        void *B, int ldb,
+        double lbeta, void *C, int ldc,
+        int m, int n, int k);
+
+void hicma_parsec_trmm_core_trmm_lln_gpu(
+        hicma_parsec_params_t *params_tlr,
+        parsec_potrf_workspace_t *ws_gpu,
+        parsec_device_cuda_module_t *cuda_device,
+        parsec_gpu_task_t *gpu_task,
+        parsec_cuda_exec_stream_t *cuda_stream,
+        dplasma_enum_t side,
+        dplasma_enum_t uplo,
+        dplasma_enum_t trans,
+        dplasma_enum_t diag,
+        int mb, int nb,
+        double lalpha, void *A, int lda,
+        void *B, int ldb,
+        int m, int n);
+
+/**
+ * @brief Operand copy of TRMM tile B(k,n) on the GPU: Bop = B(k,n) in its
+ * precision decision (converted from FP32 storage with --accumulation_fp32)
+ */
+void hicma_parsec_trmm_core_copy_b_gpu(
+        hicma_parsec_params_t *params_tlr,
+        parsec_potrf_workspace_t *ws_gpu,
+        parsec_device_cuda_module_t *cuda_device,
+        parsec_gpu_task_t *gpu_task,
+        parsec_cuda_exec_stream_t *cuda_stream,
+        void *B, void *Bop, int rows, int cols, int ld,
+        int k, int n);
+
 #endif /* HICMA_PARSEC_HAVE_CUDA */
 
 /**
@@ -831,6 +874,46 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_gpu(parsec_tiled_matrix_t* descA,
 double hicma_parsec_core_matrix_norm_get(const void *data, int tempmm, int tempnn, int lda,
                                         const char *datatype_str, bool is_row_major,
                                         bool is_lower, bool is_upper, bool is_diagonal);
+
+
+void hicma_parsec_trmm_core_gemm_lln_cpu(
+        hicma_parsec_params_t *params_tlr,
+        parsec_execution_stream_t *es,
+        parsec_memory_pool_t *p_work_full_dp,
+        parsec_memory_pool_t *p_work_full_sp,
+        parsec_memory_pool_t *p_work_full_hp,
+        dplasma_enum_t transA,
+        dplasma_enum_t transB,
+        int mb, int nb, int kb,
+        double lalpha, void *A, int lda,
+        void *B, int ldb,
+        double lbeta, void *C, int ldc,
+        int m, int n, int k);
+
+
+/**
+ * @brief Operand copy of TRMM tile B(k,n) on the CPU: Bop = B(k,n) in its
+ * precision decision (converted from FP32 storage with --accumulation_fp32)
+ */
+void hicma_parsec_trmm_core_copy_b_cpu(
+        hicma_parsec_params_t *params_tlr,
+        void *B, void *Bop, int rows, int cols, int ld,
+        int k, int n);
+
+void hicma_parsec_trmm_core_trmm_lln_cpu(
+        hicma_parsec_params_t *params_tlr,
+        parsec_execution_stream_t *es,
+        parsec_memory_pool_t *p_work_full_dp,
+        parsec_memory_pool_t *p_work_full_sp,
+        parsec_memory_pool_t *p_work_full_hp,
+        dplasma_enum_t side,
+        dplasma_enum_t uplo,
+        dplasma_enum_t trans,
+        dplasma_enum_t diag,
+        int mb, int nb,
+        double lalpha, void *A, int lda,
+        void *B, int ldb,
+        int m, int n);
 
 #ifdef __cplusplus
 }

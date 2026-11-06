@@ -1328,6 +1328,33 @@ void memcpy_half_GPU( int nrows, int ncols, void *_src, void *_dest, hipStream_t
     memcpy_half_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, src, dest);
 }
 
+
+/**
+ * @brief Keep the lower triangle of an FP32 tile in place (TRMM diagonal tile)
+ *
+ * Zeroes the strictly upper triangle of the n x n tile L (leading dimension
+ * ldl) and, if unit is set, writes 1 on its diagonal, so that a GEMM with L
+ * computes the lower triangular product.
+ */
+__global__ void hicma_parsec_tril_mask_float_GPU_kernel( int n, float *L, int ldl, int unit ) {
+        const int i = hipBlockIdx_x * hipBlockDim_x + hipThreadIdx_x;
+        const int j = hipBlockIdx_y * hipBlockDim_y + hipThreadIdx_y;
+        if( i >= n || j >= n || i > j ) { return; }
+        if( i < j ) {
+            L[(size_t)j * ldl + i] = 0.0f;
+        } else if( unit ) {
+            L[(size_t)j * ldl + i] = 1.0f;
+        }
+}
+
+extern "C"
+void hicma_parsec_tril_mask_float_GPU( int n, float *L, int ldl, int unit, hipStream_t stream ) {
+        int nBlock = (n + CHUNKSIZE - 1) / CHUNKSIZE;
+        dim3 dimBlock(CHUNKSIZE, CHUNKSIZE);
+        dim3 dimGrid(nBlock, nBlock);
+        hicma_parsec_tril_mask_float_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(n, L, ldl, unit);
+}
+
 /****************************************************************************************************/
 
 /**
