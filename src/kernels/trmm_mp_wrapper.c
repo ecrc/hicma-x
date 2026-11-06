@@ -8,6 +8,27 @@
 #include "hicma_parsec.h"
 #include "trmm_mp_LLN.h"
 
+/* 1 if every tile (m, n) of an mt x nt tile matrix, its lower triangle only
+ * if lower, has a decision the TRMM supports */
+static int hicma_parsec_trmm_decisions_ok(const uint16_t *decisions, int NT, int mt, int nt,
+                                          int lower, int myrank, const char *name)
+{
+    for (int n = 0; n < nt; n++) {
+        for (int m = lower ? n : 0; m < mt; m++) {
+            uint16_t d = decisions[(size_t)n * NT + m];
+            if (DENSE_DP != d && DENSE_SP != d && DENSE_HP != d) {
+                if (0 == myrank) {
+                    fprintf(stderr, "hicma_parsec_trmm_New: tile (%d, %d) of %s has precision decision %u; "
+                            "the TRMM supports DENSE_DP, DENSE_SP and DENSE_HP only\n",
+                            m, n, name, (unsigned)d);
+                }
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
 /**
  * @brief Taskpool of the mixed-precision TRMM B = alpha * A * B
  *
@@ -25,7 +46,8 @@
  * @param[in,out] B N-by-K matrix in NB-by-NB tiles, at most params->KT tile
  *            columns. On exit, alpha * A * B.
  * @param[in] data HiCMA data (GPU workspace)
- * @param[in] params HiCMA parameters and precision decisions
+ * @param[in] params HiCMA parameters and precision decisions: DENSE_DP,
+ *            DENSE_SP or DENSE_HP for every tile of A's lower triangle and of B
  *
  * @return The taskpool, to add with parsec_context_add_taskpool() and free
  *         with hicma_parsec_trmm_Destruct(); NULL if the arguments are not
@@ -55,6 +77,14 @@ hicma_parsec_trmm_New( dplasma_enum_t side,  dplasma_enum_t uplo,
     }
     if (A->m != A->n || A->n != B->m || A->mt != params->NT || B->nt > params->KT) {
         dplasma_error("hicma_parsec_trmm_New", "A must be N-by-N with NT tile rows, and B N-by-K with at most KT tile columns");
+        return NULL;
+    }
+
+    /* The kernels and arenas handle FP64, FP32 and FP16 tiles only (no FP8
+     * or low-rank decision). Every rank holds all the decisions, so they all
+     * return NULL together. */
+    if (!hicma_parsec_trmm_decisions_ok(params->decisions, params->NT, A->mt, A->nt, 1, B->super.myrank, "A") ||
+        !hicma_parsec_trmm_decisions_ok(params->decisionsB, params->NT, B->mt, B->nt, 0, B->super.myrank, "B")) {
         return NULL;
     }
 

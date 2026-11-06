@@ -31,6 +31,10 @@ int main(int argc, char ** argv)
     /* Disable adaptive decision in memory */
     params.adaptive_memory = 0;
 
+    /* The TRMM has no FP8 tiles: keep FP8 out of the precision decisions
+     * (hicma_parsec_trmm_New rejects them) */
+    params.fp8 = 0;
+
     /* Initialize HiCMA parameters */
     hicma_parsec_params_init(&params, argv);
 

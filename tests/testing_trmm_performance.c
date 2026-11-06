@@ -25,6 +25,10 @@ int main(int argc, char **argv)
     /* This benchmark measures the explicit mixed-precision decisions only. */
     params.adaptive_memory = 0;
 
+    /* The TRMM has no FP8 tiles: keep FP8 out of the precision decisions
+     * (hicma_parsec_trmm_New rejects them) */
+    params.fp8 = 0;
+
     hicma_parsec_params_init(&params, argv);
 
     /* A is M x M and its decisions use the NT x NT layout of N */
