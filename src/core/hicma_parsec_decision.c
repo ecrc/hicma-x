@@ -769,6 +769,16 @@ void hicma_parsec_get_precision_tile(hicma_parsec_params_t *params_tlr,
     bool decision_sp = norm_tile * scalar_factore / params_tlr->norm_global  < params_tlr->fixedacc / EPS_SP;
     bool decision_fp8 = norm_tile * scalar_factore / params_tlr->norm_global  < params_tlr->fixedacc / EPS_FP8;
 
+    /* No FP16 or FP8 without a GPU (unless the CPU has FP16): same rule as
+     * decision_make_comp */
+    if( params_tlr->gpus < 1 ) {
+        decision_hp_gpu = false;
+        decision_fp8 = false;
+    }
+    if( params_tlr->gpus < 1 && !HAVE_HP_CPU ) {
+        decision_hp = false;
+    }
+
     // Debug print statement (commented out)
     //printf("\n (%d, %d), params_tlr->norm_global:%f, tile norm:%f, res:%f %f %f %f\n", m, n, params_tlr->norm_global,  norm_tile);
 

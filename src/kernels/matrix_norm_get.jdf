@@ -83,11 +83,10 @@ BODY
     norm[tid] += norm_squared; 
     
     // Store per-tile norm for analysis/debugging
-    norm_tile[n*params_tlr->NT+m] = sqrt(norm_squared);
-    //printf("%d %d %lf\n", m, n, norm_tile[n*params_tlr->NT+m]);
+    norm_tile[n*descA->lmt+m] = sqrt(norm_squared);
     
 #if DEBUG_INFO_CLIMATE_EMULATOR
-    printf("norm_tile %d %d : %lf\n", m, n, norm_tile[n*params_tlr->NT+m]);
+    printf("norm_tile %d %d : %lf\n", m, n, norm_tile[n*descA->lmt+m]);
 #endif
 
     // Reset thread norm accumulation periodically to prevent overflow

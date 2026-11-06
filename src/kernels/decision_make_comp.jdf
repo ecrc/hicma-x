@@ -57,12 +57,13 @@ BODY
 
     // Determine precision decisions based on tile norm relative to global norm and tolerance
     // Each decision checks if the normalized tile norm is below the precision-specific threshold
-    bool decision_hp_gpu = norm_tile[n*params_tlr->NT+m] * scalar_factore / norm_global  < params_tlr->fixedacc / EPS_HP_GPU;
-    bool decision_hp = norm_tile[n*params_tlr->NT+m] * scalar_factore / norm_global  < params_tlr->fixedacc / EPS_HP;
-    bool decision_sp = norm_tile[n*params_tlr->NT+m] * scalar_factore / norm_global  < params_tlr->fixedacc / EPS_SP;
-    bool decision_fp8 = norm_tile[n*params_tlr->NT+m] * scalar_factore / norm_global  < params_tlr->fixedacc / EPS_FP8;
+    bool decision_hp_gpu = norm_tile[n*descA->lmt+m] * scalar_factore / norm_global  < params_tlr->fixedacc / EPS_HP_GPU;
+    bool decision_hp = norm_tile[n*descA->lmt+m] * scalar_factore / norm_global  < params_tlr->fixedacc / EPS_HP;
+    bool decision_sp = norm_tile[n*descA->lmt+m] * scalar_factore / norm_global  < params_tlr->fixedacc / EPS_SP;
+    bool decision_fp8 = norm_tile[n*descA->lmt+m] * scalar_factore / norm_global  < params_tlr->fixedacc / EPS_FP8;
 
-    /* Protect on CPU */
+    /* No FP16 or FP8 without a GPU (unless the CPU has FP16): same rule as
+     * hicma_parsec_get_precision_tile */
     if(params_tlr->gpus < 1) {
         decision_hp_gpu = false;
         decision_fp8 = false;
@@ -71,10 +72,6 @@ BODY
     if(params_tlr->gpus < 1 && !HAVE_HP_CPU) {
         decision_hp = false;
     }
-
-    // Debug print statement (commented out)
-    //printf("(%d, %d), norm_global:%f, tile norm:%f, res:%f %f %f %f\n", m, n, norm_global,  norm_tile[n*params_tlr->NT+m],
-    //norm_tile[n*params_tlr->NT+m] * scalar_factore / norm_global, params_tlr->fixedacc / EPS_FP8, params_tlr->fixedacc / EPS_HP, params_tlr->fixedacc / EPS_SP);
 
     /* Make precision decisions based on current tile type */
     // Handle dense tile precision decisions (DP, SP, HP, FP8)
@@ -134,7 +131,6 @@ BODY
         // CUDA-specific GPU precision selection
         if( decision_hp_gpu && ENABLE_TF16_A16_B16_C16_OP16 ) {
             params_tlr->decisions_gemm_gpu[n*descA->lmt+m] = MASK_TF16_A16_B16_C16_OP16;
-            //printf("%d %d : %g %g\n", m, n, norm_tile[n*params_tlr->NT+m], norm_global);
         } else if( decision_hp ) {
 #elif defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
         // HIP-specific GPU precision selection
