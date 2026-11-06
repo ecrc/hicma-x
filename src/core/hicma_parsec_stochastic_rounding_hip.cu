@@ -14,7 +14,8 @@
  * lower <= |x| <= upper, choosing lower with probability
  * (upper - |x|) / (upper - lower), so that E[SR(x)] = x.  Rounding is done on
  * |x| and the sign put back.  The uniform random number of element (i, j) is
- * a hash of (i, j, ld), the same as on the CPU and in CUDA.
+ * a hash of (i, j) and of the bits of the value being rounded, the same as on
+ * the CPU and in CUDA.
  */
 
 __device__ __forceinline__ uint64_t hicma_sr_splitmix64(uint64_t x)
@@ -26,13 +27,12 @@ __device__ __forceinline__ uint64_t hicma_sr_splitmix64(uint64_t x)
     return x;
 }
 
-/* Uniform in [0, 1), exactly representable as float */
-__device__ __forceinline__ float hicma_sr_u01(int i, int j, int ld)
+/* Uniform in [0, 1), exactly representable as float, from the position
+ * (i, j) and the bits of the value to round */
+__device__ __forceinline__ float hicma_sr_u01(int i, int j, uint64_t bits)
 {
-    uint64_t seed = (uint64_t)(uint32_t)i;
-    seed ^= ((uint64_t)(uint32_t)j << 21);
-    seed ^= ((uint64_t)(uint32_t)ld << 42);
-    return (float)(hicma_sr_splitmix64(seed) >> 40) * (1.0f / 16777216.0f);
+    uint64_t pos = (uint64_t)(uint32_t)i | ((uint64_t)(uint32_t)j << 32);
+    return (float)(hicma_sr_splitmix64(bits ^ hicma_sr_splitmix64(pos)) >> 40) * (1.0f / 16777216.0f);
 }
 
 __device__ float stochastic_rounding_fp32(double value, float random)
@@ -100,7 +100,7 @@ __global__ void double2float_round_GPU_kernel(int nrows, int ncols,
     const int idy = hipBlockIdx_y * hipBlockDim_y + hipThreadIdx_y;
     if (idx >= nrows || idy >= ncols) { return; }
 
-    F[idy * ldf + idx] = stochastic_rounding_fp32(D[idy * ldd + idx], hicma_sr_u01(idx, idy, ldf));
+    F[idy * ldf + idx] = stochastic_rounding_fp32(D[idy * ldd + idx], hicma_sr_u01(idx, idy, (uint64_t)__double_as_longlong(D[idy * ldd + idx])));
 }
 
 extern "C"
@@ -122,7 +122,7 @@ __global__ void float2half_round_GPU_kernel(int nrows, int ncols,
     const int idy = hipBlockIdx_y * hipBlockDim_y + hipThreadIdx_y;
     if (idx >= nrows || idy >= ncols) { return; }
 
-    H[idy * ldh + idx] = stochastic_rounding_fp16((double)F[idy * ldf + idx], hicma_sr_u01(idx, idy, ldh));
+    H[idy * ldh + idx] = stochastic_rounding_fp16((double)F[idy * ldf + idx], hicma_sr_u01(idx, idy, (uint64_t)__float_as_uint(F[idy * ldf + idx])));
 }
 
 extern "C"
@@ -145,7 +145,7 @@ __global__ void double2half_round_GPU_kernel(int nrows, int ncols,
     const int idy = hipBlockIdx_y * hipBlockDim_y + hipThreadIdx_y;
     if (idx >= nrows || idy >= ncols) { return; }
 
-    H[idy * ldh + idx] = stochastic_rounding_fp16(D[idy * ldd + idx], hicma_sr_u01(idx, idy, ldh));
+    H[idy * ldh + idx] = stochastic_rounding_fp16(D[idy * ldd + idx], hicma_sr_u01(idx, idy, (uint64_t)__double_as_longlong(D[idy * ldd + idx])));
 }
 
 extern "C"
