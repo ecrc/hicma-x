@@ -2165,7 +2165,7 @@ float hicma_parsec_half_bits_to_float(uint16_t value) {
     return half_to_float( h ).f;
 }
 
-int convert_datatype_adaptive_unary_CPU(void *A, int mb, int nb, int lda, uint16_t decision, int convert_direction, int enable_stochastic_rounding, size_t *size) {
+int convert_datatype_adaptive_unary_CPU(void *A, int mb, int nb, int lda, uint16_t decision, int convert_direction, int enable_stochastic_rounding, uint64_t sr_seed, size_t *size) {
     (void)lda;
     /* Validate input parameters */
     if (!A || !size) {
@@ -2182,7 +2182,7 @@ int convert_datatype_adaptive_unary_CPU(void *A, int mb, int nb, int lda, uint16
         if (DENSE_SP == decision) {
             /* Double to Single precision conversion */
             if(enable_stochastic_rounding) {
-                double2float_round_CPU(mb, nb, (double*)A, mb, (float*)A, mb);
+                double2float_round_CPU(mb, nb, (double*)A, mb, (float*)A, mb, sr_seed);
             } else {
                 convert_d2s_unary_CPU((double*)A, mb, nb);
             }
@@ -2251,7 +2251,7 @@ int convert_datatype_adaptive_unary_GPU(parsec_potrf_workspace_t *ws_gpu,
         parsec_gpu_task_t *gpu_task,
         parsec_cuda_exec_stream_t *cuda_stream,
         void *A, int mb, int nb, int lda,
-        uint16_t decision, int convert_direction, int enable_stochastic_rounding, size_t *size) {
+        uint16_t decision, int convert_direction, int enable_stochastic_rounding, uint64_t sr_seed, size_t *size) {
 
     /* Validate input parameters */
     if (!A || !size) {
@@ -2270,7 +2270,7 @@ int convert_datatype_adaptive_unary_GPU(parsec_potrf_workspace_t *ws_gpu,
         /* Handle different conversion types with appropriate function calls */
         if (DENSE_SP == decision) {
             if(enable_stochastic_rounding) {
-                double2float_round_GPU(mb, nb, A, mb, A_tmp, mb, cuda_stream->cuda_stream);
+                double2float_round_GPU(mb, nb, A, mb, A_tmp, mb, sr_seed, cuda_stream->cuda_stream);
             } else {
                 double2float_GPU(mb, nb, A, mb, A_tmp, mb, cuda_stream->cuda_stream);
             }
@@ -2279,7 +2279,7 @@ int convert_datatype_adaptive_unary_GPU(parsec_potrf_workspace_t *ws_gpu,
         }
         else if (DENSE_HP == decision) {
             if(enable_stochastic_rounding) {
-                double2half_round_GPU(mb, nb, A, mb, A_tmp, mb, cuda_stream->cuda_stream);
+                double2half_round_GPU(mb, nb, A, mb, A_tmp, mb, sr_seed, cuda_stream->cuda_stream);
             } else {
                 double2half_GPU(mb, nb, A, mb, A_tmp, mb, cuda_stream->cuda_stream);
             }

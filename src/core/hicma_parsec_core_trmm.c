@@ -63,11 +63,11 @@ typedef struct {
 /* Convert X (rows x cols, leading dimension ld, precision from) into Y
  * (precision to, same leading dimension); from != to. */
 static void hicma_parsec_trmm_cpu_convert_into(const void *X, uint16_t from, uint16_t to,
-        int rows, int cols, int ld, int stochastic_rounding, void *Y)
+        int rows, int cols, int ld, int stochastic_rounding, uint64_t seed, void *Y)
 {
     if( DENSE_DP == from && DENSE_SP == to ) {
         if( stochastic_rounding ) {
-            double2float_round_CPU( rows, cols, (const double *)X, ld, (float *)Y, ld );
+            double2float_round_CPU( rows, cols, (const double *)X, ld, (float *)Y, ld, seed );
         } else {
             const double *D = (const double *)X;
             float *F = (float *)Y;
@@ -130,7 +130,7 @@ static void hicma_parsec_trmm_cpu_convert_into(const void *X, uint16_t from, uin
 /* Return X (rows x cols, leading dimension ld, precision from) in precision
  * to, converting into a buffer from the pool of precision to if needed. */
 static void *hicma_parsec_trmm_cpu_convert(void *X, uint16_t from, uint16_t to,
-        int rows, int cols, int ld, int stochastic_rounding,
+        int rows, int cols, int ld, int stochastic_rounding, uint64_t seed,
         parsec_memory_pool_t *p_work_full_dp,
         parsec_memory_pool_t *p_work_full_sp,
         parsec_memory_pool_t *p_work_full_hp,
@@ -142,7 +142,7 @@ static void *hicma_parsec_trmm_cpu_convert(void *X, uint16_t from, uint16_t to,
 
     tmp->pool = (DENSE_DP == to) ? p_work_full_dp : (DENSE_SP == to) ? p_work_full_sp : p_work_full_hp;
     tmp->buf = parsec_private_memory_pop( tmp->pool );
-    hicma_parsec_trmm_cpu_convert_into( X, from, to, rows, cols, ld, stochastic_rounding, tmp->buf );
+    hicma_parsec_trmm_cpu_convert_into( X, from, to, rows, cols, ld, stochastic_rounding, seed, tmp->buf );
     return tmp->buf;
 }
 
@@ -171,7 +171,7 @@ void hicma_parsec_trmm_core_copy_b_cpu(
         memcpy( Bop, B, (size_t)ld * cols * hicma_parsec_trmm_precision_size(to) );
     } else {
         hicma_parsec_trmm_cpu_convert_into( B, from, to, rows, cols, ld,
-                params_tlr->enable_stochastic_rounding, Bop );
+                params_tlr->enable_stochastic_rounding, hicma_parsec_sr_seed(k, n), Bop );
     }
 }
 
@@ -193,13 +193,14 @@ void hicma_parsec_trmm_core_trmm_lln_cpu(
     (void)es;
     int NT = params_tlr->NT;
     int sr = params_tlr->enable_stochastic_rounding;
+    uint64_t seedA = hicma_parsec_sr_seed((NT-1)-m, (NT-1)-m), seedB = hicma_parsec_sr_seed((NT-1)-m, n);
     uint16_t storageA = hicma_parsec_trmm_storage_precision(params_tlr, params_tlr->decisions, ((NT-1)-m)*NT+(NT-1)-m);
     uint16_t decisionB = params_tlr->decisionsB[n*NT+(NT-1)-m];
     uint16_t storageB = hicma_parsec_trmm_storage_precision(params_tlr, params_tlr->decisionsB, n*NT+(NT-1)-m);
     hicma_parsec_trmm_tmp_t tA, tB;
 
     if( DENSE_DP == decisionB ) {
-        void *A_use = hicma_parsec_trmm_cpu_convert( A, storageA, DENSE_DP, mb, mb, lda, sr,
+        void *A_use = hicma_parsec_trmm_cpu_convert( A, storageA, DENSE_DP, mb, mb, lda, sr, seedA,
                 p_work_full_dp, p_work_full_sp, p_work_full_hp, &tA );
         CORE_dtrmm( side, uplo, trans, diag, mb, nb,
                     lalpha, A_use, lda,
@@ -207,15 +208,15 @@ void hicma_parsec_trmm_core_trmm_lln_cpu(
         hicma_parsec_trmm_cpu_release( &tA );
     } else if( DENSE_SP == decisionB || DENSE_HP == decisionB ) {
         /* No FP16 TRMM: compute an FP16 tile in FP32 */
-        void *A_use = hicma_parsec_trmm_cpu_convert( A, storageA, DENSE_SP, mb, mb, lda, sr,
+        void *A_use = hicma_parsec_trmm_cpu_convert( A, storageA, DENSE_SP, mb, mb, lda, sr, seedA,
                 p_work_full_dp, p_work_full_sp, p_work_full_hp, &tA );
-        void *B_use = hicma_parsec_trmm_cpu_convert( B, storageB, DENSE_SP, mb, nb, ldb, sr,
+        void *B_use = hicma_parsec_trmm_cpu_convert( B, storageB, DENSE_SP, mb, nb, ldb, sr, seedB,
                 p_work_full_dp, p_work_full_sp, p_work_full_hp, &tB );
         CORE_strmm( side, uplo, trans, diag, mb, nb,
                     (float)lalpha, A_use, lda,
                                    B_use, ldb );
         if( B_use != B ) {
-            hicma_parsec_trmm_cpu_convert_into( B_use, DENSE_SP, storageB, mb, nb, ldb, sr, B );
+            hicma_parsec_trmm_cpu_convert_into( B_use, DENSE_SP, storageB, mb, nb, ldb, sr, seedB, B );
         }
         hicma_parsec_trmm_cpu_release( &tA );
         hicma_parsec_trmm_cpu_release( &tB );
@@ -241,6 +242,8 @@ void hicma_parsec_trmm_core_gemm_lln_cpu(
     (void)es;
     int NT = params_tlr->NT;
     int sr = params_tlr->enable_stochastic_rounding;
+    uint64_t seedA = hicma_parsec_sr_seed((NT-1)-m, k), seedB = hicma_parsec_sr_seed(k, n),
+             seedC = hicma_parsec_sr_seed((NT-1)-m, n);
     uint16_t storageA = hicma_parsec_trmm_storage_precision(params_tlr, params_tlr->decisions, k*NT+(NT-1)-m);
     /* B is the operand copy of B(k,n), in its precision decision */
     uint16_t operandB = params_tlr->decisionsB[n*NT+k];
@@ -256,11 +259,11 @@ void hicma_parsec_trmm_core_gemm_lln_cpu(
         compute = DENSE_SP;
     }
 #endif
-    void *A_use = hicma_parsec_trmm_cpu_convert( A, storageA, compute, mb, kb, lda, sr,
+    void *A_use = hicma_parsec_trmm_cpu_convert( A, storageA, compute, mb, kb, lda, sr, seedA,
             p_work_full_dp, p_work_full_sp, p_work_full_hp, &tA );
-    void *B_use = hicma_parsec_trmm_cpu_convert( B, operandB, compute, kb, nb, ldb, sr,
+    void *B_use = hicma_parsec_trmm_cpu_convert( B, operandB, compute, kb, nb, ldb, sr, seedB,
             p_work_full_dp, p_work_full_sp, p_work_full_hp, &tB );
-    void *C_use = hicma_parsec_trmm_cpu_convert( C, storageC, compute, mb, nb, ldc, sr,
+    void *C_use = hicma_parsec_trmm_cpu_convert( C, storageC, compute, mb, nb, ldc, sr, seedC,
             p_work_full_dp, p_work_full_sp, p_work_full_hp, &tC );
 
     if( DENSE_DP == compute ) {
@@ -288,7 +291,7 @@ void hicma_parsec_trmm_core_gemm_lln_cpu(
     }
 
     if( C_use != C ) {
-        hicma_parsec_trmm_cpu_convert_into( C_use, compute, storageC, mb, nb, ldc, sr, C );
+        hicma_parsec_trmm_cpu_convert_into( C_use, compute, storageC, mb, nb, ldc, sr, seedC, C );
     }
 
     hicma_parsec_trmm_cpu_release( &tA );
@@ -306,7 +309,7 @@ void hicma_parsec_trmm_core_gemm_lln_cpu(
 /* Return X (rows x cols, leading dimension ld, precision from) in precision
  * to, converting into buf on the stream if needed. */
 static void *hicma_parsec_trmm_gpu_convert(void *X, uint16_t from, uint16_t to,
-        int rows, int cols, int ld, int stochastic_rounding,
+        int rows, int cols, int ld, int stochastic_rounding, uint64_t seed,
         void *buf, cudaStream_t stream)
 {
     if( from == to ) return X;
@@ -323,7 +326,7 @@ static void *hicma_parsec_trmm_gpu_convert(void *X, uint16_t from, uint16_t to,
     } else if( DENSE_SP == to ) {
         if( DENSE_DP == from ) {
             if( stochastic_rounding )
-                double2float_round_GPU( rows, cols, (const double *)X, ld, (float *)buf, ld, stream );
+                double2float_round_GPU( rows, cols, (const double *)X, ld, (float *)buf, ld, seed, stream );
             else
                 double2float_GPU( rows, cols, (const double *)X, ld, (float *)buf, ld, stream );
             return buf;
@@ -335,14 +338,14 @@ static void *hicma_parsec_trmm_gpu_convert(void *X, uint16_t from, uint16_t to,
     } else if( DENSE_HP == to ) {
         if( DENSE_DP == from ) {
             if( stochastic_rounding )
-                double2half_round_GPU( rows, cols, (const double *)X, ld, buf, ld, stream );
+                double2half_round_GPU( rows, cols, (const double *)X, ld, buf, ld, seed, stream );
             else
                 double2half_GPU( rows, cols, (const double *)X, ld, buf, ld, stream );
             return buf;
         }
         if( DENSE_SP == from ) {
             if( stochastic_rounding )
-                float2half_round_GPU( rows, cols, (const float *)X, ld, buf, ld, stream );
+                float2half_round_GPU( rows, cols, (const float *)X, ld, buf, ld, seed, stream );
             else
                 float2half_GPU( rows, cols, (const float *)X, ld, buf, ld, stream );
             return buf;
@@ -380,7 +383,7 @@ void hicma_parsec_trmm_core_copy_b_gpu(
         hicma_parsec_trmm_gpu_copy( Bop, B, to, ld, cols, cuda_stream->cuda_stream );
     } else {
         hicma_parsec_trmm_gpu_convert( B, from, to, rows, cols, ld,
-                params_tlr->enable_stochastic_rounding, Bop, cuda_stream->cuda_stream );
+                params_tlr->enable_stochastic_rounding, hicma_parsec_sr_seed(k, n), Bop, cuda_stream->cuda_stream );
     }
 }
 
@@ -407,6 +410,7 @@ void hicma_parsec_trmm_core_trmm_lln_gpu(
     (void)gpu_task;
     int NT = params_tlr->NT;
     int sr = params_tlr->enable_stochastic_rounding;
+    uint64_t seedA = hicma_parsec_sr_seed((NT-1)-m, (NT-1)-m), seedB = hicma_parsec_sr_seed((NT-1)-m, n);
     uint16_t storageA = hicma_parsec_trmm_storage_precision(params_tlr, params_tlr->decisions, ((NT-1)-m)*NT+(NT-1)-m);
     uint16_t decisionB = params_tlr->decisionsB[n*NT+(NT-1)-m];
     uint16_t storageB = hicma_parsec_trmm_storage_precision(params_tlr, params_tlr->decisionsB, n*NT+(NT-1)-m);
@@ -436,13 +440,13 @@ void hicma_parsec_trmm_core_trmm_lln_gpu(
         B_in = stream_found->gpu_buffer_B;
         out = B;
     } else {
-        B_in = hicma_parsec_trmm_gpu_convert( B, storageB, prec, mb, nb, ldb, sr,
+        B_in = hicma_parsec_trmm_gpu_convert( B, storageB, prec, mb, nb, ldb, sr, seedB,
                 stream_found->gpu_buffer_B, stream );
         out = stream_found->gpu_buffer_C;
     }
 
     if( DENSE_DP == prec ) {
-        void *A_use = hicma_parsec_trmm_gpu_convert( A, storageA, DENSE_DP, mb, mb, lda, sr,
+        void *A_use = hicma_parsec_trmm_gpu_convert( A, storageA, DENSE_DP, mb, mb, lda, sr, seedA,
                 stream_found->gpu_buffer_A, stream );
         double alpha = lalpha;
         status = cublasDtrmm( handle,
@@ -456,7 +460,7 @@ void hicma_parsec_trmm_core_trmm_lln_gpu(
     } else if( mb <= HICMA_PARSEC_TRMM_SGEMM_MAX_NB && dplasmaLeft == side
                && dplasmaLower == uplo && dplasmaNoTrans == trans ) {
         /* GEMM with tril(A): the upper triangle zeroed, and 1 on the diagonal if unit */
-        void *L = hicma_parsec_trmm_gpu_convert( A, storageA, DENSE_SP, mb, mb, lda, sr,
+        void *L = hicma_parsec_trmm_gpu_convert( A, storageA, DENSE_SP, mb, mb, lda, sr, seedA,
                 stream_found->gpu_buffer_A, stream );
         if( L == A ) {
             memcpy_float_GPU( lda, mb, A, stream_found->gpu_buffer_A, stream );
@@ -472,7 +476,7 @@ void hicma_parsec_trmm_core_trmm_lln_gpu(
                 &beta,  out,  ldb );
         PARSEC_CUDA_CHECK_ERROR( "TRMM diagonal tile SGEMM", status, {exit(1);} );
     } else {
-        void *A_use = hicma_parsec_trmm_gpu_convert( A, storageA, DENSE_SP, mb, mb, lda, sr,
+        void *A_use = hicma_parsec_trmm_gpu_convert( A, storageA, DENSE_SP, mb, mb, lda, sr, seedA,
                 stream_found->gpu_buffer_A, stream );
         float alpha = (float)lalpha;
         status = cublasStrmm( handle,
@@ -487,7 +491,7 @@ void hicma_parsec_trmm_core_trmm_lln_gpu(
 
     /* Back to the storage precision of B */
     if( out != B ) {
-        hicma_parsec_trmm_gpu_convert( out, prec, storageB, mb, nb, ldb, sr, B, stream );
+        hicma_parsec_trmm_gpu_convert( out, prec, storageB, mb, nb, ldb, sr, seedB, B, stream );
     }
 }
 
@@ -508,6 +512,7 @@ void hicma_parsec_trmm_core_gemm_lln_gpu(
     (void)gpu_task;
     int NT = params_tlr->NT;
     int sr = params_tlr->enable_stochastic_rounding;
+    uint64_t seedA = hicma_parsec_sr_seed((NT-1)-m, k), seedB = hicma_parsec_sr_seed(k, n);
     uint16_t storageA = hicma_parsec_trmm_storage_precision(params_tlr, params_tlr->decisions, k*NT+(NT-1)-m);
     /* B is the operand copy of B(k,n), in its precision decision */
     uint16_t operandB = params_tlr->decisionsB[n*NT+k];
@@ -521,9 +526,9 @@ void hicma_parsec_trmm_core_gemm_lln_gpu(
 
     /* A is mb x kb, B is kb x nb, C is mb x nb; the operands take the
      * precision of C's decision (FP16 also with --accumulation_fp32) */
-    void *A_use = hicma_parsec_trmm_gpu_convert( A, storageA, decisionC, mb, kb, lda, sr,
+    void *A_use = hicma_parsec_trmm_gpu_convert( A, storageA, decisionC, mb, kb, lda, sr, seedA,
             stream_found->gpu_buffer_A, stream );
-    void *B_use = hicma_parsec_trmm_gpu_convert( B, operandB, decisionC, kb, nb, ldb, sr,
+    void *B_use = hicma_parsec_trmm_gpu_convert( B, operandB, decisionC, kb, nb, ldb, sr, seedB,
             stream_found->gpu_buffer_B, stream );
 
     if( DENSE_DP == decisionC ) {

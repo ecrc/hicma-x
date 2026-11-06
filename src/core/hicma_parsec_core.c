@@ -1022,7 +1022,7 @@ void hicma_parsec_core_trsm_cpu( parsec_tiled_matrix_t* descA,
             // Convert double precision T to single precision for computation
 			hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
 			if( params_tlr->enable_stochastic_rounding ) {
-				double2float_round_CPU( descA->mb, descA->nb, T, descA->mb, T_s, descA->mb );
+				double2float_round_CPU( descA->mb, descA->nb, T, descA->mb, T_s, descA->mb, hicma_parsec_sr_seed(k, k) );
 			} else {
 				LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, T, descA->mb, T_s, descA->mb );
 			}
@@ -1565,7 +1565,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_cpu( parsec_tiled_matrix_t* des
             A_s = parsec_private_memory_pop( p_work_full_sp );
 			hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
 			if( params_tlr->enable_stochastic_rounding ) {
-				double2float_round_CPU( descA->mb, descA->nb, A, descA->mb, A_s, descA->mb );
+				double2float_round_CPU( descA->mb, descA->nb, A, descA->mb, A_s, descA->mb, hicma_parsec_sr_seed(m, k) );
 			} else {
 				LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, A, descA->mb, A_s, descA->mb );
 			}
@@ -1577,7 +1577,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_cpu( parsec_tiled_matrix_t* des
 			B_s = parsec_private_memory_pop( p_work_full_sp );
 			hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
 			if( params_tlr->enable_stochastic_rounding ) {
-				double2float_round_CPU( descA->mb, descA->nb, B, descA->mb, B_s, descA->mb );
+				double2float_round_CPU( descA->mb, descA->nb, B, descA->mb, B_s, descA->mb, hicma_parsec_sr_seed(n, k) );
 			} else {
 				LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, B, descA->mb, B_s, descA->mb );
 			}
@@ -3239,7 +3239,7 @@ void hicma_parsec_core_trsm_gpu( parsec_tiled_matrix_t* descA,
             /* Convert datatype */
 			hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
 			if( params_tlr->enable_stochastic_rounding ) {
-				double2float_round_GPU( descA->mb, descA->nb, T, descA->mb, T_s, descA->mb, cuda_stream->cuda_stream );
+				double2float_round_GPU( descA->mb, descA->nb, T, descA->mb, T_s, descA->mb, hicma_parsec_sr_seed(k, k), cuda_stream->cuda_stream );
 			} else {
 				double2float_GPU( descA->mb, descA->nb, T, descA->mb, T_s, descA->mb, cuda_stream->cuda_stream );
 			}
@@ -3648,7 +3648,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
         if( DENSE_DP == params_tlr->decisions_send[k*descA->lmt+m] ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
             if( params_tlr->enable_stochastic_rounding ) {
-                double2float_round_GPU( descA->mb, descA->nb, A, descA->mb, A_s, descA->mb, cuda_stream->cuda_stream );
+                double2float_round_GPU( descA->mb, descA->nb, A, descA->mb, A_s, descA->mb, hicma_parsec_sr_seed(m, k), cuda_stream->cuda_stream );
             } else {
                 double2float_GPU( descA->mb, descA->nb, A, descA->mb, A_s, descA->mb, cuda_stream->cuda_stream );
             }
@@ -3663,7 +3663,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
         if( DENSE_DP == params_tlr->decisions_send[k*descA->lmt+n] ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
             if( params_tlr->enable_stochastic_rounding ) {
-                double2float_round_GPU( descA->mb, descA->nb, B, descA->mb, B_s, descA->mb, cuda_stream->cuda_stream );
+                double2float_round_GPU( descA->mb, descA->nb, B, descA->mb, B_s, descA->mb, hicma_parsec_sr_seed(n, k), cuda_stream->cuda_stream );
             } else {
                 double2float_GPU( descA->mb, descA->nb, B, descA->mb, B_s, descA->mb, cuda_stream->cuda_stream );
             }
@@ -3696,7 +3696,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
                     if( DENSE_DP == params_tlr->decisions_send[k*descA->lmt+m] ) {
                         hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
                         if( params_tlr->enable_stochastic_rounding ) {
-                            double2half_round_GPU( descA->mb, descA->nb, A, descA->mb, A_h, descA->mb, cuda_stream->cuda_stream );
+                            double2half_round_GPU( descA->mb, descA->nb, A, descA->mb, A_h, descA->mb, hicma_parsec_sr_seed(m, k), cuda_stream->cuda_stream );
                         } else {
                             double2half_GPU( descA->mb, descA->nb, A, descA->mb, A_h, descA->mb, cuda_stream->cuda_stream );
                         }
@@ -3704,7 +3704,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
                     } else if( DENSE_SP == params_tlr->decisions_send[k*descA->lmt+m] ) {
                         hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
                         if( params_tlr->enable_stochastic_rounding ) {
-                            float2half_round_GPU( descA->mb, descA->nb, A, descA->mb, A_h, descA->mb, cuda_stream->cuda_stream );
+                            float2half_round_GPU( descA->mb, descA->nb, A, descA->mb, A_h, descA->mb, hicma_parsec_sr_seed(m, k), cuda_stream->cuda_stream );
                         } else {
                             float2half_GPU( descA->mb, descA->nb, A, descA->mb, A_h, descA->mb, cuda_stream->cuda_stream );
                         }
@@ -3715,7 +3715,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
                     if( DENSE_DP == params_tlr->decisions_send[k*descA->lmt+n] ) {
                         hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
                         if( params_tlr->enable_stochastic_rounding ) {
-                            double2half_round_GPU( descA->mb, descA->nb, B, descA->mb, B_h, descA->mb, cuda_stream->cuda_stream );
+                            double2half_round_GPU( descA->mb, descA->nb, B, descA->mb, B_h, descA->mb, hicma_parsec_sr_seed(n, k), cuda_stream->cuda_stream );
                         } else {
                             double2half_GPU( descA->mb, descA->nb, B, descA->mb, B_h, descA->mb, cuda_stream->cuda_stream );
                         }
@@ -3723,7 +3723,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
                     } else if( DENSE_SP == params_tlr->decisions_send[k*descA->lmt+n] ) {
                         hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
                         if( params_tlr->enable_stochastic_rounding ) {
-                            float2half_round_GPU( descA->mb, descA->nb, B, descA->mb, B_h, descA->mb, cuda_stream->cuda_stream );
+                            float2half_round_GPU( descA->mb, descA->nb, B, descA->mb, B_h, descA->mb, hicma_parsec_sr_seed(n, k), cuda_stream->cuda_stream );
                         } else {
                             float2half_GPU( descA->mb, descA->nb, B, descA->mb, B_h, descA->mb, cuda_stream->cuda_stream );
                         }
@@ -3735,7 +3735,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
                         /* Convert datatype */
                         hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
                         if( params_tlr->enable_stochastic_rounding ) {
-                            float2half_round_GPU( descA->mb, descA->nb, C, descA->mb, C_h, descA->mb, cuda_stream->cuda_stream );
+                            float2half_round_GPU( descA->mb, descA->nb, C, descA->mb, C_h, descA->mb, hicma_parsec_sr_seed(m, n), cuda_stream->cuda_stream );
                         } else {
                             float2half_GPU( descA->mb, descA->nb, C, descA->mb, C_h, descA->mb, cuda_stream->cuda_stream );
                         }

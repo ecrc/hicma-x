@@ -76,7 +76,7 @@ BODY
         // Perform conversion based on memory management strategy
         if( params_tlr->check || !params_tlr->adaptive_memory ) {
             if( params_tlr->enable_stochastic_rounding ) {
-                convert_datatype_adaptive_unary_CPU(A, descA->mb, descA->nb, descA->mb, DENSE_SP, 0, params_tlr->enable_stochastic_rounding, &this_task->data._f_A.data_out->original->nb_elts);
+                convert_datatype_adaptive_unary_CPU(A, descA->mb, descA->nb, descA->mb, DENSE_SP, 0, params_tlr->enable_stochastic_rounding, hicma_parsec_sr_seed(m, n), &this_task->data._f_A.data_out->original->nb_elts);
             } else {
                 // In-place conversion (unary operation)
                 convert_d2s_unary_CPU(A, descA->mb, size);
@@ -101,7 +101,7 @@ BODY
             
             // Convert from double to single precision
             if( params_tlr->enable_stochastic_rounding ) {
-                double2float_round_CPU(descA->mb, descA->nb, this_task->data._f_A.data_out->device_private, descA->mb, new_memory, descA->mb );
+                double2float_round_CPU(descA->mb, descA->nb, this_task->data._f_A.data_out->device_private, descA->mb, new_memory, descA->mb, hicma_parsec_sr_seed(m, n) );
             } else {
                 convert_d2s_binary_CPU(new_memory, this_task->data._f_A.data_out->device_private, descA->mb, size);
             }

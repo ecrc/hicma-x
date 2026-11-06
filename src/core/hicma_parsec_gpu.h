@@ -380,11 +380,12 @@ void double2float_GPU(int nrows, int ncols,
  * @param[in] ldh Leading dimension of H
  * @param[out] F Output single precision matrix
  * @param[in] ldf Leading dimension of F
+ * @param[in] seed Seed of the tile, hicma_parsec_sr_seed(m, n)
  * @param[in] stream CUDA stream
  */
 void double2float_round_GPU(int nrows, int ncols,
                 const double *H, int ldh,
-                float *F, int ldf,
+                float *F, int ldf, uint64_t seed,
                 cudaStream_t stream);
 
 /**
@@ -414,11 +415,12 @@ void float2half_GPU( int nrows, int ncols,
  * @param[in] ldf Leading dimension of F
  * @param[out] H Output half precision matrix
  * @param[in] ldh Leading dimension of H
+ * @param[in] seed Seed of the tile, hicma_parsec_sr_seed(m, n)
  * @param[in] stream CUDA stream
  */
 void float2half_round_GPU( int nrows, int ncols,
                 const float *F, int ldf,
-                void *H, int ldh,
+                void *H, int ldh, uint64_t seed,
                 cudaStream_t stream );
 
 /**
@@ -494,11 +496,12 @@ void double2half_GPU( int nrows, int ncols,
  * @param[in] ldf Leading dimension of F
  * @param[out] H Output half precision matrix
  * @param[in] ldh Leading dimension of H
+ * @param[in] seed Seed of the tile, hicma_parsec_sr_seed(m, n)
  * @param[in] stream CUDA stream
  */
 void double2half_round_GPU( int nrows, int ncols,
                 const double *F, int ldf,
-                void *_H, int ldh,
+                void *_H, int ldh, uint64_t seed,
                 cudaStream_t stream );
 
 /**
