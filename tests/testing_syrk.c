@@ -188,9 +188,11 @@ void hicma_parsec_syrk_performance(int argc, char **argv,
     free(params->gather_time);
     free(params->gather_time_tmp);
     free(params->decisions);
+    free(params->decisionsB);
     free(params->decisions_send);
     free(params->decisions_gemm_gpu);
     free(params->norm_tile);
+    free(params->norm_tileB);
     
     /* Clean up GPU handles */
 #if (defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT))

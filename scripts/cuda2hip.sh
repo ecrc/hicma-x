@@ -12,17 +12,13 @@ if [ ! -f "$input_file" ]; then
     exit 1
 fi
 
-tmp_file="$(mktemp)"
-
-sed \
-    -e 's/threadIdx\.x/hipThreadIdx_x/g' \
-    -e 's/threadIdx\.y/hipThreadIdx_y/g' \
-    -e 's/blockIdx\.x/hipBlockIdx_x/g' \
-    -e 's/blockDim\.x/hipBlockDim_x/g' \
-    -e 's/blockIdx\.y/hipBlockIdx_y/g' \
-    -e 's/blockDim\.y/hipBlockDim_y/g' \
-    "$input_file" > "$tmp_file"
-
-mv "$tmp_file" "$input_file"
+# Rewrite the CUDA thread/block built-ins to their HIP names in place
+# (sed -i keeps the file's permissions)
+sed -i \
+    -e 's/threadIdx\.\([xyz]\)/hipThreadIdx_\1/g' \
+    -e 's/blockIdx\.\([xyz]\)/hipBlockIdx_\1/g' \
+    -e 's/blockDim\.\([xyz]\)/hipBlockDim_\1/g' \
+    -e 's/gridDim\.\([xyz]\)/hipGridDim_\1/g' \
+    "$input_file"
 
 echo "Updated: $input_file"
