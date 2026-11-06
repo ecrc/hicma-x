@@ -11,10 +11,19 @@ extern "C" %{
 
 #include "hicma_parsec.h"
 
-/* Whether B(k,n) gets an operand copy (see read_B); set by hicma_parsec_trmm_New */
+/* Operand copy of B(k,n) (see read_B), set by hicma_parsec_trmm_New:
+ * 0 none, 1 for the GEMMs on other ranks, 2 converting, for all its GEMMs */
 #define TRMM_COPY_B(k, n) (trmm_copy[(size_t)(n) * descB->mt + (k)])
 
-/* Run read_B on the GPU only when it makes a copy */
+/* Whether dgemm(mm, n, k) reads the copy of B(k,n) rather than B(k,n) itself.
+ * With copy 1, the GEMMs whose row is congruent to row k modulo P, on the
+ * same rank in a block-cyclic distribution, read B(k,n) in place: dtrmm can
+ * then gather their control messages with a strided range. (Any other choice
+ * would also be correct, every in-place reader sending one.) */
+#define TRMM_READS_COPY(k, n, mm) \
+    ( 2 == TRMM_COPY_B(k, n) || (1 == TRMM_COPY_B(k, n) && 0 != ((descB->mt-1-(k)) - (mm)) % P) )
+
+/* Run read_B on the GPU only when its copy converts */
 static parsec_hook_return_t trmm_copy_b_evaluate(const parsec_task_t *task);
 
 %}
@@ -30,8 +39,11 @@ descB     [type = "parsec_tiled_matrix_t*" ]
 
 params_tlr   [ type = "hicma_parsec_params_t *" ]
 
-/* trmm_copy[n*mt+k]: B(k,n) gets an operand copy (see read_B) */
+/* trmm_copy[n*mt+k]: operand copy of B(k,n), see TRMM_COPY_B */
 trmm_copy    [ type = "uint8_t *" hidden = on default = NULL ]
+
+/* Process-grid rows: the GEMMs reading a tile of B in place are P rows apart */
+P            [ type = "int" hidden = on default = "params_tlr->P" ]
 
 /* Process-grid columns used to rotate the lightweight A-panel credits. */
 Q            [ type = "int" hidden = on default = "params_tlr->Q" ]
@@ -117,18 +129,18 @@ END
 
 /*
  * B(k,n) is read by the GEMMs of the rows below and then overwritten by the
- * TRMM of row k. Two ways, chosen per tile by hicma_parsec_trmm_New:
- *  - In place: the GEMMs read B(k,n) itself, and the TRMM waits for a control
- *    message from every one of them. Used when all those GEMMs run on this
- *    rank: no extra memory.
- *  - Operand copy (Bop), made here in the tile's precision decision: the GEMMs
- *    read the copy and the TRMM only waits for this task. Used when a GEMM
- *    runs on another rank, which removes those remote control messages, and
- *    with --accumulation_fp32 for an FP16 tile stored in FP32, which is then
- *    converted to FP16 once (and sent in FP16) instead of in every GEMM.
- *    The copy is made on the GPU, where the local GEMMs read it, and pushed
- *    to the host for the remote ones. (Made on the CPU instead, it had to be
- *    moved to the GPU for the local GEMMs: slower on 2-8 A100s.)
+ * TRMM of row k, which must wait until it is no longer needed:
+ *  - A GEMM on this rank reads B(k,n) in place and then sends the TRMM a
+ *    control message.
+ *  - The GEMMs on other ranks read an operand copy (Bop) instead, made here
+ *    on the CPU from the host copy and sent from there, so the TRMM does not
+ *    wait for remote control messages. (Before, every GEMM reading B(k,n)
+ *    sent one, mostly across ranks. Reading the copy on this rank too cost
+ *    more: the GPU then had to make and send every copy before any GEMM.)
+ *  - With --accumulation_fp32, an FP16 tile stored in FP32 is converted to an
+ *    FP16 copy on the GPU, read by all its GEMMs: converted once, and sent in
+ *    FP16, instead of converted in every GEMM.
+ * hicma_parsec_trmm_New chooses per tile (trmm_copy).
  */
 read_B(n, k)
   /* Execution Space */
@@ -139,19 +151,19 @@ read_B(n, k)
   : descB(k,n)
 
   READ  B    <- descB(k,n)
-             -> (%{ return !TRMM_COPY_B(k, n); %}) ? B dgemm(0..(descB->mt-k-2), n, k)  [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr, params_tlr->decisionsB, k, n, descB->lmt)]; %} ]
+             -> [ mm = 0 .. descB->mt-k-2 ] (%{ return !TRMM_READS_COPY(k, n, mm); %}) ? B dgemm(mm, n, k)  [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr, params_tlr->decisionsB, k, n, descB->lmt)]; %} ]
   WRITE Bop  <- NEW                                                                     [ type = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_operand_LLN(params_tlr->decisionsB, k, n, descB->lmt)]; %} ]
-             -> (%{ return TRMM_COPY_B(k, n); %}) ? B dgemm(0..(descB->mt-k-2), n, k)   [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_operand_LLN(params_tlr->decisionsB, k, n, descB->lmt)]; %} ]
+             -> [ mm = 0 .. descB->mt-k-2 ] (%{ return TRMM_READS_COPY(k, n, mm); %}) ? B dgemm(mm, n, k)   [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_operand_LLN(params_tlr->decisionsB, k, n, descB->lmt)]; %} ]
 
   /* Bop is write-only so that the GPU allocates it without a transfer; a
    * conditional NEW on a WRITE flow allocates nothing, so it is allocated for
    * every tile and just released when there is no copy. */
 
-  /* With a copy, B(k,n) may now be overwritten */
+  /* B(k,n) is copied: it may be overwritten once its in-place readers are done */
   CTL   ctl0 -> (%{ return TRMM_COPY_B(k, n); %}) ? ctl0 dtrmm(descB->mt-1-k, n)
 
-  /* The copies are needed from the start of the chains */
-  ; descB->mt + 1
+  /* Just above the GEMMs that read the copy (priority k) */
+  ; k + 1
 
 BODY [ type = CUDA evaluate = trmm_copy_b_evaluate ]
 {
@@ -210,10 +222,11 @@ dtrmm(m, n) [ flops = inline_c %{ return FLOPS_DTRMM(side, CLEAN_MB(descB, m), C
              -> (m <  (descB->mt-1)) ? C dgemm(m, n, descB->mt-m-2) [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr, params_tlr->decisionsB, (descB->mt-1)-m, n, descB->lmt)]; %} ]
              -> (m == (descB->mt-1)) ? descB((descB->mt-1)-m,n) 
 
-  /* Overwrite B(i,n) once its operand copy is made, or once every GEMM
+  /* Overwrite B(i,n) once its operand copy, if any, is made and every GEMM
    * reading it in place is done (the last row is read by no GEMM) */
   CTL   ctl0 <- (%{ return m > 0 && TRMM_COPY_B(descB->mt-1-m, n); %}) ? ctl0 read_B(n, descB->mt-1-m)
-             <- (%{ return m > 0 && !TRMM_COPY_B(descB->mt-1-m, n); %}) ? ctl0 dgemm(0..(m-1), n, descB->mt-m-1)
+             <- (%{ return m > 0 && 0 == TRMM_COPY_B(descB->mt-1-m, n); %}) ? ctl0 dgemm(0 .. (m-1), n, descB->mt-m-1)
+             <- (%{ return m >= P && 1 == TRMM_COPY_B(descB->mt-1-m, n); %}) ? ctl0 dgemm((m % P) .. (m-P) .. P, n, descB->mt-m-1)
 
   /* Longest chains first: row i then has i GEMMs to go */
   ; descB->mt - m
@@ -303,8 +316,8 @@ dgemm(m, n, k) [ flops = inline_c %{ return FLOPS_DGEMM(CLEAN_MB(descB, m), CLEA
   : descB((descB->mt-1)-m,n)
 
   READ  A    <- A read_A(m, k)                                      [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr, params_tlr->decisions, (descB->mt-1)-m, k, descA->lmt)]; %} ]
-  READ  B    <- (%{ return TRMM_COPY_B(k, n); %}) ? Bop read_B(n, k)             [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_operand_LLN(params_tlr->decisionsB, k, n, descB->lmt)]; %} ]
-             <- (%{ return !TRMM_COPY_B(k, n); %}) ? B read_B(n, k)               [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr, params_tlr->decisionsB, k, n, descB->lmt)]; %} ]
+  READ  B    <- (%{ return TRMM_READS_COPY(k, n, m); %}) ? Bop read_B(n, k)      [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_operand_LLN(params_tlr->decisionsB, k, n, descB->lmt)]; %} ]
+             <- (%{ return !TRMM_READS_COPY(k, n, m); %}) ? B read_B(n, k)        [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr, params_tlr->decisionsB, k, n, descB->lmt)]; %} ]
   /* Consume the nearest preceding B row first, releasing its overwrite
    * dependency early so different output rows can progress concurrently.
    * Keep a single writer for C; descending k changes the summation order. */
@@ -314,7 +327,7 @@ dgemm(m, n, k) [ flops = inline_c %{ return FLOPS_DGEMM(CLEAN_MB(descB, m), CLEA
              -> (k == 0) ? descB((descB->mt-1)-m,n)
 
   /* Read in place: B(k,n) may be overwritten once every reader is done */
-  CTL   ctl0 -> (%{ return !TRMM_COPY_B(k, n); %}) ? ctl0 dtrmm(descB->mt-k-1, n)
+  CTL   ctl0 -> (%{ return !TRMM_READS_COPY(k, n, m); %}) ? ctl0 dtrmm(descB->mt-k-1, n)
 
   CTL   window_A -> (params_tlr->trmm_window > 0 &&
                      k >= params_tlr->trmm_window &&
@@ -422,14 +435,15 @@ END
 
 extern "C" %{
 
-/* read_B runs on the GPU only when it makes a copy; without one it has no
- * work, and the CPU incarnation avoids staging B(k,n) on the GPU for it. */
+/* read_B runs on the GPU only when its copy converts (the local GEMMs then
+ * read the copy there); a plain copy is made on the CPU, and without a copy
+ * there is no work. */
 static parsec_hook_return_t trmm_copy_b_evaluate(const parsec_task_t *task)
 {
     const __parsec_trmm_mp_LLN_read_B_task_t *t = (const __parsec_trmm_mp_LLN_read_B_task_t *)task;
     const parsec_trmm_mp_LLN_taskpool_t *tp = (const parsec_trmm_mp_LLN_taskpool_t *)task->taskpool;
     size_t idx = (size_t)t->locals.n.value * tp->_g_descB->mt + t->locals.k.value;
-    return tp->_g_trmm_copy[idx] ? PARSEC_HOOK_RETURN_DONE : PARSEC_HOOK_RETURN_NEXT;
+    return (2 == tp->_g_trmm_copy[idx]) ? PARSEC_HOOK_RETURN_DONE : PARSEC_HOOK_RETURN_NEXT;
 }
 
 %}

@@ -25,9 +25,9 @@
  *    operands and accumulates in FP32 into the FP32 C (on the CPU, which has
  *    no such GEMM, it is an FP32 GEMM).
  *  - The GEMMs read B(k,n) in place, or from an operand copy in its
- *    precision decision (copy_b) when a GEMM reading it runs on another rank
- *    or when --accumulation_fp32 stores the FP16 tile in FP32; the copy then
- *    converts it to FP16 once, instead of in every GEMM that reads it (see
+ *    precision decision (copy_b): the GEMMs on other ranks, and all of them
+ *    when --accumulation_fp32 stores the FP16 tile in FP32, which is then
+ *    converted to FP16 once instead of in every GEMM that reads it (see
  *    read_B in trmm_mp_LLN.jdf).
  *
  * Operands in another precision are converted into a workspace buffer first,
