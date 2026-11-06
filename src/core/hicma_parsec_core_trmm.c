@@ -18,7 +18,8 @@
  *
  *  - TRMM on B(i,n) computes in the precision of B(i,n): FP64 or FP32 (there
  *    is no FP16 TRMM, an FP16 tile is computed in FP32 and converted back to
- *    its storage precision).
+ *    its storage precision). On the GPU it runs out of place through a
+ *    workspace, as a GEMM with tril(A) in FP32 for tiles up to 1024.
  *  - GEMM C(i,n) += A(i,k) * B(k,n) computes in the precision of C(i,n). An
  *    FP16 GEMM accumulates in FP16, or with --accumulation_fp32 takes FP16
  *    operands and accumulates in FP32 into the FP32 C (on the CPU, which has
@@ -283,6 +284,20 @@ static void *hicma_parsec_trmm_gpu_convert(void *X, uint16_t from, uint16_t to,
     return NULL;
 }
 
+/* Copy X (ld x cols, precision precision) into Y on the stream */
+static void hicma_parsec_trmm_gpu_copy(void *Y, void *X, uint16_t precision,
+        int ld, int cols, cudaStream_t stream)
+{
+    if( DENSE_DP == precision )      memcpy_double_GPU( ld, cols, X, Y, stream );
+    else if( DENSE_SP == precision ) memcpy_float_GPU( ld, cols, X, Y, stream );
+    else                             memcpy_half_GPU( ld, cols, X, Y, stream );
+}
+
+/* Largest diagonal tile computed in FP32 as a GEMM with the lower triangle of
+ * A rather than with cuBLAS trmm (measured faster up to 1024 on H100 and V100,
+ * slower from 1536 on the H100) */
+#define HICMA_PARSEC_TRMM_SGEMM_MAX_NB 1024
+
 void hicma_parsec_trmm_core_trmm_lln_gpu(
         hicma_parsec_params_t *params_tlr,
         parsec_potrf_workspace_t *ws_gpu,
@@ -306,11 +321,36 @@ void hicma_parsec_trmm_core_trmm_lln_gpu(
     uint16_t storageB = hicma_parsec_trmm_storage_precision(params_tlr, params_tlr->decisionsB, n*NT+(NT-1)-m);
     cudaStream_t stream = cuda_stream->cuda_stream;
     cublasStatus_t status;
+    uint16_t prec;
+
+    /* Compute in FP64 or FP32; there is no FP16 TRMM, an FP16 tile is computed in FP32 */
+    if( DENSE_DP == decisionB ) {
+        prec = DENSE_DP;
+    } else if( DENSE_SP == decisionB || DENSE_HP == decisionB ) {
+        prec = DENSE_SP;
+    } else {
+        hicma_parsec_trmm_bad_precision( "hicma_parsec_trmm_core_trmm_lln_gpu", decisionB, decisionB );
+        return;
+    }
 
     parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, ws_gpu);
     cublasHandle_t handle = stream_found->handle_cublas;
 
-    if( DENSE_DP == decisionB ) {
+    /* cuBLAS trmm is several times slower in place than out of place: read B
+     * from a workspace (copied, or converted to the compute precision) and
+     * write the product into B, or into another workspace to convert back */
+    void *B_in, *out;
+    if( storageB == prec ) {
+        hicma_parsec_trmm_gpu_copy( stream_found->gpu_buffer_B, B, prec, ldb, nb, stream );
+        B_in = stream_found->gpu_buffer_B;
+        out = B;
+    } else {
+        B_in = hicma_parsec_trmm_gpu_convert( B, storageB, prec, mb, nb, ldb, sr,
+                stream_found->gpu_buffer_B, stream );
+        out = stream_found->gpu_buffer_C;
+    }
+
+    if( DENSE_DP == prec ) {
         void *A_use = hicma_parsec_trmm_gpu_convert( A, storageA, DENSE_DP, mb, mb, lda, sr,
                 stream_found->gpu_buffer_A, stream );
         double alpha = lalpha;
@@ -319,31 +359,44 @@ void hicma_parsec_trmm_core_trmm_lln_gpu(
                 dplasma_cublas_op(trans), dplasma_cublas_diag(diag),
                 mb, nb,
                 &alpha, A_use, lda,
-                        B,     ldb,
-                        B,     ldb );
+                        B_in,  ldb,
+                        out,   ldb );
         PARSEC_CUDA_CHECK_ERROR( "cublasDtrmm", status, {exit(1);} );
-    } else if( DENSE_SP == decisionB || DENSE_HP == decisionB ) {
-        /* No FP16 TRMM: compute an FP16 tile in FP32 */
+    } else if( mb <= HICMA_PARSEC_TRMM_SGEMM_MAX_NB && dplasmaLeft == side
+               && dplasmaLower == uplo && dplasmaNoTrans == trans ) {
+        /* GEMM with tril(A): the upper triangle zeroed, and 1 on the diagonal if unit */
+        void *L = hicma_parsec_trmm_gpu_convert( A, storageA, DENSE_SP, mb, mb, lda, sr,
+                stream_found->gpu_buffer_A, stream );
+        if( L == A ) {
+            memcpy_float_GPU( lda, mb, A, stream_found->gpu_buffer_A, stream );
+            L = stream_found->gpu_buffer_A;
+        }
+        hicma_parsec_tril_mask_float_GPU( mb, (float *)L, lda, dplasmaUnit == diag, stream );
+        float alpha = (float)lalpha, beta = 0.0f;
+        status = cublasSgemm( handle,
+                dplasma_cublas_op(dplasmaNoTrans), dplasma_cublas_op(dplasmaNoTrans),
+                mb, nb, mb,
+                &alpha, L,    lda,
+                        B_in, ldb,
+                &beta,  out,  ldb );
+        PARSEC_CUDA_CHECK_ERROR( "TRMM diagonal tile SGEMM", status, {exit(1);} );
+    } else {
         void *A_use = hicma_parsec_trmm_gpu_convert( A, storageA, DENSE_SP, mb, mb, lda, sr,
                 stream_found->gpu_buffer_A, stream );
-        void *B_use = hicma_parsec_trmm_gpu_convert( B, storageB, DENSE_SP, mb, nb, ldb, sr,
-                stream_found->gpu_buffer_B, stream );
         float alpha = (float)lalpha;
         status = cublasStrmm( handle,
                 dplasma_cublas_side(side), dplasma_cublas_fill(uplo),
                 dplasma_cublas_op(trans), dplasma_cublas_diag(diag),
                 mb, nb,
                 &alpha, A_use, lda,
-                        B_use, ldb,
-                        B_use, ldb );
+                        B_in,  ldb,
+                        out,   ldb );
         PARSEC_CUDA_CHECK_ERROR( "cublasStrmm", status, {exit(1);} );
+    }
 
-        /* Back to the storage precision of B */
-        if( B_use != B ) {
-            hicma_parsec_trmm_gpu_convert( B_use, DENSE_SP, storageB, mb, nb, ldb, sr, B, stream );
-        }
-    } else {
-        hicma_parsec_trmm_bad_precision( "hicma_parsec_trmm_core_trmm_lln_gpu", decisionB, decisionB );
+    /* Back to the storage precision of B */
+    if( out != B ) {
+        hicma_parsec_trmm_gpu_convert( out, prec, storageB, mb, nb, ldb, sr, B, stream );
     }
 }
 

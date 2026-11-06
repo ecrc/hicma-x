@@ -879,6 +879,20 @@ void memcpy_float_GPU( int nrows, int ncols, void *_src, void *_dest, cudaStream
 void memcpy_half_GPU( int nrows, int ncols, void *_src, void *_dest, cudaStream_t stream );
 
 /**
+ * @brief Keep the lower triangle of an FP32 tile in place
+ *
+ * Zeroes the strictly upper triangle of the n x n tile L and, if unit is set,
+ * writes 1 on its diagonal (TRMM diagonal tile computed as a GEMM).
+ *
+ * @param[in] n Order of the tile
+ * @param[in,out] L Tile (single precision)
+ * @param[in] ldl Leading dimension of L
+ * @param[in] unit Nonzero for a unit diagonal
+ * @param[in] stream CUDA stream
+ */
+void hicma_parsec_tril_mask_float_GPU( int n, float *L, int ldl, int unit, cudaStream_t stream );
+
+/**
  * @brief Copy bfloat16 data from source to destination on GPU
  * 
  * Performs memory copy operation for bfloat16 data on GPU between
