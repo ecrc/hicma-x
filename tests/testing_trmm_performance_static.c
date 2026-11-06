@@ -372,8 +372,10 @@ int main(int argc, char **argv)
             PARSEC_MATRIX_TILE, rank, MB, KB, M, K, 0, 0,
             M, K, P, nodes / P,
             params.KP, params.KQ, 0, 0);
-    /* PARSEC_MATRIX_BYTE plus a two-byte tile stride represents binary16. */
-    dcB.super.bsiz *= (int)sizeof(uint16_t);
+    /* PARSEC_MATRIX_BYTE plus a two-byte tile stride represents binary16;
+     * with --accumulation_fp32, B's FP16 tiles are stored in FP32. */
+    dcB.super.bsiz *= params.accumulation_fp32 ? (int)sizeof(float)
+                                               : (int)sizeof(uint16_t);
     dcB.mat = NULL;
     parsec_data_collection_set_key((parsec_data_collection_t *)&dcB, "dcB_static");
 
@@ -386,7 +388,7 @@ int main(int argc, char **argv)
         (size_t)dcB.super.nb_local_tiles * (size_t)dcB.super.bsiz;
     dcB.mat = parsec_data_allocate(B_allocate_size);
     if (dcB.mat == NULL) {
-        fprintf(stderr, "Contiguous HP allocation for B failed (%zu bytes)\n",
+        fprintf(stderr, "Contiguous allocation for B failed (%zu bytes)\n",
                 B_allocate_size);
         abort();
     }
@@ -407,10 +409,10 @@ int main(int argc, char **argv)
 
     hicma_parsec_memory_allocation_dense_decision(
             parsec, dplasmaLower, (parsec_tiled_matrix_t *)&dcA,
-            params.decisions, 1, 1, pinned_memory, Aseed);
+            params.decisions, 1, 1, 0, pinned_memory, Aseed);
     hicma_parsec_memory_allocation_dense_decision(
             parsec, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcB,
-            params.decisionsB, 0, 0, 0, Bseed);
+            params.decisionsB, 0, 0, params.accumulation_fp32, 0, Bseed);
 
 #if defined(DPLASMA_HAVE_CUDA) || defined(DPLASMA_HAVE_HIP)
     /* Keep each local tile on its preferred GPU across the TRMM taskpool.
@@ -446,7 +448,8 @@ int main(int argc, char **argv)
             printf(" (DP %.2f%%, SP %.2f%%, HP %.2f%%)",
                    portion_dp, portion_sp, portion_hp);
         }
-        printf("; B precision: HP; host memory: %s\n",
+        printf("; B precision: HP%s; host memory: %s\n",
+               params.accumulation_fp32 ? " (stored in FP32)" : "",
                pinned_memory ? "pinned/registered" : "pageable");
     }
     if (params.verbose > 9) {

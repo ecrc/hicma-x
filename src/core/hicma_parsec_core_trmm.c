@@ -14,13 +14,15 @@
  * Every tile has a precision decision (params->decisions for A,
  * params->decisionsB for B) and is stored in the precision returned by
  * hicma_parsec_trmm_storage_precision(): the decision itself, or FP32 for an
- * FP16 decision with --accumulation_fp32.
+ * FP16 tile of B with --accumulation_fp32 (A's FP16 tiles stay in FP16).
  *
  *  - TRMM on B(i,n) computes in the precision of B(i,n): FP64 or FP32 (there
- *    is no FP16 TRMM, an FP16 tile is computed in FP32 and converted back).
+ *    is no FP16 TRMM, an FP16 tile is computed in FP32 and converted back to
+ *    its storage precision).
  *  - GEMM C(i,n) += A(i,k) * B(k,n) computes in the precision of C(i,n). An
- *    FP16 GEMM accumulates in FP16, or in FP32 into an FP32 C with
- *    --accumulation_fp32.
+ *    FP16 GEMM accumulates in FP16, or with --accumulation_fp32 takes FP16
+ *    operands and accumulates in FP32 into the FP32 C (on the CPU, which has
+ *    no such GEMM, it is an FP32 GEMM).
  *
  * Operands in another precision are converted into a workspace buffer first,
  * with stochastic rounding for down-conversions if enabled. Every conversion
@@ -134,9 +136,9 @@ void hicma_parsec_trmm_core_trmm_lln_cpu(
     (void)es;
     int NT = params_tlr->NT;
     int sr = params_tlr->enable_stochastic_rounding;
-    uint16_t storageA = hicma_parsec_trmm_storage_precision(params_tlr, params_tlr->decisions[((NT-1)-m)*NT+(NT-1)-m]);
+    uint16_t storageA = hicma_parsec_trmm_storage_precision(params_tlr, params_tlr->decisions, ((NT-1)-m)*NT+(NT-1)-m);
     uint16_t decisionB = params_tlr->decisionsB[n*NT+(NT-1)-m];
-    uint16_t storageB = hicma_parsec_trmm_storage_precision(params_tlr, decisionB);
+    uint16_t storageB = hicma_parsec_trmm_storage_precision(params_tlr, params_tlr->decisionsB, n*NT+(NT-1)-m);
     hicma_parsec_trmm_tmp_t tA, tB;
 
     if( DENSE_DP == decisionB ) {
@@ -184,12 +186,13 @@ void hicma_parsec_trmm_core_gemm_lln_cpu(
     (void)es;
     int NT = params_tlr->NT;
     int sr = params_tlr->enable_stochastic_rounding;
-    uint16_t storageA = hicma_parsec_trmm_storage_precision(params_tlr, params_tlr->decisions[k*NT+(NT-1)-m]);
-    uint16_t storageB = hicma_parsec_trmm_storage_precision(params_tlr, params_tlr->decisionsB[n*NT+k]);
-    uint16_t storageC = hicma_parsec_trmm_storage_precision(params_tlr, params_tlr->decisionsB[n*NT+(NT-1)-m]);
+    uint16_t storageA = hicma_parsec_trmm_storage_precision(params_tlr, params_tlr->decisions, k*NT+(NT-1)-m);
+    uint16_t storageB = hicma_parsec_trmm_storage_precision(params_tlr, params_tlr->decisionsB, n*NT+k);
+    uint16_t storageC = hicma_parsec_trmm_storage_precision(params_tlr, params_tlr->decisionsB, n*NT+(NT-1)-m);
     hicma_parsec_trmm_tmp_t tA, tB;
 
-    /* A is mb x kb, B is kb x nb, C is mb x nb; compute in C's storage precision */
+    /* A is mb x kb, B is kb x nb, C is mb x nb; compute in C's storage
+     * precision (FP32 for an FP16 C with --accumulation_fp32) */
     void *A_use = hicma_parsec_trmm_cpu_convert( A, storageA, storageC, mb, kb, lda, sr,
             p_work_full_dp, p_work_full_sp, p_work_full_hp, &tA );
     void *B_use = hicma_parsec_trmm_cpu_convert( B, storageB, storageC, kb, nb, ldb, sr,
@@ -298,9 +301,9 @@ void hicma_parsec_trmm_core_trmm_lln_gpu(
     (void)gpu_task;
     int NT = params_tlr->NT;
     int sr = params_tlr->enable_stochastic_rounding;
-    uint16_t storageA = hicma_parsec_trmm_storage_precision(params_tlr, params_tlr->decisions[((NT-1)-m)*NT+(NT-1)-m]);
+    uint16_t storageA = hicma_parsec_trmm_storage_precision(params_tlr, params_tlr->decisions, ((NT-1)-m)*NT+(NT-1)-m);
     uint16_t decisionB = params_tlr->decisionsB[n*NT+(NT-1)-m];
-    uint16_t storageB = hicma_parsec_trmm_storage_precision(params_tlr, decisionB);
+    uint16_t storageB = hicma_parsec_trmm_storage_precision(params_tlr, params_tlr->decisionsB, n*NT+(NT-1)-m);
     cudaStream_t stream = cuda_stream->cuda_stream;
     cublasStatus_t status;
 
@@ -361,10 +364,10 @@ void hicma_parsec_trmm_core_gemm_lln_gpu(
     (void)gpu_task;
     int NT = params_tlr->NT;
     int sr = params_tlr->enable_stochastic_rounding;
-    uint16_t storageA = hicma_parsec_trmm_storage_precision(params_tlr, params_tlr->decisions[k*NT+(NT-1)-m]);
-    uint16_t storageB = hicma_parsec_trmm_storage_precision(params_tlr, params_tlr->decisionsB[n*NT+k]);
+    uint16_t storageA = hicma_parsec_trmm_storage_precision(params_tlr, params_tlr->decisions, k*NT+(NT-1)-m);
+    uint16_t storageB = hicma_parsec_trmm_storage_precision(params_tlr, params_tlr->decisionsB, n*NT+k);
     uint16_t decisionC = params_tlr->decisionsB[n*NT+(NT-1)-m];
-    uint16_t storageC = hicma_parsec_trmm_storage_precision(params_tlr, decisionC);
+    uint16_t storageC = hicma_parsec_trmm_storage_precision(params_tlr, params_tlr->decisionsB, n*NT+(NT-1)-m);
     cudaStream_t stream = cuda_stream->cuda_stream;
     cublasStatus_t status;
 

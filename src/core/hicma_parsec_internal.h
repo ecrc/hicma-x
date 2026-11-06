@@ -2769,6 +2769,7 @@ int hicma_parsec_memory_allocation_dense_decision(
         uint16_t *decisions,
         int matrix_is_symmetric,
         int hp_allocate_as_sp,
+        int hp_store_as_sp,
         int use_pinned_memory,
         unsigned long long int seed);
 

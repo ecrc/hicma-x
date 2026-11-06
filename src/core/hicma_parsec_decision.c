@@ -725,7 +725,7 @@ int decision_datatype_tile_send_potrf_L_dense_mp_gpu_fp8_sp(uint16_t *decisions,
 
 int decision_datatype_tile_trmm_mp_LLN(const hicma_parsec_params_t *params,
                                        const uint16_t *decisions, int m, int n, int NT) {
-    switch( hicma_parsec_trmm_storage_precision(params, decisions[n*NT+m]) ) {
+    switch( hicma_parsec_trmm_storage_precision(params, decisions, (size_t)n*NT+m) ) {
         case DENSE_DP:
             return PARSEC_trmm_mp_LLN_FULL_DP_ADT_IDX;
         case DENSE_SP:

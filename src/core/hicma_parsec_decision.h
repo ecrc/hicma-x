@@ -428,16 +428,25 @@ void hicma_parsec_get_precision_tile(hicma_parsec_params_t *params_tlr,
         hicma_parsec_decision_enum_t *new_decision, double norm_tile, int m, int n);
 
 /**
- * @brief Storage precision of a TRMM tile with the given precision decision
+ * @brief Storage precision of a TRMM tile
  *
- * With --accumulation_fp32, a tile whose decision is FP16 is stored in FP32:
- * its GEMMs take FP16 operands and accumulate into an FP32 C. Otherwise the
- * storage precision is the decision.
+ * A tile is stored in its precision decision, except with --accumulation_fp32:
+ * a tile of B whose decision is FP16 is then stored in FP32. B's tiles are the
+ * C of the GEMMs, which take FP16 operands and accumulate into the FP32 tile;
+ * when such a tile is a GEMM operand, it is converted to FP16 for that GEMM.
+ * A's FP16 tiles stay in FP16.
+ *
+ * @param [in] decisions params->decisions (tiles of A) or params->decisionsB
+ *                       (tiles of B)
+ * @param [in] idx       index of the tile in decisions
  */
 static inline uint16_t hicma_parsec_trmm_storage_precision(const hicma_parsec_params_t *params,
-                                                           uint16_t decision)
+                                                           const uint16_t *decisions, size_t idx)
 {
-    return (params->accumulation_fp32 && DENSE_HP == decision) ? DENSE_SP : decision;
+    uint16_t decision = decisions[idx];
+    if( params->accumulation_fp32 && DENSE_HP == decision && decisions == params->decisionsB )
+        return DENSE_SP;
+    return decision;
 }
 
 /**

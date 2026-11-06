@@ -66,7 +66,8 @@ uplo                [ type = "dplasma_enum_t" ]
 descA               [ type = "parsec_tiled_matrix_t *" ]
 decisions           [ type = "uint16_t *" ]
 matrix_is_symmetric [ type = "int" ]
-hp_allocate_as_sp   [ type = "int" ]
+hp_allocate_as_sp   [ type = "int" ]   /* FP16 tile in an FP32-sized buffer */
+hp_store_as_sp      [ type = "int" ]   /* FP16 tile stored in FP32 (TRMM B with --accumulation_fp32) */
 use_pinned_memory   [ type = "int" ]
 seed                [ type = "unsigned long long int" ]
 
@@ -83,7 +84,8 @@ RW A <- descA(m, n)
 BODY
 {
     parsec_data_copy_t *copy = this_task->data._f_A.data_out;
-    const uint16_t decision = decisions[n * descA->lmt + m];
+    const uint16_t decision = (hp_store_as_sp && decisions[n * descA->lmt + m] == DENSE_HP)
+                              ? DENSE_SP : decisions[n * descA->lmt + m];
     const int tempmm = (m == descA->mt - 1) ? descA->m - m * descA->mb : descA->mb;
     const int tempnn = (n == descA->nt - 1) ? descA->n - n * descA->nb : descA->nb;
     const int lda = descA->mb;
@@ -159,13 +161,14 @@ hicma_parsec_memory_allocation_dense_decision_New(
         uint16_t *decisions,
         int matrix_is_symmetric,
         int hp_allocate_as_sp,
+        int hp_store_as_sp,
         int use_pinned_memory,
         unsigned long long int seed)
 {
     parsec_memory_allocation_dense_decision_taskpool_t *taskpool =
         parsec_memory_allocation_dense_decision_new(
                 uplo, A, decisions, matrix_is_symmetric,
-                hp_allocate_as_sp, use_pinned_memory, seed);
+                hp_allocate_as_sp, hp_store_as_sp, use_pinned_memory, seed);
     return (parsec_taskpool_t *)taskpool;
 }
 
@@ -182,13 +185,14 @@ int hicma_parsec_memory_allocation_dense_decision(
         uint16_t *decisions,
         int matrix_is_symmetric,
         int hp_allocate_as_sp,
+        int hp_store_as_sp,
         int use_pinned_memory,
         unsigned long long int seed)
 {
     parsec_taskpool_t *taskpool =
         hicma_parsec_memory_allocation_dense_decision_New(
                 uplo, A, decisions, matrix_is_symmetric,
-                hp_allocate_as_sp, use_pinned_memory, seed);
+                hp_allocate_as_sp, hp_store_as_sp, use_pinned_memory, seed);
 
     if (taskpool != NULL) {
         parsec_context_add_taskpool(parsec, taskpool);
