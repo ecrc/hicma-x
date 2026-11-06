@@ -83,6 +83,27 @@ int main(int argc, char **argv)
             (size_t)parsec_datadist_getsizeoftype(dcC.super.mtype));
     parsec_data_collection_set_key((parsec_data_collection_t *)&dcC, "dcC");
 
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    /* Pin A and C once. Otherwise PaRSEC registers and unregisters both
+     * matrices with every taskpool, inside every timed TRMM. */
+    const size_t A_size = (size_t)dcA.super.nb_local_tiles * (size_t)dcA.super.bsiz *
+                          (size_t)parsec_datadist_getsizeoftype(dcA.super.mtype);
+    const size_t C_size = (size_t)dcC.super.nb_local_tiles * (size_t)dcC.super.bsiz *
+                          (size_t)parsec_datadist_getsizeoftype(dcC.super.mtype);
+    const int host_registered = (gpus > 0);
+    if (host_registered) {
+        dcA.super.super.register_memory = NULL;
+        dcA.super.super.unregister_memory = NULL;
+        dcC.super.super.register_memory = NULL;
+        dcC.super.super.unregister_memory = NULL;
+        if (cudaSuccess != cudaHostRegister(dcA.mat, A_size, cudaHostRegisterDefault) ||
+            cudaSuccess != cudaHostRegister(dcC.mat, C_size, cudaHostRegisterDefault)) {
+            fprintf(stderr, "Unable to register the host memory of A and C\n");
+            abort();
+        }
+    }
+#endif
+
 #if (defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)) && GPU_BUFFER_ONCE
     gpu_temporay_buffer_init(&data, &params, MB, NB, 0, params.kind_of_cholesky);
 #endif
@@ -206,6 +227,12 @@ int main(int argc, char **argv)
     gpu_temporay_buffer_fini(&data, params.kind_of_cholesky);
 #endif
 
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    if (host_registered) {
+        cudaHostUnregister(dcA.mat);
+        cudaHostUnregister(dcC.mat);
+    }
+#endif
     parsec_data_free(dcA.mat);
     parsec_tiled_matrix_destroy((parsec_tiled_matrix_t *)&dcA);
     parsec_data_free(dcC.mat);
