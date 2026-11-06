@@ -204,8 +204,8 @@ int main(int argc, char ** argv)
                 MPI_Barrier(MPI_COMM_WORLD);
 #endif
                 gettimeofday(&tstart, NULL);
-                if (hicma_parsec_trmm(parsec, side, uplo, trans, diags[d],
-                                      alpha, dcA, (parsec_tiled_matrix_t *)&dcC, &data, &params) != 0) {
+                if (run_trmm(parsec, side, uplo, trans, diags[d],
+                             alpha, dcA, (parsec_tiled_matrix_t *)&dcC, &data, &params) != 0) {
                     ret |= 1;
                 }
 #if defined(PARSEC_HAVE_MPI)

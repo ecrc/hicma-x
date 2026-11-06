@@ -312,20 +312,6 @@ int main(int argc, char **argv)
     parsec = hicma_parsec_setup_parsec(argc, argv, &params);
     hicma_parsec_params_print_initial(&params);
 
-#if !HAVE_HP_CPU
-    if (params.nruns > 0 && params.gpus == 0) {
-        if (params.rank == 0) {
-            fprintf(stderr,
-                    "Static TRMM stores B in HP and therefore requires an "
-                    "enabled GPU when HAVE_HP_CPU=0. Use --nruns 0 for a "
-                    "CPU-only allocation/free test.\n");
-        }
-        hicma_parsec_cleanup_parsec(parsec, &params);
-        ret = 1;
-        goto free_parameters;
-    }
-#endif
-
     const int M = params.M;
     const int K = params.K;
     const int MB = params.MB;

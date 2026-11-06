@@ -287,7 +287,7 @@ void hicma_parsec_trmm_core_gemm_lln_cpu(
     }
 #endif
     else {
-        hicma_parsec_trmm_bad_precision( "hicma_parsec_trmm_core_gemm_lln_cpu", storageC, storageC );
+        hicma_parsec_trmm_bad_precision( "hicma_parsec_trmm_core_gemm_lln_cpu", compute, compute );
     }
 
     if( C_use != C ) {
