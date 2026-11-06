@@ -72,7 +72,7 @@ BODY
             }
 
             // Update element count for double precision
-            this_task->data._f_A.data_out->original->nb_elts = descA->mb * descA->nb * sizeof(double);
+            this_task->data._f_A.data_out->original->span = descA->mb * descA->nb * sizeof(double);
             
             // Convert from single to double precision using LAPACK
             LAPACKE_slag2d( LAPACK_COL_MAJOR, descA->mb, descA->nb, A_save, descA->mb, this_task->data._f_A.data_out->device_private, descA->mb );
@@ -100,7 +100,7 @@ BODY
             // TODO: implement a better memory management strategy
             //printf("s2d %d %d : old_rank %d new_rank %d\n", m, n, rank_old, rank);
             this_task->data._f_A.data_out->device_private = malloc( descA->mb * rank * 2 * sizeof(double) );
-            this_task->data._f_A.data_out->original->nb_elts = descA->mb * rank * 2 * sizeof(double);
+            this_task->data._f_A.data_out->original->span = descA->mb * rank * 2 * sizeof(double);
             
             // Convert low-rank U*V format from single to double precision
             LAPACKE_slag2d( LAPACK_COL_MAJOR, descA->mb, rank * 2, A_save, descA->mb, this_task->data._f_A.data_out->device_private, descA->mb );

@@ -178,7 +178,7 @@ BODY
 #if GENOMICS_ALLOCATE_SP
     // Allocate single precision data structure
     this_task->data._f_A.data_out = parsec_data_copy_new(data_of_descA(m, n), 0, PARSEC_genotype_generator_FULL_SP_ADT->opaque_dtt, PARSEC_DATA_FLAG_PARSEC_MANAGED);
-    this_task->data._f_A.data_out->original->nb_elts = descA->mb * descA->nb * sizeof(float);
+    this_task->data._f_A.data_out->original->span = descA->mb * descA->nb * sizeof(float);
 
     // Allocate device memory based on GPU availability
     if( params_tlr->gpus > 0 ) {
@@ -217,18 +217,18 @@ BODY
             // Allocate int8 data for last row (memory-efficient for genotype data)
             this_task->data._f_A.data_out = parsec_data_copy_new(data_of_descA(m, n), 0, PARSEC_genotype_generator_FULL_I8_ADT->opaque_dtt, PARSEC_DATA_FLAG_PARSEC_MANAGED);
             cudaMallocHost((void**)&this_task->data._f_A.data_out->device_private, descA->mb * descA->nb * sizeof(int8_t));
-            this_task->data._f_A.data_out->original->nb_elts = descA->mb * descA->nb * sizeof(int8_t);
+            this_task->data._f_A.data_out->original->span = descA->mb * descA->nb * sizeof(int8_t);
         #else
             // Allocate single precision data for last row (higher precision for phenotype data)
             this_task->data._f_A.data_out = parsec_data_copy_new(data_of_descA(m, n), 0, PARSEC_genotype_generator_FULL_SP_ADT->opaque_dtt, PARSEC_DATA_FLAG_PARSEC_MANAGED);
             cudaMallocHost((void**)&this_task->data._f_A.data_out->device_private, descA->mb * descA->nb * sizeof(float));
-            this_task->data._f_A.data_out->original->nb_elts = descA->mb * descA->nb * sizeof(float);
+            this_task->data._f_A.data_out->original->span = descA->mb * descA->nb * sizeof(float);
         #endif
         } else {
             // Non-last rows: use int8 data (memory-efficient for genotype data)
             this_task->data._f_A.data_out = parsec_data_copy_new(data_of_descA(m, n), 0, PARSEC_genotype_generator_FULL_I8_ADT->opaque_dtt, PARSEC_DATA_FLAG_PARSEC_MANAGED);
             cudaMallocHost((void**)&this_task->data._f_A.data_out->device_private, descA->mb * descA->nb * sizeof(int8_t));
-            this_task->data._f_A.data_out->original->nb_elts = descA->mb * descA->nb * sizeof(int8_t);
+            this_task->data._f_A.data_out->original->span = descA->mb * descA->nb * sizeof(int8_t);
         }
 #endif
 
@@ -238,12 +238,12 @@ BODY
             // Last row: use single precision data (higher precision for phenotype data)
             this_task->data._f_A.data_out = parsec_data_copy_new(data_of_descA(m, n), 0, PARSEC_genotype_generator_FULL_SP_ADT->opaque_dtt, PARSEC_DATA_FLAG_PARSEC_MANAGED);
             hipHostMalloc((void**)&this_task->data._f_A.data_out->device_private, descA->mb * descA->nb * sizeof(float), hipHostMallocDefault);
-            this_task->data._f_A.data_out->original->nb_elts = descA->mb * descA->nb * sizeof(float);
+            this_task->data._f_A.data_out->original->span = descA->mb * descA->nb * sizeof(float);
         } else {
             // Non-last rows: use int8 data (memory-efficient for genotype data)
             this_task->data._f_A.data_out = parsec_data_copy_new(data_of_descA(m, n), 0, PARSEC_genotype_generator_FULL_I8_ADT->opaque_dtt, PARSEC_DATA_FLAG_PARSEC_MANAGED);
             hipHostMalloc((void**)&this_task->data._f_A.data_out->device_private, descA->mb * descA->nb * sizeof(int8_t), hipHostMallocDefault);
-            this_task->data._f_A.data_out->original->nb_elts = descA->mb * descA->nb * sizeof(int8_t);
+            this_task->data._f_A.data_out->original->span = descA->mb * descA->nb * sizeof(int8_t);
         }
 #endif
     }
@@ -255,18 +255,18 @@ BODY
             // Allocate int8 data for last row (memory-efficient for genotype data)
             this_task->data._f_A.data_out = parsec_data_copy_new(data_of_descA(m, n), 0, PARSEC_genotype_generator_FULL_I8_ADT->opaque_dtt, PARSEC_DATA_FLAG_PARSEC_MANAGED);
             this_task->data._f_A.data_out->device_private = calloc(descA->mb * descA->nb, sizeof(int8_t));
-            this_task->data._f_A.data_out->original->nb_elts = descA->mb * descA->nb * sizeof(int8_t);
+            this_task->data._f_A.data_out->original->span = descA->mb * descA->nb * sizeof(int8_t);
             #else
             // Allocate single precision data for last row (higher precision for phenotype data)
             this_task->data._f_A.data_out = parsec_data_copy_new(data_of_descA(m, n), 0, PARSEC_genotype_generator_FULL_SP_ADT->opaque_dtt, PARSEC_DATA_FLAG_PARSEC_MANAGED);
             this_task->data._f_A.data_out->device_private = calloc(descA->mb * descA->nb, sizeof(float));
-            this_task->data._f_A.data_out->original->nb_elts = descA->mb * descA->nb * sizeof(float);
+            this_task->data._f_A.data_out->original->span = descA->mb * descA->nb * sizeof(float);
             #endif
         } else {
             // Non-last rows: use int8 data (memory-efficient for genotype data)
             this_task->data._f_A.data_out = parsec_data_copy_new(data_of_descA(m, n), 0, PARSEC_genotype_generator_FULL_I8_ADT->opaque_dtt, PARSEC_DATA_FLAG_PARSEC_MANAGED);
             this_task->data._f_A.data_out->device_private = calloc(descA->mb * descA->nb, sizeof(int8_t));
-            this_task->data._f_A.data_out->original->nb_elts = descA->mb * descA->nb * sizeof(int8_t);
+            this_task->data._f_A.data_out->original->span = descA->mb * descA->nb * sizeof(int8_t);
         }
     }
 

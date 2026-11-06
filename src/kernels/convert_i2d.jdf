@@ -55,7 +55,7 @@ BODY
    }
    
    // Update element count for double precision
-   this_task->data._f_A.data_out->original->nb_elts = descA->mb * descA->nb * sizeof(double);
+   this_task->data._f_A.data_out->original->span = descA->mb * descA->nb * sizeof(double);
 }
 END
 

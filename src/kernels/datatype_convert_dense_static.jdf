@@ -69,7 +69,7 @@ BODY
     
     // Perform the datatype conversion on the tile
     // This function handles the actual conversion logic based on convert_type
-    convert_datatype_unary_CPU(A, tempmm, tempnn, ldam, convert_type, &this_task->data._f_A.data_out->original->nb_elts);
+    convert_datatype_unary_CPU(A, tempmm, tempnn, ldam, convert_type, &this_task->data._f_A.data_out->original->span);
 }
 END
 

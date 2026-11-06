@@ -71,11 +71,11 @@ BODY
             if( IS_ALLOCATE_DP(m, n) ) { 
                 //printf("(%d %d) Allocate in DP\n", m, n);
                 cudaMallocHost((void**)&this_task->data._f_D.data_out->device_private, descA->mb * descA->mb * sizeof(double));
-                this_task->data._f_D.data_out->original->nb_elts = descA->mb * descA->mb * sizeof(double);
+                this_task->data._f_D.data_out->original->span = descA->mb * descA->mb * sizeof(double);
             } else {
                 //printf("(%d %d) Allocate in SP\n", m, n);
                 cudaMallocHost((void**)&this_task->data._f_D.data_out->device_private, descA->mb * descA->mb * sizeof(float));
-                this_task->data._f_D.data_out->original->nb_elts = descA->mb * descA->mb * sizeof(float);
+                this_task->data._f_D.data_out->original->span = descA->mb * descA->mb * sizeof(float);
             }
 #endif
 
@@ -83,10 +83,10 @@ BODY
             // Allocate pinned host memory for HIP operations
             if( IS_ALLOCATE_DP(m, n) ) { 
                 hipHostMalloc((void**)&this_task->data._f_D.data_out->device_private, descA->mb * descA->mb * sizeof(double), hipHostMallocDefault);
-                this_task->data._f_D.data_out->original->nb_elts = descA->mb * descA->mb * sizeof(double);
+                this_task->data._f_D.data_out->original->span = descA->mb * descA->mb * sizeof(double);
             } else {
                 hipHostMalloc((void**)&this_task->data._f_D.data_out->device_private, descA->mb * descA->mb * sizeof(float), hipHostMallocDefault);
-                this_task->data._f_D.data_out->original->nb_elts = descA->mb * descA->mb * sizeof(float);
+                this_task->data._f_D.data_out->original->span = descA->mb * descA->mb * sizeof(float);
             }
             // hipHostMallocNumaUser
             // https://github.com/ROCm-Developer-Tools/HIP/issues/2475
@@ -98,10 +98,10 @@ BODY
             // Allocate regular host memory for CPU operations
             if( IS_ALLOCATE_DP(m, n) ) { 
                 this_task->data._f_D.data_out->device_private = calloc(descA->mb * descA->mb, sizeof(double));
-                this_task->data._f_D.data_out->original->nb_elts = descA->mb * descA->mb * sizeof(double);
+                this_task->data._f_D.data_out->original->span = descA->mb * descA->mb * sizeof(double);
             } else {
                 this_task->data._f_D.data_out->device_private = calloc(descA->mb * descA->mb, sizeof(float));
-                this_task->data._f_D.data_out->original->nb_elts = descA->mb * descA->mb * sizeof(float);
+                this_task->data._f_D.data_out->original->span = descA->mb * descA->mb * sizeof(float);
             }
         }
     }
@@ -335,8 +335,8 @@ BODY
         }
         this_task->data._f_A.data_out->device_private = calloc(size, sizeof(double));
 
-        /* New nb_elts for data_of(m, n) */
-        (data_of_descA(m, n))->nb_elts = size * sizeof(double);
+        /* New span for data_of(m, n) */
+        (data_of_descA(m, n))->span = size * sizeof(double);
 
 	if( 0 != rank ) {
 		/* Copy U to A */

@@ -365,7 +365,7 @@ BODY [type=CUDA]
     if( params_tlr->decisions_send[k*params_tlr->NT+k] != DENSE_DP ) {
         hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
         double2float_GPU( descA->mb, descA->nb, T0, descA->mb, T, descA->mb, cuda_stream->cuda_stream );
-        this_task->data._f_T.data_out->original->nb_elts = descA->mb * descA->nb * sizeof(float);
+        this_task->data._f_T.data_out->original->span = descA->mb * descA->nb * sizeof(float);
         /* Remote TRSMs read the host copy of this NEW buffer */
         HICMA_PARSEC_GPU_PUSHOUT(gpu_task, "T");
     }
@@ -380,7 +380,7 @@ BODY [type=HIP]
     if( params_tlr->decisions_send[k*params_tlr->NT+k] != DENSE_DP ) {
         hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
         double2float_GPU( descA->mb, descA->nb, T0, descA->mb, T, descA->mb, cuda_stream->cuda_stream );
-        this_task->data._f_T.data_out->original->nb_elts = descA->mb * descA->nb * sizeof(float);
+        this_task->data._f_T.data_out->original->span = descA->mb * descA->nb * sizeof(float);
         /* Remote TRSMs read the host copy of this NEW buffer */
         HICMA_PARSEC_GPU_PUSHOUT(gpu_task, "T");
     } 
@@ -394,7 +394,7 @@ BODY
     if( params_tlr->decisions_send[k*params_tlr->NT+k] != DENSE_DP ) {
         hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
         LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, T0, descA->mb, T, descA->mb );
-        this_task->data._f_T.data_out->original->nb_elts = descA->mb * descA->nb * sizeof(float);
+        this_task->data._f_T.data_out->original->span = descA->mb * descA->nb * sizeof(float);
     }
 }
 END
@@ -650,7 +650,7 @@ BODY [type=CUDA]
     /* Perform precision conversion if needed */
     if( hicma_parsec_convert_in_trsm(params_tlr, m, k) ) {
         /* Update element count for converted data */
-        this_task->data._f_C.data_out->original->nb_elts = this_task->locals.size.value;
+        this_task->data._f_C.data_out->original->span = this_task->locals.size.value;
         /* Remote GEMMs read the host copy of this NEW buffer */
         HICMA_PARSEC_GPU_PUSHOUT(gpu_task, "C");
 
@@ -706,7 +706,7 @@ BODY [type=HIP]
     /* Perform precision conversion if needed */
     if( hicma_parsec_convert_in_trsm(params_tlr, m, k) ) {
         /* Update element count for converted data */
-        this_task->data._f_C.data_out->original->nb_elts = this_task->locals.size.value;
+        this_task->data._f_C.data_out->original->span = this_task->locals.size.value;
         /* Remote GEMMs read the host copy of this NEW buffer */
         HICMA_PARSEC_GPU_PUSHOUT(gpu_task, "C");
 
@@ -1322,7 +1322,7 @@ BODY
                 if( NULL != this_task->data._f_C.data_out->device_private )
                     free( this_task->data._f_C.data_out->device_private ); 
                 this_task->data._f_C.data_out->device_private = calloc( descA->mb * new_UVrk * 2, sizeof(double) );
-                this_task->data._f_C.data_out->original->nb_elts = descA->mb * new_UVrk * 2 * sizeof(double);
+                this_task->data._f_C.data_out->original->span = descA->mb * new_UVrk * 2 * sizeof(double);
             }
 
             /* Address for Cu and Cv to be copied to */
@@ -1458,7 +1458,7 @@ BODY
                 if( NULL != this_task->data._f_C.data_out->device_private )
                     free( this_task->data._f_C.data_out->device_private ); 
                 this_task->data._f_C.data_out->device_private = calloc( descA->mb * new_UVrk * 2, sizeof(float) );
-                this_task->data._f_C.data_out->original->nb_elts = descA->mb * new_UVrk * 2 * sizeof(float);
+                this_task->data._f_C.data_out->original->span = descA->mb * new_UVrk * 2 * sizeof(float);
             }
 
             /* Address for Cu and Cv to be copied to */
@@ -1643,7 +1643,7 @@ BODY
                 if( NULL != this_task->data._f_C.data_out->device_private )
                     free( this_task->data._f_C.data_out->device_private ); 
                 this_task->data._f_C.data_out->device_private = calloc( descA->mb * new_UVrk * 2, sizeof(double) );
-                this_task->data._f_C.data_out->original->nb_elts = descA->mb * new_UVrk * 2 * sizeof(double);
+                this_task->data._f_C.data_out->original->span = descA->mb * new_UVrk * 2 * sizeof(double);
             }
 
             /* Address for Cu and Cv to be copied to */
@@ -1782,7 +1782,7 @@ BODY
                 if( NULL != this_task->data._f_C.data_out->device_private )
                     free( this_task->data._f_C.data_out->device_private ); 
                 this_task->data._f_C.data_out->device_private = calloc( descA->mb * new_UVrk * 2, sizeof(float) );
-                this_task->data._f_C.data_out->original->nb_elts = descA->mb * new_UVrk * 2 * sizeof(float);
+                this_task->data._f_C.data_out->original->span = descA->mb * new_UVrk * 2 * sizeof(float);
             }
 
             /* Address for Cu and Cv to be copied to */

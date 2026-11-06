@@ -34,7 +34,7 @@ BODY
             free(pointer);
         }
         copy->device_private = NULL;
-        copy->original->nb_elts = 0;
+        copy->original->span = 0;
     }
 }
 END

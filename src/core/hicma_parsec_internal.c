@@ -762,6 +762,19 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
 #endif
     free(value);
 
+#if defined(PARSEC_MPI_IS_GPU_AWARE)
+    /* With a GPU-aware MPI, PaRSEC receives remote data straight into GPU
+     * memory when the successor's task class has a GPU body. The GPU bodies
+     * here return PARSEC_HOOK_RETURN_NEXT for low-rank tiles and run the CPU
+     * body instead, which would then read a copy that exists only on the GPU
+     * (garbage in the low-rank GEMMs and crashes with band_size_dense > 1 on
+     * several ranks). Keep sending from GPU memory (2) but receive in host
+     * memory, unless the user chose a value. */
+    if( NULL == getenv("PARSEC_MCA_mpi_gpu_aware") ) {
+        parsec_setenv_mca_param( "mpi_gpu_aware", "2", &environ );
+    }
+#endif
+
     // Enable GPU debugging output if verbose mode is enabled
     if(params->gpus > 0 && params->verbose > 5) {
         parsec_setenv_mca_param( "device_show_capabilities", "1", &environ );
