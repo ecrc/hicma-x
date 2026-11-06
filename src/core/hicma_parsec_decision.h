@@ -455,6 +455,12 @@ static inline uint16_t hicma_parsec_trmm_storage_precision(const hicma_parsec_pa
 int decision_datatype_tile_trmm_mp_LLN(const hicma_parsec_params_t *params,
                                        const uint16_t *decisions, int m, int n, int NT);
 
+/**
+ * @brief Arena index of TRMM tile (m, n) in its precision decision (the
+ * operand copies of B, which the GEMMs read)
+ */
+int decision_datatype_tile_trmm_operand_LLN(const uint16_t *decisions, int m, int n, int NT);
+
 #ifdef __cplusplus
 }
 #endif

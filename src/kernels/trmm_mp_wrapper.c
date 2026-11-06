@@ -115,6 +115,28 @@ hicma_parsec_trmm_New( dplasma_enum_t side,  dplasma_enum_t uplo,
         return NULL;
     }
 
+    /* Operand copies of B (see read_B in trmm_mp_LLN.jdf): B(k,n) gets one
+     * if a GEMM reading it runs on another rank, or if it is stored in
+     * another precision than its decision (--accumulation_fp32). The other
+     * tiles are read in place. */
+    {
+        int mt = B->mt, nt = B->nt;
+        uint8_t *copy = (uint8_t *)calloc((size_t)mt * nt, sizeof(uint8_t));
+        for (int n = 0; n < nt; n++) {
+            for (int k = 0; k < mt - 1; k++) {
+                size_t idx = (size_t)n * params->NT + k;
+                int c = hicma_parsec_trmm_storage_precision(params, params->decisionsB, idx)
+                        != params->decisionsB[idx];
+                uint32_t owner = B->super.rank_of(&B->super, k, n);
+                for (int j = k + 1; !c && j < mt; j++) {
+                    c = (B->super.rank_of(&B->super, j, n) != owner);
+                }
+                copy[(size_t)n * mt + k] = (uint8_t)c;
+            }
+        }
+        parsec_trmm->_g_trmm_copy = copy;
+    }
+
     /* Full matrix memory pools for different precision types */
     parsec_trmm->_g_p_work_full_dp = (parsec_memory_pool_t*)malloc(sizeof(parsec_memory_pool_t));
     parsec_private_memory_init( parsec_trmm->_g_p_work_full_dp, A->mb * A->mb * sizeof(double) );
@@ -201,6 +223,7 @@ hicma_parsec_trmm_Destruct( parsec_taskpool_t *tp )
     free( otrmm->_g_p_work_full_dp );
     free( otrmm->_g_p_work_full_sp );
     free( otrmm->_g_p_work_full_hp );
+    free( otrmm->_g_trmm_copy );
 
     parsec_taskpool_free(tp);
 }

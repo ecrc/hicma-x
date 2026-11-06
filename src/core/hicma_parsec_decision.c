@@ -738,6 +738,20 @@ int decision_datatype_tile_trmm_mp_LLN(const hicma_parsec_params_t *params,
     }
 }
 
+int decision_datatype_tile_trmm_operand_LLN(const uint16_t *decisions, int m, int n, int NT) {
+    switch( decisions[(size_t)n*NT+m] ) {
+        case DENSE_DP:
+            return PARSEC_trmm_mp_LLN_FULL_DP_ADT_IDX;
+        case DENSE_SP:
+            return PARSEC_trmm_mp_LLN_FULL_SP_ADT_IDX;
+        case DENSE_HP:
+            return PARSEC_trmm_mp_LLN_FULL_HP_ADT_IDX;
+        default:
+            fprintf(stderr, "The decision is not correct! \n");
+            return -1;
+    }
+}
+
 /**
  * @brief Determine the precision of that tile 
  *

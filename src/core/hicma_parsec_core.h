@@ -817,6 +817,19 @@ void hicma_parsec_trmm_core_trmm_lln_gpu(
         void *B, int ldb,
         int m, int n);
 
+/**
+ * @brief Operand copy of TRMM tile B(k,n) on the GPU: Bop = B(k,n) in its
+ * precision decision (converted from FP32 storage with --accumulation_fp32)
+ */
+void hicma_parsec_trmm_core_copy_b_gpu(
+        hicma_parsec_params_t *params_tlr,
+        parsec_potrf_workspace_t *ws_gpu,
+        parsec_device_cuda_module_t *cuda_device,
+        parsec_gpu_task_t *gpu_task,
+        parsec_cuda_exec_stream_t *cuda_stream,
+        void *B, void *Bop, int rows, int cols, int ld,
+        int k, int n);
+
 #endif /* HICMA_PARSEC_HAVE_CUDA */
 
 /**
@@ -877,6 +890,15 @@ void hicma_parsec_trmm_core_gemm_lln_cpu(
         double lbeta, void *C, int ldc,
         int m, int n, int k);
 
+
+/**
+ * @brief Operand copy of TRMM tile B(k,n) on the CPU: Bop = B(k,n) in its
+ * precision decision (converted from FP32 storage with --accumulation_fp32)
+ */
+void hicma_parsec_trmm_core_copy_b_cpu(
+        hicma_parsec_params_t *params_tlr,
+        void *B, void *Bop, int rows, int cols, int ld,
+        int k, int n);
 
 void hicma_parsec_trmm_core_trmm_lln_cpu(
         hicma_parsec_params_t *params_tlr,
