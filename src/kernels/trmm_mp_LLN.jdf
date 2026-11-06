@@ -69,7 +69,7 @@ cuda_device_index    [ type = "int *" hidden = on default = "NULL"]  /* Array of
  *
  * Memory Layout Strategy:
  * The arena is designed to support seamless precision conversion and efficient
- * memory management across different computational phases of the Cholesky factorization.
+ * memory management across the mixed-precision tiles of the TRMM.
  */
 my_arena(k)
 
@@ -206,7 +206,7 @@ BODY
 }
 END
 
-dtrmm(m, n) [ flops = inline_c %{ return FLOPS_DTRMM(side, CLEAN_MB(descB, m), CLEAN_NB(descB, n)); %} ]
+dtrmm(m, n) [ flops = inline_c %{ return FLOPS_DTRMM(side, CLEAN_MB(descB, (descB->mt-1)-m), CLEAN_NB(descB, n)); %} ]
   /* Execution Space */
   m = 0..(descB->mt-1)
   n = 0..(descB->nt-1)
@@ -302,7 +302,7 @@ BODY
 END
 
 
-dgemm(m, n, k) [ flops = inline_c %{ return FLOPS_DGEMM(CLEAN_MB(descB, m), CLEAN_NB(descB, n), descB->mb); %} ]
+dgemm(m, n, k) [ flops = inline_c %{ return FLOPS_DGEMM(CLEAN_MB(descB, (descB->mt-1)-m), CLEAN_NB(descB, n), descB->mb); %} ]
   /* Execution Space */
   m = 0..(descB->mt-2)
   n = 0..(descB->nt-1)

@@ -64,10 +64,8 @@ BODY [ type = CUDA ]
 {
     // Perform the datatype conversion on the tile
     // This function handles the actual conversion logic based on decisions
-    //printf("111111 %d %d: %d\n", m, n, this_task->data._f_A.data_out->original->nb_elts);
     uint16_t current_decision = hicma_parsec_trmm_storage_precision(params_tlr, decisions, (size_t)n*descA->lmt+m);
     convert_datatype_adaptive_unary_GPU(ws_gpu, cuda_device, gpu_task, cuda_stream, A, descA->mb, descA->nb, descA->mb, current_decision, convert_direction, enable_stochastic_rounding, &this_task->data._f_A.data_out->original->nb_elts);
-    //printf("222222 %d %d: %d\n", m, n, this_task->data._f_A.data_out->original->nb_elts);
 }
 END
 
@@ -75,10 +73,8 @@ BODY [ type = HIP ]
 {
     // Perform the datatype conversion on the tile
     // This function handles the actual conversion logic based on decisions
-    //printf("111111 %d %d: %d\n", m, n, this_task->data._f_A.data_out->original->nb_elts);
     uint16_t current_decision = hicma_parsec_trmm_storage_precision(params_tlr, decisions, (size_t)n*descA->lmt+m);
     convert_datatype_adaptive_unary_GPU(ws_gpu, cuda_device, gpu_task, cuda_stream, A, descA->mb, descA->nb, descA->mb, current_decision, convert_direction, enable_stochastic_rounding, &this_task->data._f_A.data_out->original->nb_elts);
-    //printf("222222 %d %d: %d\n", m, n, this_task->data._f_A.data_out->original->nb_elts);
 }
 END
 
@@ -196,7 +192,7 @@ int parsec_datatype_convert_dense_adaptive(parsec_context_t *parsec,
      * a separate CPU-only JDF so every local tile's PaRSEC metadata is updated
      * before the conversion taskpool is created and scheduled.
      */
-    parsec_change_nb_elts(parsec, A, sizeof(double));
+    hicma_parsec_change_nb_elts(parsec, uplo, A, sizeof(double));
 
     // Create the taskpool for datatype conversion
     parsec_datatype_convert_dense_adaptive = parsec_datatype_convert_dense_adaptive_New(data, params, uplo, A, decisions, convert_direction);

@@ -31,8 +31,10 @@
  *    read_B in trmm_mp_LLN.jdf).
  *
  * Operands in another precision are converted into a workspace buffer first,
- * with stochastic rounding for down-conversions if enabled. Every conversion
- * keeps the operand's leading dimension, so the BLAS calls use the tile's.
+ * with stochastic rounding for down-conversions if enabled (except the CPU's
+ * FP16 conversions, HAVE_HP_CPU only, which round to nearest). Every
+ * conversion keeps the operand's leading dimension, so the BLAS calls use the
+ * tile's.
  */
 
 #include "hicma_parsec.h"

@@ -9,70 +9,28 @@
 #include "trmm_mp_LLN.h"
 
 /**
- *******************************************************************************
+ * @brief Taskpool of the mixed-precision TRMM B = alpha * A * B
  *
- * @ingroup dplasma_double
+ * Only side = dplasmaLeft, uplo = dplasmaLower and trans = dplasmaNoTrans are
+ * supported, with diag = dplasmaUnit or dplasmaNonUnit. Every tile of A and
+ * B must be in the storage precision of its decision (params->decisions,
+ * params->decisionsB), as parsec_datatype_convert_dense_adaptive leaves it.
+ * The computation is not done by this call.
  *
- *  hicma_parsec_trmm_New - Generates parsec taskpool to compute:
+ * @param[in] side, uplo, trans, diag See above
+ * @param[in] alpha Scalar alpha
+ * @param[in] A N-by-N lower triangular matrix in NB-by-NB tiles, params->NT
+ *            tiles per dimension. Its strictly upper part is not referenced,
+ *            nor its diagonal if diag = dplasmaUnit.
+ * @param[in,out] B N-by-K matrix in NB-by-NB tiles, at most params->KT tile
+ *            columns. On exit, alpha * A * B.
+ * @param[in] data HiCMA data (GPU workspace)
+ * @param[in] params HiCMA parameters and precision decisions
  *
- *  B = alpha*op( A )*B or B = alpha*B*op( A ).
- *
- *  WARNING: The computations are not done by this call.
- *
- *******************************************************************************
- *
- * @param[in] side
- *          Specifies whether A appears on the left or on the right of X:
- *          = dplasmaLeft:  A*X = B
- *          = dplasmaRight: X*A = B
- *
- * @param[in] uplo
- *          Specifies whether the matrix A is upper triangular or lower triangular:
- *          = dplasmaUpper: Upper triangle of A is stored;
- *          = dplasmaLower: Lower triangle of A is stored.
- *
- * @param[in] trans
- *          Specifies whether the matrix A is transposed, not transposed or ugate transposed:
- *          = dplasmaNoTrans:   A is transposed;
- *          = dplasmaTrans:     A is not transposed;
- *          = dplasmaTrans: A is ugate transposed.
- *
- * @param[in] diag
- *          Specifies whether or not A is unit triangular:
- *          = dplasmaNonUnit: A is non unit;
- *          = dplasmaUnit:    A us unit.
- *
- * @param[in] alpha
- *          alpha specifies the scalar alpha.
- *
- * @param[in] A
- *          Descriptor of the triangular matrix A of size N-by-N.
- *          The triangular matrix A. If uplo = dplasmaUpper, the leading N-by-N upper triangular
- *          part of the array A contains the upper triangular matrix, and the strictly lower
- *          triangular part of A is not referenced. If uplo = dplasmaLower, the leading N-by-N
- *          lower triangular part of the array A contains the lower triangular matrix, and the
- *          strictly upper triangular part of A is not referenced. If diag = dplasmaUnit, the
- *          diagonal elements of A are also not referenced and are assumed to be 1.
- *
- * @param[in,out] B
- *          Descriptor of the N-by-NRHS right hand side B
- *          On entry, the N-by-NRHS right hand side matrix B.
- *          On exit, if return value = 0, the N-by-NRHS solution matrix X.
- *
- *******************************************************************************
- *
- * @return
- *          \retval NULL if incorrect parameters are given.
- *          \retval The parsec taskpool describing the operation that can be
- *          enqueued in the runtime with parsec_context_add_taskpool(). It, then, needs to be
- *          destroy with dplasma_trmm_mp_Destruct();
- *
- *******************************************************************************
- *
- * @sa hicma_parsec_trmm
- * @sa hicma_parsec_trmm_Destruct
- *
- ******************************************************************************/
+ * @return The taskpool, to add with parsec_context_add_taskpool() and free
+ *         with hicma_parsec_trmm_Destruct(); NULL if the arguments are not
+ *         supported.
+ */
 parsec_taskpool_t*
 hicma_parsec_trmm_New( dplasma_enum_t side,  dplasma_enum_t uplo,
                        dplasma_enum_t trans, dplasma_enum_t diag,
@@ -89,8 +47,14 @@ hicma_parsec_trmm_New( dplasma_enum_t side,  dplasma_enum_t uplo,
         return NULL;
     }
 
-    if (A->mb != A->nb) {
-        dplasma_error("hicma_parsec_trmm_New", "mb should be equal to nb");
+    /* The kernels, arenas and memory pools use NB-by-NB tiles, and the
+     * decision arrays NT tile rows and at most KT tile columns */
+    if (A->mb != A->nb || B->mb != A->mb || B->nb != A->mb) {
+        dplasma_error("hicma_parsec_trmm_New", "A and B must have the same square tiles");
+        return NULL;
+    }
+    if (A->m != A->n || A->n != B->m || A->mt != params->NT || B->nt > params->KT) {
+        dplasma_error("hicma_parsec_trmm_New", "A must be N-by-N with NT tile rows, and B N-by-K with at most KT tile columns");
         return NULL;
     }
 
@@ -103,8 +67,6 @@ hicma_parsec_trmm_New( dplasma_enum_t side,  dplasma_enum_t uplo,
 #if !GPU_BUFFER_ONCE
     /* Allocate GPU workspace buffers if not already allocated */
     gpu_temporay_buffer_init(data, params, A->mb, A->nb, 0, 0);
-    //fprintf(stderr, "GPU_BUFFER_ONCE need enable in trmm\n");
-    //return NULL;
 #endif
 #endif
 
@@ -115,10 +77,14 @@ hicma_parsec_trmm_New( dplasma_enum_t side,  dplasma_enum_t uplo,
         return NULL;
     }
 
-    /* Operand copies of B (see read_B in trmm_mp_LLN.jdf): 2 if B(k,n) is
-     * stored in another precision than its decision (--accumulation_fp32),
-     * read converted by all its GEMMs; 1 if a GEMM reading it runs on another
-     * rank, which reads a copy; 0 otherwise, all reading it in place. */
+    /* Operand copies of B (see read_B in trmm_mp_LLN.jdf):
+     *  2: B(k,n) is stored in another precision than its decision
+     *     (--accumulation_fp32); all its GEMMs read a converted copy.
+     *  1: some GEMMs reading it run on other ranks; they read a copy, and those
+     *     on this rank, the rows congruent to k modulo P, read it in place.
+     *     Used only if the distribution matches that rule (block-cyclic with
+     *     one tile row per process row).
+     *  0: all its GEMMs read it in place. */
     {
         int mt = B->mt, nt = B->nt;
         uint8_t *copy = (uint8_t *)calloc((size_t)mt * nt, sizeof(uint8_t));
@@ -127,9 +93,15 @@ hicma_parsec_trmm_New( dplasma_enum_t side,  dplasma_enum_t uplo,
                 size_t idx = (size_t)n * params->NT + k;
                 int c = (hicma_parsec_trmm_storage_precision(params, params->decisionsB, idx)
                          != params->decisionsB[idx]) ? 2 : 0;
-                uint32_t owner = B->super.rank_of(&B->super, k, n);
-                for (int j = k + 1; !c && j < mt; j++) {
-                    c = (B->super.rank_of(&B->super, j, n) != owner);
+                if (0 == c) {
+                    uint32_t owner = B->super.rank_of(&B->super, k, n);
+                    int remote = 0, stride_ok = 1;
+                    for (int j = k + 1; j < mt; j++) {
+                        int same = (B->super.rank_of(&B->super, j, n) == owner);
+                        remote |= !same;
+                        stride_ok &= (same == (0 == (j - k) % params->P));
+                    }
+                    c = (remote && stride_ok) ? 1 : 0;
                 }
                 copy[(size_t)n * mt + k] = (uint8_t)c;
             }
@@ -229,69 +201,14 @@ hicma_parsec_trmm_Destruct( parsec_taskpool_t *tp )
 }
 
 /**
- *******************************************************************************
+ * @brief Mixed-precision TRMM B = alpha * A * B, run to completion
  *
- * @ingroup dplasma_double
+ * Same arguments as hicma_parsec_trmm_New, plus the PaRSEC context.
  *
- *  hicma_parsec_trmm - Computes:
- *
- *  B = alpha*op( A )*B or B = alpha*B*op( A ).
- *
- *******************************************************************************
- *
- * @param[in,out] parsec
- *          The parsec context of the application that will run the operation.
- *
- * @param[in] side
- *          Specifies whether A appears on the left or on the right of X:
- *          = dplasmaLeft:  A*X = B
- *          = dplasmaRight: X*A = B
- *
- * @param[in] uplo
- *          Specifies whether the matrix A is upper triangular or lower triangular:
- *          = dplasmaUpper: Upper triangle of A is stored;
- *          = dplasmaLower: Lower triangle of A is stored.
- *
- * @param[in] trans
- *          Specifies whether the matrix A is transposed, not transposed or ugate transposed:
- *          = dplasmaNoTrans:   A is transposed;
- *          = dplasmaTrans:     A is not transposed;
- *          = dplasmaTrans: A is ugate transposed.
- *
- * @param[in] diag
- *          Specifies whether or not A is unit triangular:
- *          = dplasmaNonUnit: A is non unit;
- *          = dplasmaUnit:    A us unit.
- *
- * @param[in] alpha
- *          alpha specifies the scalar alpha.
- *
- * @param[in] A
- *          Descriptor of the triangular matrix A of size N-by-N.
- *          The triangular matrix A. If uplo = dplasmaUpper, the leading N-by-N upper triangular
- *          part of the array A contains the upper triangular matrix, and the strictly lower
- *          triangular part of A is not referenced. If uplo = dplasmaLower, the leading N-by-N
- *          lower triangular part of the array A contains the lower triangular matrix, and the
- *          strictly upper triangular part of A is not referenced. If diag = dplasmaUnit, the
- *          diagonal elements of A are also not referenced and are assumed to be 1.
- *
- * @param[in,out] B
- *          Descriptor of the N-by-NRHS right hand side B
- *          On entry, the N-by-NRHS right hand side matrix B.
- *          On exit, if return value = 0, the N-by-NRHS solution matrix X.
- *
- *******************************************************************************
- *
- * @return
- *          \retval -i if the ith parameters is incorrect.
- *          \retval 0 on success.
- *
- *******************************************************************************
- *
- * @sa hicma_parsec_trmm_New
- * @sa hicma_parsec_trmm_Destruct
- *
- ******************************************************************************/
+ * @return 0 on success, -1 for an unsupported side, uplo, trans or diag, -2
+ *         if A is not N-by-N with B N-by-K, -101 if the taskpool could not be
+ *         created.
+ */
 int
 hicma_parsec_trmm( parsec_context_t *parsec,
                    dplasma_enum_t side,  dplasma_enum_t uplo,

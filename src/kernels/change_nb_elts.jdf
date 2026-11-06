@@ -1,7 +1,7 @@
 extern "C" %{
 /**
  * @file change_nb_elts.jdf
- * @brief Update the byte count recorded for every matrix tile
+ * @brief Update the byte count recorded for every matrix tile in uplo
  */
 #include "hicma_parsec.h"
 
@@ -13,13 +13,15 @@ extern "C" %{
 
 %}
 
+uplo         [ type = "dplasma_enum_t" ]
 descA        [ type = "parsec_tiled_matrix_t *" ]
 element_size [ type = "size_t" ]
 
 Change_nb_elts(m, n)
 
+/* The tiles of uplo only: a triangular descriptor has no others */
 m = 0 .. descA->lmt-1
-n = 0 .. descA->lnt-1
+n = %{ return (uplo == dplasmaUpper) ? m : 0; %} .. %{ return (uplo == dplasmaLower) ? m : descA->lnt-1; %}
 
 : descA(m, n)
 
@@ -37,12 +39,15 @@ extern "C" %{
 
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
 static int
-parsec_change_nb_elts_release_gpu_copies(parsec_tiled_matrix_t *A)
+hicma_parsec_change_nb_elts_release_gpu_copies(dplasma_enum_t uplo, parsec_tiled_matrix_t *A)
 {
     parsec_data_collection_t *dc = (parsec_data_collection_t *)A;
 
     for (int n = 0; n < A->lnt; ++n) {
         for (int m = 0; m < A->lmt; ++m) {
+            if ((dplasmaLower == uplo && m < n) || (dplasmaUpper == uplo && m > n)) {
+                continue;
+            }
             if (dc->myrank != dc->rank_of(dc, m, n)) {
                 continue;
             }
@@ -101,10 +106,10 @@ parsec_change_nb_elts_release_gpu_copies(parsec_tiled_matrix_t *A)
 #endif
 
 parsec_taskpool_t *
-parsec_change_nb_elts_New(parsec_tiled_matrix_t *A, size_t element_size)
+hicma_parsec_change_nb_elts_New(dplasma_enum_t uplo, parsec_tiled_matrix_t *A, size_t element_size)
 {
     parsec_change_nb_elts_taskpool_t *taskpool =
-        parsec_change_nb_elts_new(A, element_size);
+        parsec_change_nb_elts_new(uplo, A, element_size);
 
     parsec_add2arena(
         &taskpool->arenas_datatypes[PARSEC_change_nb_elts_DEFAULT_ADT_IDX],
@@ -116,7 +121,7 @@ parsec_change_nb_elts_New(parsec_tiled_matrix_t *A, size_t element_size)
 }
 
 void
-parsec_change_nb_elts_Destruct(parsec_taskpool_t *taskpool)
+hicma_parsec_change_nb_elts_Destruct(parsec_taskpool_t *taskpool)
 {
     parsec_change_nb_elts_taskpool_t *change_nb_elts_taskpool =
         (parsec_change_nb_elts_taskpool_t *)taskpool;
@@ -128,18 +133,19 @@ parsec_change_nb_elts_Destruct(parsec_taskpool_t *taskpool)
 }
 
 int
-parsec_change_nb_elts(parsec_context_t *parsec,
-                      parsec_tiled_matrix_t *A,
-                      size_t element_size)
+hicma_parsec_change_nb_elts(parsec_context_t *parsec,
+                            dplasma_enum_t uplo,
+                            parsec_tiled_matrix_t *A,
+                            size_t element_size)
 {
     parsec_taskpool_t *taskpool =
-        parsec_change_nb_elts_New(A, element_size);
+        hicma_parsec_change_nb_elts_New(uplo, A, element_size);
 
     if (NULL != taskpool) {
         parsec_context_add_taskpool(parsec, taskpool);
         parsec_context_start(parsec);
         parsec_context_wait(parsec);
-        parsec_change_nb_elts_Destruct(taskpool);
+        hicma_parsec_change_nb_elts_Destruct(taskpool);
 
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
         /*
@@ -148,7 +154,7 @@ parsec_change_nb_elts(parsec_context_t *parsec,
          * allocates buffers with the new size; persistent HiCMA workspaces are
          * intentionally left intact.
          */
-        parsec_change_nb_elts_release_gpu_copies(A);
+        hicma_parsec_change_nb_elts_release_gpu_copies(uplo, A);
 #endif
     }
 

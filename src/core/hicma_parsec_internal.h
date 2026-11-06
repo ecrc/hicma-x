@@ -1529,14 +1529,17 @@ int hicma_parsec_rank_print(parsec_context_t *parsec,
                       int band_size_dense);
 
 /**
- * @brief Update the byte count stored in every tile's PaRSEC data object
+ * @brief Update the byte count stored in the PaRSEC data object of every tile
+ * of A in uplo, and drop their GPU copies
  *
  * @param [in] parsec PaRSEC context
+ * @param [in] uplo dplasmaLower, dplasmaUpper or dplasmaUpperLower
  * @param [inout] A Tiled matrix whose metadata is updated
  * @param [in] element_size Size in bytes of one matrix element
  * @return 0 on success
  */
-int parsec_change_nb_elts(parsec_context_t *parsec,
+int hicma_parsec_change_nb_elts(parsec_context_t *parsec,
+        dplasma_enum_t uplo,
         parsec_tiled_matrix_t *A,
         size_t element_size);
 

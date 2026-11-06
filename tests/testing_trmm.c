@@ -101,7 +101,8 @@ int main(int argc, char ** argv)
         int uidx = 1; /* dplasmaLower */
         int tidx = 0; /* dplasmaNoTrans */
 
-        PASTE_CODE_FLOPS(FLOPS_DTRMM, (side, (DagDouble_t)M, (DagDouble_t)N));
+        /* B is M x K */
+        PASTE_CODE_FLOPS(FLOPS_DTRMM, (side, (DagDouble_t)M, (DagDouble_t)K));
 
         /* Make A square */
         if (side == dplasmaLeft) {
@@ -176,9 +177,9 @@ int main(int argc, char ** argv)
 
                 if (rank == 0) {
                     printf("TRMM run %d/%d (%s, %s, %s, %s): %.6f s, %.3f Gflop/s "
-                           "(nodes= %d gpus= %d P= %d Q= %d MB= %d NB= %d M= %d N= %d)\n",
+                           "(nodes= %d gpus= %d P= %d Q= %d MB= %d NB= %d M= %d N= %d K= %d)\n",
                            t + 1, nruns, sidestr[sidx], uplostr[uidx], transstr[tidx], diagstr[d],
-                           run_time, gflops, nodes, gpus, P, Q, MB, NB, M, N);
+                           run_time, gflops, nodes, gpus, P, Q, MB, NB, M, N, K);
                 }
             }
 
@@ -402,16 +403,6 @@ static int check_solution( parsec_context_t *parsec, int loud,
     Cinitnorm    = dplasma_dlange( parsec, dplasmaInfNorm, (parsec_tiled_matrix_t*)&dcC );
     Cdplasmanorm = dplasma_dlange( parsec, dplasmaInfNorm, (parsec_tiled_matrix_t*)dcCfinal );
 
-#if 0
-    if ( rank == 0 ) {
-        cblas_dtrmm(CblasColMajor,
-                    (CBLAS_SIDE)side, (CBLAS_UPLO)uplo,
-                    (CBLAS_TRANSPOSE)trans, (CBLAS_DIAG)diag,
-                    M, N,
-                    (alpha), dcA.mat, LDA,
-                                        dcC.mat, LDC );
-    }
-#else
     parsec_taskpool_t *parsec_dtrmm = NULL;
     parsec_dtrmm = dplasma_dtrmm_New(side, uplo, trans, diag, alpha, (parsec_tiled_matrix_t*)&dcA, (parsec_tiled_matrix_t*)&dcC);
     if ( parsec_dtrmm != NULL )
@@ -423,7 +414,6 @@ static int check_solution( parsec_context_t *parsec, int loud,
         dplasma_wait_until_completion(parsec);
         dplasma_dtrmm_Destruct( parsec_dtrmm );
     }
-#endif
 
     if(loud > 99) {
         dplasma_dprint(parsec, dplasmaUpperLower, (parsec_tiled_matrix_t*)dcCfinal);
