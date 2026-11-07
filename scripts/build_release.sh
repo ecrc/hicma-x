@@ -50,7 +50,7 @@ OPTIONS:
     -t, --test              Run tests after building
     -i, --install           Install after building
     -p, --prefix DIR        Installation prefix (default: /usr/local)
-    --cuda                  Enable CUDA support
+    --cuda                  Enable CUDA support (default: off, CPU-only build)
     --hip                   Enable HIP support
     --fugaku                Enable Fugaku-specific optimizations
     --sanitizer             Enable AddressSanitizer
@@ -74,7 +74,7 @@ CLEAN=false
 RUN_TESTS=false
 INSTALL=false
 PREFIX="/usr/local"
-ENABLE_CUDA=true
+ENABLE_CUDA=false
 ENABLE_HIP=false
 ENABLE_FUGAKU=false
 ENABLE_SANITIZER=false
@@ -221,7 +221,6 @@ CMAKE_ARGS=(
     -DON_FUGAKU="$ENABLE_FUGAKU"
     -DENABLE_SANITIZER="$ENABLE_SANITIZER"
     -DENABLE_CUTLASS="$ENABLE_CUTLASS"
-    -DBUILD_TESTING="$RUN_TESTS"
     -DPARSEC_MAX_DEP_OUT_COUNT=16
 )
 
@@ -267,10 +266,16 @@ print_success "Build completed"
 # Run tests if requested
 if [[ "$RUN_TESTS" == "true" ]]; then
     print_status "Running tests..."
-    make test
-    
+    # The GPU-labelled cases need a device; run them only for a GPU build
+    CTEST_ARGS=(--output-on-failure -L hicma)
+    if [[ "$ENABLE_CUDA" != "true" && "$ENABLE_HIP" != "true" ]]; then
+        CTEST_ARGS+=(-LE gpu)
+    fi
+    ctest "${CTEST_ARGS[@]}"
+
     if [[ $? -ne 0 ]]; then
-        print_warning "Some tests failed"
+        print_error "Some tests failed"
+        exit 1
     else
         print_success "All tests passed"
     fi

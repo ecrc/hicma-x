@@ -1,9 +1,12 @@
 name: CI
 on:
   pull_request:
+  push:
+    branches: [main]
 
 jobs:
-  build-and-test:
+  cpu:
+    name: CPU build, tests, install
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
@@ -14,31 +17,75 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          # Basic build toolchain
           sudo apt-get install -y --no-install-recommends \
             build-essential gfortran cmake ninja-build git pkg-config \
             libopenblas-dev libgsl-dev liblapacke-dev \
             libopenmpi-dev openmpi-bin
 
-      - name: Configure (CMake + Ninja)
+      - name: Configure
         run: |
           cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_TESTING=ON \
             -DHICMA_PARSEC_HAVE_CUDA=OFF \
             -DHICMA_PARSEC_HAVE_HIP=OFF \
             -DMPIEXEC_PREFLAGS='--bind-to;none;--oversubscribe' \
             -DMPI_CXX_SKIP_MPICXX=ON \
+            -DCMAKE_INSTALL_PREFIX=$PWD/install
 
       - name: Build
-        run: |
-          cmake --build build -- -v
+        run: cmake --build build
 
-      - name: Run test suite (scripts/test_run.sh)
+      - name: HiCMA tests (CTest, with correctness checks)
         working-directory: build
         env:
           OMPI_ALLOW_RUN_AS_ROOT: 1
           OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: 1
+        run: ctest --output-on-failure -L hicma -LE gpu
+
+      - name: Regression script
+        working-directory: build
+        env:
+          OMPI_ALLOW_RUN_AS_ROOT: 1
+          OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: 1
+        run: ../scripts/test_CI.sh
+
+      - name: Install and build a consumer against the installed package
         run: |
-          bash ../scripts/test_CI.sh
+          cmake --install build
+          cmake -S tests/install_consumer -B build-consumer \
+            -DCMAKE_PREFIX_PATH=$PWD/install \
+            -DMPI_CXX_SKIP_MPICXX=ON
+          cmake --build build-consumer
+          ./build-consumer/hicma_consumer --N 512 --NB 128 --kind_of_problem 2 --check 1
 
+  cuda-compile:
+    name: CUDA build (compile only)
+    runs-on: ubuntu-22.04
+    container: nvidia/cuda:12.6.2-devel-ubuntu22.04
+    steps:
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential gfortran cmake ninja-build git pkg-config ca-certificates \
+            libopenblas-dev libgsl-dev liblapacke-dev \
+            libopenmpi-dev openmpi-bin
 
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure
+        run: |
+          git config --global --add safe.directory '*'
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=ON \
+            -DHICMA_PARSEC_HAVE_CUDA=ON \
+            -DCMAKE_CUDA_ARCHITECTURES=80 \
+            -DMPI_CXX_SKIP_MPICXX=ON
+
+      - name: Build
+        run: cmake --build build
