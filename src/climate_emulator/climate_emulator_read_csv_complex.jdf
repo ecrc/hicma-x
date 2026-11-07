@@ -79,13 +79,11 @@ static int read_csv_complex_core(const char* filename, complex double *_data, in
         int col = 0;
         while (token && col < N) {
             status = sscanf(token, "%lf%lfi", &real, &imag);
-#if DEBUG_INFO_CLIMATE_EMULATOR
             if (status != 2) {
                 printf("Error parsing complex number %d %d: %s\n", row, col, token);
                 fclose(fp);
                 return 1;
             }
-#endif
             data[col*M+row] = real + imag * I;
             token = strtok(NULL, ",");
             col++;
@@ -130,8 +128,10 @@ RW A <- descA(m, n)
 BODY
 {
     // Read complex CSV data into the current tile
-    read_csv_complex_core(filename, A, descA->mb, descA->nb, nb_gpus);
-    
+    if( 0 != read_csv_complex_core(filename, A, descA->mb, descA->nb, nb_gpus) ) {
+        fprintf(stderr, "climate emulator: cannot read %s\n", filename);
+        exit(1);
+    }
     // Placeholder for potential sum operation (currently disabled)
     if(0 && 0 == nb_gpus) climate_emulator_sum_complex_core(A, descA->mb, descA->nb);
 }

@@ -77,7 +77,7 @@ hicma_parsec_syrk_default_new(dplasma_enum_t transA, dplasma_enum_t transB,
         float beta,  parsec_tiled_matrix_t* C,
         dplasma_info_t opt, hicma_parsec_params_t * params_tlr, hicma_parsec_data_t *data)
 {
-    parsec_taskpool_t* gemm_tp;
+    parsec_taskpool_t* gemm_tp = NULL;
     void** eval_gpu_gemm;
 
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
@@ -378,6 +378,7 @@ void hicma_parsec_syrk_Destruct( parsec_taskpool_t *tp )
 
         /* Finalize private memory pool */
         parsec_private_memory_fini( gemm_tp->_g_p_work_int );
+        free( gemm_tp->_g_p_work_int );
     }
 
     /* Free the taskpool itself */

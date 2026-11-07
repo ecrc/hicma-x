@@ -130,7 +130,7 @@ int main(int argc, char ** argv)
     parsec_matrix_block_cyclic_t AA;
     parsec_matrix_block_cyclic_init(&AA, PARSEC_MATRIX_FLOAT, PARSEC_MATRIX_TILE,
             params.rank, params.NB, params.NB, params.N, params.N, 0, 0,
-            params.N, params.N, params.P, (params.nodes)/(params.NB), 1, 1, 0, 0);
+            params.N, params.N, params.P, (params.nodes)/(params.P), 1, 1, 0, 0);
  
     /* Allocate memory for output matrix AA */
     parsec_dist_allocate(parsec, (parsec_tiled_matrix_t *)&AA, &params);

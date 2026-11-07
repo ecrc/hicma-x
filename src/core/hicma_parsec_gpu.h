@@ -780,7 +780,7 @@ void matrix_print_int8_GPU( int nrows, int ncols, int *A, cudaStream_t stream );
  * @param[in] value Value to subtract
  * @param[in] stream CUDA stream
  */
-void hicma_parsec_hamming_subtract_ones_GPU(int nrows, int ncols, int *aout, int *ain, int lda, int value, cudaStream_t stream);
+void hicma_parsec_hamming_subtract_ones_GPU(int nrows, int ncols, int8_t *aout, int8_t *ain, int lda, int value, cudaStream_t stream);
 
 /**
  * @brief Get identity matrix on GPU
@@ -796,7 +796,7 @@ void hicma_parsec_hamming_subtract_ones_GPU(int nrows, int ncols, int *aout, int
  * @param[in] value Value to set
  * @param[in] stream CUDA stream
  */
-void hicma_parsec_hamming_get_id_matrix_GPU(int nrows, int ncols, int *aout, int *ain, int lda, int value, cudaStream_t stream);
+void hicma_parsec_hamming_get_id_matrix_GPU(int nrows, int ncols, int8_t *aout, int8_t *ain, int lda, int value, cudaStream_t stream);
 
 /**
  * @brief Perform bitmask tensergemm on GPU

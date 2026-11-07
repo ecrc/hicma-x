@@ -49,14 +49,12 @@ static int read_csv_double2complex_core(const char* filename, void *_data, int M
                 // Convert real value to complex number (imaginary part = 0)
                 data[j*M+i] = (complex double)real;
                 
-#if DEBUG_INFO_CLIMATE_EMULATOR 
                 // Check for read errors in debug mode
                 if (status != 1) {
                     fprintf(stderr, "Error reading file at row %d, column %d\n", i, j);
                     fclose(fp);
                     return 1;
                 }
-#endif
             }
         }
 
@@ -79,14 +77,12 @@ static int read_csv_double2complex_core(const char* filename, void *_data, int M
                 // Convert real value to CUDA complex format (imaginary part = 0)
                 data[j*M+i] = make_cuDoubleComplex(real, 0);
                 
-#if DEBUG_INFO_CLIMATE_EMULATOR
                 // Check for read errors in debug mode
                 if (status != 1) {
                     fprintf(stderr, "Error reading file at row %d, column %d\n", i, j);
                     fclose(fp);
                     return 1;
                 }
-#endif
             }
         }
 #endif
@@ -123,8 +119,10 @@ RW A <- descA(m, n)
 BODY
 {
     // Read double CSV data and convert to complex numbers in the current tile
-    read_csv_double2complex_core(filename, A, descA->mb, descA->nb, nb_gpus);
-    
+    if( 0 != read_csv_double2complex_core(filename, A, descA->mb, descA->nb, nb_gpus) ) {
+        fprintf(stderr, "climate emulator: cannot read %s\n", filename);
+        exit(1);
+    }
     // Placeholder for potential sum operation (currently disabled)
     if(0 && 0 == nb_gpus) climate_emulator_sum_complex_core(A, descA->mb, descA->nb);
 }

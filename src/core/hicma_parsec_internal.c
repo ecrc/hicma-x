@@ -2809,24 +2809,15 @@ void hicma_parsec_free_memory( parsec_context_t *parsec,
     parsec_tiled_matrix_destroy( &data->dcAr.band.super );
     parsec_tiled_matrix_destroy( &data->dcAr.off_band.super );
 
-    /* ===========================================
-     * Destroy reordering matrix descriptor (dcReorder)
-     * =========================================== */
-    
-    // Free reordering matrix if GEMM reordering is enabled
-    if( params->reorder_gemm ) { 
-        parsec_band_free_memory(parsec, (parsec_tiled_matrix_t *)&data->dcReorder, params, FREE_BAND_MEMORY);
-        parsec_band_free_memory(parsec, (parsec_tiled_matrix_t *)&data->dcReorder, params, FREE_OFFBAND_MEMORY);
-        parsec_tiled_matrix_destroy( (parsec_tiled_matrix_t*)&data->dcReorder );
-        parsec_tiled_matrix_destroy( &data->dcReorder.band.super );
-        parsec_tiled_matrix_destroy( &data->dcReorder.off_band.super );
-    }
-
     /* dcDist */
     if( params->sparse ) {
         parsec_tiled_matrix_destroy( (parsec_tiled_matrix_t*)&data->dcDist );
         parsec_tiled_matrix_destroy( &data->dcDist.band.super );
         parsec_tiled_matrix_destroy( &data->dcDist.off_band.super );
+        /* The balanced distribution's rank_of reads dist_array, so it goes
+         * only after every descriptor that may call rank_of is destroyed */
+        free( dist_array );
+        dist_array = NULL;
     }
 
     /* dcRank */

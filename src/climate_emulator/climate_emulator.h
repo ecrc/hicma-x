@@ -70,6 +70,14 @@ extern "C" {
 /** @brief Enable reading input from files */
 #define CLIMATE_EMULATOR_READ_FROM_FILE 0
 
+/* The sources test these shorter spellings; keep them equal to the switches
+ * above (they used to be undefined, which silently disabled every block they
+ * guard, including the file-read error checks) */
+#define READ_FROM_FILE  CLIMATE_EMULATOR_READ_FROM_FILE
+#define ENABLE_INVERSE  CLIMATE_EMULATOR_ENABLE_INVERSE
+#define WRITE_TO_FILE   CLIMATE_EMULATOR_WRITE_TO_FILE
+#define DEBUG_INFO_CLIMATE_EMULATOR CLIMATE_EMULATOR_DEBUG_INFO
+
 #if CLIMATE_EMULATOR_READ_FROM_FILE
 #undef CLIMATE_EMULATOR_WRITE_TO_FILE
 #define CLIMATE_EMULATOR_WRITE_TO_FILE  0
@@ -693,36 +701,6 @@ int climate_emulator_mse(parsec_context_t *parsec,
         hicma_parsec_params_t *params);
 
 /**
- * @brief Print double precision matrix
- * 
- * Debug function to print a tiled matrix in double precision format.
- * Useful for debugging and validation of matrix data.
- * 
- * @param[in] parsec PaRSEC context
- * @param[in] A Matrix to print
- * @param[in] M Number of rows to print
- * @param[in] N Number of columns to print
- * @return 0 on success, non-zero on failure
- */
-int climate_emulator_print_double(parsec_context_t *parsec,
-        parsec_tiled_matrix_t *A, int M, int N);
-
-/**
- * @brief Print complex matrix
- * 
- * Debug function to print a tiled matrix in complex format.
- * Useful for debugging and validation of complex matrix data.
- * 
- * @param[in] parsec PaRSEC context
- * @param[in] A Matrix to print
- * @param[in] M Number of rows to print
- * @param[in] N Number of columns to print
- * @return 0 on success, non-zero on failure
- */
-int climate_emulator_print_complex(parsec_context_t *parsec,
-        parsec_tiled_matrix_t *A, int M, int N);
-
-/**
  * @brief Core function to sum double precision matrix
  * 
  * Utility function to compute the sum of all elements in a double
@@ -747,21 +725,6 @@ double climate_emulator_sum_double_core(double *A, int M, int N);
  * @return Sum of all matrix elements
  */
 complex double climate_emulator_sum_complex_core(complex double *A, int M, int N);
-
-/**
- * @brief Allocate dense tile matrix
- * 
- * Allocates memory for a dense tile matrix in the PaRSEC framework.
- * This is a utility function for matrix memory management.
- * 
- * @param[in] parsec PaRSEC context
- * @param[in] dcA Matrix descriptor
- * @param[in] params_tlr HICMA PaRSEC parameters
- * @return 0 on success, non-zero on failure
- */
-int hicma_parsec_matrix_allocate_dense_tile( parsec_context_t *parsec,
-        parsec_tiled_matrix_t *dcA,
-        hicma_parsec_params_t *params_tlr);
 
 /* ============================================================================
  * I/O functions

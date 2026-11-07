@@ -9,12 +9,14 @@
 
 #include "hicma_parsec.h"
 #include "hicma_parsec_sparse_analysis.h"
-#include <omp.h>
 
 /* Configuration flags for sparse matrix analysis */
 
 /* Whether to use OpenMP for parallelization when matrix is very large */
 #define USE_OPENMP 0
+#if USE_OPENMP
+#include <omp.h>
+#endif
 
 /* If allocate memory in local_gemm dynamically (1) or statically (0) */
 #define DYNAMIC_MEMORY_ALLOCATION 1
@@ -278,7 +280,7 @@ int hicma_parsec_sparse_analysis_gemm( parsec_tiled_matrix_t *A,
 {
     /* Allocate memory for GEMM local operations per tile */
     analysis->gemm_local_memory = (DATATYPE_ANALYSIS *)calloc( NT * NT, sizeof(DATATYPE_ANALYSIS) );
-    analysis->gemm_local = (DATATYPE_ANALYSIS **)malloc( NT * NT * sizeof(DATATYPE_ANALYSIS *) );
+    analysis->gemm_local = (DATATYPE_ANALYSIS **)calloc( (size_t)NT * NT, sizeof(DATATYPE_ANALYSIS *) );
     /* Initialize arena indicator to 0 (indicates memory is from arena) */
     analysis->gemm_local_memory_arena_indicator = (uint8_t *)calloc( NT * NT, sizeof(uint8_t) );
     
@@ -513,6 +515,7 @@ void hicma_parsec_sparse_analysis_free( parsec_tiled_matrix_t *A,
         hicma_parsec_matrix_analysis_t *analysis,
         int NT, int rank, int sparse, int check)
 {
+    (void)rank;
     /* Free TRSM and SYRK structures if sparse analysis or check was performed */
     if( sparse || check ) {
         hicma_parsec_sparse_analysis_trsm_syrk_free( analysis, NT );
@@ -534,12 +537,11 @@ void hicma_parsec_sparse_analysis_free( parsec_tiled_matrix_t *A,
     free( analysis->syrk_local ); 
     free( analysis->syrk_local_num ); 
 
-    /* Free GEMM analysis structures (only for tiles owned by current process) */
-    for(int i = 2; i < NT; i++) {
-        for(int j = 1; j < i; j++) {
-            if( rank == A->super.rank_of(&A->super, i, j) && NULL != analysis->gemm_local[j*NT+i] )
-                free( analysis->gemm_local[j*NT+i] ); 
-        }
+    /* Free the GEMM lists: they are allocated for the tiles owned by A or by
+     * the balanced distribution (Dist), so free every non-NULL entry (the
+     * array is calloc'd) rather than guessing the owner here */
+    for(size_t idx = 0; idx < (size_t)NT * NT; idx++) {
+        free( analysis->gemm_local[idx] );
     }
     free( analysis->gemm_local );
     free( analysis->gemm_local_memory ); 
