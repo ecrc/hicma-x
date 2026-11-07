@@ -1168,6 +1168,45 @@ parsec_context_t* hicma_parsec_setup_parsec(int argc, char **argv, hicma_parsec_
         params->band_size_dense_hp = params->band_size_dense;
     }
 
+    /* Kinds 8, 9 and 10 convert with round-to-nearest in their own bodies
+     * while the shared kernels would honor stochastic rounding: refuse the
+     * mix instead of silently rounding two different ways. */
+    if( params->enable_stochastic_rounding
+        && (DENSE_MP_GPU_FP8 == params->kind_of_cholesky
+            || DENSE_MP_GPU_FP8_SP == params->kind_of_cholesky
+            || DENSE_MP_GPU_FP8_ADAPTIVE == params->kind_of_cholesky) ) {
+        if( 0 == params->rank ) {
+            fprintf(stderr, RED "--enable_stochastic_rounding is not implemented for kind_of_cholesky %d "
+                    "(kinds 8, 9 and 10); use kind 5 or --enable_stochastic_rounding 0\n" RESET,
+                    params->kind_of_cholesky);
+        }
+        exit(1);
+    }
+
+    /* The sender-side conversion of --datatype_convert 2 exists only in the
+     * GPU bodies; the CPU body of potrf_dtrsm_send would forward an unwritten
+     * buffer. */
+    if( ADAPTIVE_CONVERT == params->datatype_convert && 0 == params->gpus ) {
+        if( 0 == params->rank ) {
+            fprintf(stderr, RED "--datatype_convert 2 needs GPUs: setting datatype_convert= 0\n" RESET);
+        }
+        params->datatype_convert = RECEIVER_CONVERT;
+    }
+
+#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    /* Kinds 1-4 have CUDA bodies only; on HIP their wrappers would install the
+     * GPU hooks on the wrong chore and run on the CPU with GPU statistics. */
+    if( params->gpus > 0
+        && (DENSE_TLR_MP == params->kind_of_cholesky || DENSE_TLR_DP == params->kind_of_cholesky
+            || DENSE_MP_BAND == params->kind_of_cholesky || DENSE_SP_HP_BAND == params->kind_of_cholesky) ) {
+        if( 0 == params->rank ) {
+            fprintf(stderr, RED "kind_of_cholesky %d has no HIP bodies: run it with --gpus 0 "
+                    "or use kind 5 (DENSE_MP_GPU)\n" RESET, params->kind_of_cholesky);
+        }
+        exit(1);
+    }
+#endif
+
     /* With adaptive_memory, convert_d2s gives SP tiles an SP-sized host buffer.
      * Only the GPU runtime GEMM reallocates before promoting C to DP; the CPU
      * runtime GEMM converts in place and would write past the buffer. */
