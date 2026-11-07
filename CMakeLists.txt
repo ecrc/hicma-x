@@ -396,6 +396,19 @@ message(STATUS "  - STARS-H: Built from submodule")
 message(STATUS "==========================================")
 
 # Add subdirectories
+# Installed binaries must find the libraries they were linked with without
+# LD_LIBRARY_PATH: the library's own directory ($ORIGIN, where PaRSEC, DPLASMA
+# and HCORE install as well), the prefix's lib dir for executables, and the
+# directories of the external libraries outside the system paths (MPI, BLAS,
+# GSL). With RUNPATH, the default of current toolchains, a library's
+# dependencies are searched with the library's own path, not the executable's,
+# so libhicma_parsec needs it itself (the installed consumer of CI failed with
+# "libdplasma.so.2: cannot open shared object file"). Set here, after the
+# submodules, so that it applies to hicma_parsec and the drivers only; PaRSEC
+# and HCORE set their own.
+set(CMAKE_INSTALL_RPATH "$ORIGIN;$ORIGIN/../${CMAKE_INSTALL_LIBDIR};${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}")
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH ON)
+
 add_subdirectory(src)
 
 # Testing configuration

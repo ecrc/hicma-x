@@ -95,6 +95,12 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   `libhcore.so` recorded no dependency on LAPACKE at all, which made every
   driver fail to link with `--as-needed` (Ubuntu). Select the stack with
   `LAPACKE_ROOT` or `BLA_VENDOR`.
+- The installed library and drivers carry a runtime search path (`$ORIGIN`,
+  the prefix's lib dir, the directories of MPI/GSL/hwloc): with RUNPATH
+  semantics a library's dependencies are searched with its own path, and the
+  installed `libhicma_parsec.so` could not find `libdplasma.so.2` without
+  `LD_LIBRARY_PATH`. A BLAS outside the system directories still needs
+  `LD_LIBRARY_PATH` (CMake does not record the MKL directory).
 - `HICMA_PARSEC_GENOMICS` option: the genomics drivers are built only when it
   is on (they need a GPU build); the default build no longer ships binaries that
   cannot run.

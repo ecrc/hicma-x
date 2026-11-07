@@ -256,6 +256,19 @@ in both jobs:
   rather than by the 1e-8 compression accuracy; the banded sibling case
   already used 1e-7. A failed check now prints its residual and bound.
 
+- **Second run, CPU job**: build, CTest and the regression script passed;
+  the installed consumer failed at load time, `libdplasma.so.2: cannot open
+  shared object file`. The installed `libhicma_parsec.so` had no runtime
+  search path, and with RUNPATH semantics (Ubuntu's default) a library's
+  dependencies are searched with the library's own path, not the
+  executable's (locally the Spack toolchain emits RPATH, which hid this).
+  `CMAKE_INSTALL_RPATH` (`$ORIGIN`, the prefix lib dir) and
+  `CMAKE_INSTALL_RPATH_USE_LINK_PATH` are set for `hicma_parsec` and the
+  drivers; reproduced and verified locally by linking the consumer with
+  `--enable-new-dtags` and running it with only the BLAS directory on
+  `LD_LIBRARY_PATH` (CPU and CUDA prefixes). CMake does not record MKL's
+  directory, so a BLAS outside the system paths still needs `LD_LIBRARY_PATH`.
+
 Re-validation after these commits: CPU, CUDA and HIP trees build; CPU `ctest`
 20 / 20; CUDA-tree `ctest` 30 / 30; install consumers from both prefixes
 (residual 2.69e-16); the 75-case matrix identical to the baseline except the
