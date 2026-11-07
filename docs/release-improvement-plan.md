@@ -107,3 +107,13 @@ after the library changes.
   install consumer from both prefixes, HIP compile, before/after timing at
   N=32768 within noise. Open: maintainer review of the behaviour changes, CI
   run on GitHub, tag/release/merge (authorization).
+- 2026-11-07 (CI): the first GitHub CI run of PR ecrc/hicma-x#13 failed:
+  undefined LAPACKE references from libhcore.so on Ubuntu (--as-needed) and no
+  Python/flex/bison in the CUDA container. Fixed by linking hcore, starsh and
+  hicma_parsec against DPLASMA's LAPACKE::LAPACKE (one BLAS stack, replacing
+  the separate BLAS discovery and the hard-coded MKL line), removing GSL's
+  reference CBLAS from the link (it had captured cblas_* calls, 40x slower CPU
+  GEMMs), and installing the packages. The dense adaptive mixed-precision
+  cases use --check_tol 1e-7 (FP32 bound). Re-validated: ctest 20/20 and
+  30/30, install consumers, 75-case matrix identical to the baseline.
+

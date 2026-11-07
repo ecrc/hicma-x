@@ -20,10 +20,13 @@ line, not a major one. `project(VERSION 0.2.0)` in `CMakeLists.txt` is the
 single source of the version; the library is `libhicma_parsec.so.0.2.0` with
 SONAME `libhicma_parsec.so.0`.
 
-## 2. Code commits on the branch
+## 2. Commits on the branch
 
-(Two further commits add `scripts/validation_matrix.sh` and this documentation.)
-
+- `be50c60` State the FP32 residual bound of the dense adaptive cases; print the residual of a failed check
+- `f07913f` CI: the CUDA job needs python3, flex and bison
+- `d6cb516` Link one BLAS/LAPACKE stack and give hcore and stars-h their dependencies
+- `8f7cb5e` Release documentation for 0.2.0
+- `77edd5d` Add the validation matrix script
 - `eeaa72d` CI, scripts and repository hygiene
 - `5e7ba95` Make the installed package usable, unify the version, register the tests
 - `1dc97a3` Small fixes: leaks, NULL checks, file readers, genomics helpers
@@ -36,8 +39,10 @@ SONAME `libhicma_parsec.so.0`.
 - `4eca4c3` Apply --adddiag once for the STARS-H kernels that already carry it
 - `0c76e56` Make the correctness check binding and add --check_tol
 
-Each commit is self-contained in intent; only the final tree was built and
-tested (sections 4 and 5). Intermediate commits were not built individually.
+(This documentation commit follows.) Each commit is self-contained in intent;
+the trees that were built and tested are the one after the documentation
+commit `8f7cb5e` (sections 4, 5.1 to 5.3) and the final one (section 5.5).
+Intermediate commits were not built individually.
 
 ## 3. Validation environment
 
@@ -91,92 +96,94 @@ Every case exited 0 before and after. The residuals are identical to the
 baseline except for the virus-mesh cases, whose residual was the doubled
 diagonal shift (review finding E1); the GEMM precision counts of every case
 are identical. Six cases were added during the work (kind 2 with a dense band,
-which exposed the sink-task crash) and have no baseline column.
+which exposed the sink-task crash) and have no baseline column. The tables
+are from the final run (after the CI fixes of section 5.5); the run before
+those fixes gave the same residuals and GEMM counts.
 
 CPU tree:
 
 | Case | Ranks | Residual before | Residual after | Factorization time after (s) |
 |---|---|---|---|---|
-| `tlr_dp_k2_p2` | 1 | 1.157838e-16 | 1.157838e-16 | 0.02162 |
-| `tlr_mp_k1_band1_adapt` | 1 | 1.736223e-08 | 1.736223e-08 | 0.05360 |
-| `tlr_mp_k1_band1_noadapt` | 1 | 5.014459e-09 | 5.014459e-09 | 0.05316 |
-| `tlr_mp_k1_dense_adapt` | 1 | 6.605555e-09 | 6.605555e-09 | 0.02809 |
-| `tlr_mp_k1_dense_admem` | 1 | 6.605555e-09 | 6.605555e-09 | 0.02988 |
-| `tlr_kind2_band1` | 1 | not in the baseline matrix | 5.014459e-09 | 0.05103 |
-| `tlr_kind2_band2` | 1 | not in the baseline matrix | 2.741820e-09 | 0.03997 |
-| `tlr_kind2_band2_np2` | 2 | not in the baseline matrix | 2.741820e-09 | 0.07800 |
-| `tlr_kind1_band2_np2` | 2 | not in the baseline matrix | 1.740042e-08 | 0.08575 |
-| `tlr_dp_k2_p4_autoband` | 1 | 1.328506e-10 | 1.328506e-10 | 0.11323 |
-| `dense_k5_fp64_cpu` | 1 | 1.856962e-16 | 1.856962e-16 | 0.06539 |
-| `dense_k5_band2_cpu` | 1 | 3.099008e-09 | 3.099008e-09 | 0.06480 |
-| `dense_k5_adapt_cpu` | 1 | 4.028860e-10 | 4.028860e-10 | 0.09365 |
-| `band_k3_cpu` | 1 | 5.377707e-08 | 5.377707e-08 | 0.11248 |
-| `band_k4_cpu` | 1 | 1.692654e-07 | 1.692654e-07 | 0.10175 |
-| `runtime_k10_cpu` | 1 | 3.754839e-09 | 3.754839e-09 | 0.12321 |
-| `runtime_k10_cpu_adapt1` | 1 | 3.776331e-09 | 3.776331e-09 | 0.11764 |
-| `sparse_k6_cpu` | 1 | 5.014459e-09 | 5.014459e-09 | 0.05469 |
-| `sparse_k7_cpu` | 1 | 5.014459e-09 | 5.014459e-09 | 0.05351 |
-| `sparse_k6_np2` | 2 | 5.014459e-09 | 5.014459e-09 | 0.10200 |
-| `sparse_k6_mesh` | 1 | 9.090908e-02 | 2.989478e-06 **(fixed)** | 0.47122 |
-| `sparse_k7_mesh_np2` | 2 | 9.090908e-02 | 2.989478e-06 **(fixed)** | 0.56000 |
+| `tlr_dp_k2_p2` | 1 | 1.157838e-16 | 1.157838e-16 | 0.02215 |
+| `tlr_mp_k1_band1_adapt` | 1 | 1.736223e-08 | 1.736223e-08 | 0.05274 |
+| `tlr_mp_k1_band1_noadapt` | 1 | 5.014459e-09 | 5.014459e-09 | 0.05097 |
+| `tlr_mp_k1_dense_adapt` | 1 | 6.605555e-09 | 6.605555e-09 | 0.02820 |
+| `tlr_mp_k1_dense_admem` | 1 | 6.605555e-09 | 6.605555e-09 | 0.02846 |
+| `tlr_kind2_band1` | 1 | not in the baseline matrix | 5.014459e-09 | 0.05299 |
+| `tlr_kind2_band2` | 1 | not in the baseline matrix | 2.741820e-09 | 0.03791 |
+| `tlr_kind2_band2_np2` | 2 | not in the baseline matrix | 2.741820e-09 | 0.07394 |
+| `tlr_kind1_band2_np2` | 2 | not in the baseline matrix | 1.740042e-08 | 0.08373 |
+| `tlr_dp_k2_p4_autoband` | 1 | 1.328506e-10 | 1.328506e-10 | 0.10997 |
+| `dense_k5_fp64_cpu` | 1 | 1.856962e-16 | 1.856962e-16 | 0.06384 |
+| `dense_k5_band2_cpu` | 1 | 3.099008e-09 | 3.099008e-09 | 0.06809 |
+| `dense_k5_adapt_cpu` | 1 | 4.028860e-10 | 4.028860e-10 | 0.09336 |
+| `band_k3_cpu` | 1 | 5.377707e-08 | 5.377707e-08 | 0.11159 |
+| `band_k4_cpu` | 1 | 1.692654e-07 | 1.692654e-07 | 0.10184 |
+| `runtime_k10_cpu` | 1 | 3.754839e-09 | 3.754839e-09 | 0.12166 |
+| `runtime_k10_cpu_adapt1` | 1 | 3.776331e-09 | 3.776331e-09 | 0.11671 |
+| `sparse_k6_cpu` | 1 | 5.014459e-09 | 5.014459e-09 | 0.05457 |
+| `sparse_k7_cpu` | 1 | 5.014459e-09 | 5.014459e-09 | 0.05183 |
+| `sparse_k6_np2` | 2 | 5.014459e-09 | 5.014459e-09 | 0.08500 |
+| `sparse_k6_mesh` | 1 | 9.090908e-02 | 2.989478e-06 **(fixed)** | 0.47155 |
+| `sparse_k7_mesh_np2` | 2 | 9.090908e-02 | 2.989478e-06 **(fixed)** | 0.57200 |
 | `trmm_fp64` | 1 | PASSED | PASSED | NA |
 | `trmm_adapt` | 1 | PASSED | PASSED | NA |
 | `trmm_adapt_sr` | 1 | PASSED | PASSED | NA |
-| `tlr_dp_k2_np2` | 2 | 1.157838e-16 | 1.157838e-16 | 0.07171 |
-| `dense_k5_fp64_np2` | 2 | 1.856962e-16 | 1.856962e-16 | 0.12800 |
-| `dense_k5_band2_np2` | 2 | 3.099008e-09 | 3.099008e-09 | 0.13100 |
-| `runtime_k10_np2` | 2 | 3.754839e-09 | 3.754839e-09 | 0.15900 |
+| `tlr_dp_k2_np2` | 2 | 1.157838e-16 | 1.157838e-16 | 0.06302 |
+| `dense_k5_fp64_np2` | 2 | 1.856962e-16 | 1.856962e-16 | 0.12500 |
+| `dense_k5_band2_np2` | 2 | 3.099008e-09 | 3.099008e-09 | 0.13400 |
+| `runtime_k10_np2` | 2 | 3.754839e-09 | 3.754839e-09 | 0.18000 |
 | `trmm_adapt_np2` | 2 | PASSED | PASSED | NA |
 
 CUDA tree (same library built with CUDA; `gpu_*` cases use the A100):
 
 | Case | Ranks | Residual before | Residual after | Factorization time after (s) |
 |---|---|---|---|---|
-| `tlr_dp_k2_p2` | 1 | 1.157838e-16 | 1.157838e-16 | 0.02249 |
-| `tlr_mp_k1_band1_adapt` | 1 | 1.736223e-08 | 1.736223e-08 | 0.05200 |
-| `tlr_mp_k1_band1_noadapt` | 1 | 5.014459e-09 | 5.014459e-09 | 0.07647 |
-| `tlr_mp_k1_dense_adapt` | 1 | 6.605555e-09 | 6.605555e-09 | 0.02857 |
-| `tlr_mp_k1_dense_admem` | 1 | 6.605555e-09 | 6.605555e-09 | 0.02910 |
-| `tlr_kind2_band1` | 1 | not in the baseline matrix | 5.014459e-09 | 0.05418 |
-| `tlr_kind2_band2` | 1 | not in the baseline matrix | 2.741820e-09 | 0.03932 |
-| `tlr_kind2_band2_np2` | 2 | not in the baseline matrix | 2.741820e-09 | 0.08500 |
-| `tlr_kind1_band2_np2` | 2 | not in the baseline matrix | 1.740042e-08 | 0.08573 |
-| `tlr_dp_k2_p4_autoband` | 1 | 1.328506e-10 | 1.328506e-10 | 0.10466 |
-| `dense_k5_fp64_cpu` | 1 | 1.856962e-16 | 1.856962e-16 | 0.06131 |
-| `dense_k5_band2_cpu` | 1 | 3.099008e-09 | 3.099008e-09 | 0.06425 |
-| `dense_k5_adapt_cpu` | 1 | 4.028860e-10 | 4.028860e-10 | 0.09465 |
-| `band_k3_cpu` | 1 | 5.377707e-08 | 5.377707e-08 | 0.11365 |
-| `band_k4_cpu` | 1 | 1.692654e-07 | 1.692654e-07 | 0.10185 |
-| `runtime_k10_cpu` | 1 | 3.754839e-09 | 3.754839e-09 | 0.12252 |
-| `runtime_k10_cpu_adapt1` | 1 | 3.776331e-09 | 3.776331e-09 | 0.11660 |
-| `sparse_k6_cpu` | 1 | 5.014459e-09 | 5.014459e-09 | 0.05376 |
-| `sparse_k7_cpu` | 1 | 5.014459e-09 | 5.014459e-09 | 0.05335 |
-| `sparse_k6_np2` | 2 | 5.014459e-09 | 5.014459e-09 | 0.09900 |
-| `sparse_k6_mesh` | 1 | 9.090908e-02 | 2.989478e-06 **(fixed)** | 0.47146 |
-| `sparse_k7_mesh_np2` | 2 | 9.090908e-02 | 2.989478e-06 **(fixed)** | 0.57200 |
+| `tlr_dp_k2_p2` | 1 | 1.157838e-16 | 1.157838e-16 | 0.01989 |
+| `tlr_mp_k1_band1_adapt` | 1 | 1.736223e-08 | 1.736223e-08 | 0.05263 |
+| `tlr_mp_k1_band1_noadapt` | 1 | 5.014459e-09 | 5.014459e-09 | 0.05334 |
+| `tlr_mp_k1_dense_adapt` | 1 | 6.605555e-09 | 6.605555e-09 | 0.02810 |
+| `tlr_mp_k1_dense_admem` | 1 | 6.605555e-09 | 6.605555e-09 | 0.02851 |
+| `tlr_kind2_band1` | 1 | not in the baseline matrix | 5.014459e-09 | 0.05471 |
+| `tlr_kind2_band2` | 1 | not in the baseline matrix | 2.741820e-09 | 0.03740 |
+| `tlr_kind2_band2_np2` | 2 | not in the baseline matrix | 2.741820e-09 | 0.08977 |
+| `tlr_kind1_band2_np2` | 2 | not in the baseline matrix | 1.740042e-08 | 0.08474 |
+| `tlr_dp_k2_p4_autoband` | 1 | 1.328506e-10 | 1.328506e-10 | 0.11658 |
+| `dense_k5_fp64_cpu` | 1 | 1.856962e-16 | 1.856962e-16 | 0.06102 |
+| `dense_k5_band2_cpu` | 1 | 3.099008e-09 | 3.099008e-09 | 0.06646 |
+| `dense_k5_adapt_cpu` | 1 | 4.028860e-10 | 4.028860e-10 | 0.09376 |
+| `band_k3_cpu` | 1 | 5.377707e-08 | 5.377707e-08 | 0.11434 |
+| `band_k4_cpu` | 1 | 1.692654e-07 | 1.692654e-07 | 0.10238 |
+| `runtime_k10_cpu` | 1 | 3.754839e-09 | 3.754839e-09 | 0.12483 |
+| `runtime_k10_cpu_adapt1` | 1 | 3.776331e-09 | 3.776331e-09 | 0.11683 |
+| `sparse_k6_cpu` | 1 | 5.014459e-09 | 5.014459e-09 | 0.05264 |
+| `sparse_k7_cpu` | 1 | 5.014459e-09 | 5.014459e-09 | 0.05460 |
+| `sparse_k6_np2` | 2 | 5.014459e-09 | 5.014459e-09 | 0.08800 |
+| `sparse_k6_mesh` | 1 | 9.090908e-02 | 2.989478e-06 **(fixed)** | 0.46712 |
+| `sparse_k7_mesh_np2` | 2 | 9.090908e-02 | 2.989478e-06 **(fixed)** | 0.55999 |
 | `trmm_fp64` | 1 | PASSED | PASSED | NA |
 | `trmm_adapt` | 1 | PASSED | PASSED | NA |
 | `trmm_adapt_sr` | 1 | PASSED | PASSED | NA |
-| `tlr_dp_k2_np2` | 2 | 1.157838e-16 | 1.157838e-16 | 0.07269 |
-| `dense_k5_fp64_np2` | 2 | 1.856962e-16 | 1.856962e-16 | 0.11271 |
-| `dense_k5_band2_np2` | 2 | 3.099008e-09 | 3.099008e-09 | 0.12100 |
-| `runtime_k10_np2` | 2 | 3.754839e-09 | 3.754839e-09 | 0.17267 |
+| `tlr_dp_k2_np2` | 2 | 1.157838e-16 | 1.157838e-16 | 0.06900 |
+| `dense_k5_fp64_np2` | 2 | 1.856962e-16 | 1.856962e-16 | 0.14000 |
+| `dense_k5_band2_np2` | 2 | 3.099008e-09 | 3.099008e-09 | 0.11800 |
+| `runtime_k10_np2` | 2 | 3.754839e-09 | 3.754839e-09 | 0.19200 |
 | `trmm_adapt_np2` | 2 | PASSED | PASSED | NA |
-| `gpu_dense_k5_fp64` | 1 | 3.602581e-16 | 3.602581e-16 | 0.11396 |
-| `gpu_dense_k5_adapt` | 1 | 2.176706e-09 | 2.176706e-09 | 0.18248 |
-| `gpu_dense_k5_band2` | 1 | 2.804213e-09 | 2.804213e-09 | 0.20455 |
-| `gpu_dense_k8_adapt` | 1 | 2.176706e-09 | 2.176706e-09 | 0.17907 |
-| `gpu_dense_k9_adapt` | 1 | 3.313729e-07 | 3.313729e-07 | 0.11935 |
-| `gpu_runtime_k10` | 1 | 1.041065e-08 | 1.041065e-08 | 0.28133 |
-| `gpu_runtime_k10_admem` | 1 | 1.041065e-08 | 1.041065e-08 | 0.27054 |
-| `gpu_tlr_kind2_band2` | 1 | not in the baseline matrix | 2.741820e-09 | 0.09307 |
-| `gpu_tlr_kind1_band2` | 1 | not in the baseline matrix | 1.725825e-08 | 0.09755 |
-| `gpu_tlr_mp_k1` | 1 | 5.551907e-09 | 5.551907e-09 | 0.22803 |
-| `gpu_dense_k5_dtconv2` | 1 | 2.176706e-09 | 2.176706e-09 | 0.17879 |
+| `gpu_dense_k5_fp64` | 1 | 3.602581e-16 | 3.602581e-16 | 0.11584 |
+| `gpu_dense_k5_adapt` | 1 | 2.176706e-09 | 2.176706e-09 | 0.23197 |
+| `gpu_dense_k5_band2` | 1 | 2.804213e-09 | 2.804213e-09 | 0.21073 |
+| `gpu_dense_k8_adapt` | 1 | 2.176706e-09 | 2.176706e-09 | 0.22955 |
+| `gpu_dense_k9_adapt` | 1 | 3.313729e-07 | 3.313729e-07 | 0.12063 |
+| `gpu_runtime_k10` | 1 | 1.041065e-08 | 1.041065e-08 | 0.26862 |
+| `gpu_runtime_k10_admem` | 1 | 1.041065e-08 | 1.041065e-08 | 0.26798 |
+| `gpu_tlr_kind2_band2` | 1 | not in the baseline matrix | 2.741820e-09 | 0.08998 |
+| `gpu_tlr_kind1_band2` | 1 | not in the baseline matrix | 1.725825e-08 | 0.09983 |
+| `gpu_tlr_mp_k1` | 1 | 5.551907e-09 | 5.551907e-09 | 0.20121 |
+| `gpu_dense_k5_dtconv2` | 1 | 2.176706e-09 | 2.176706e-09 | 0.17968 |
 | `gpu_trmm_adapt` | 1 | PASSED | PASSED | NA |
-| `gpu_dense_k5_fp64_np2` | 2 | 3.602581e-16 | 3.602581e-16 | 0.31838 |
-| `gpu_runtime_k10_np2` | 2 | 1.041065e-08 | 1.041065e-08 | 0.47134 |
-| `gpu_dense_k8_np2` | 2 | 2.176706e-09 | 2.176706e-09 | 0.37229 |
+| `gpu_dense_k5_fp64_np2` | 2 | 3.602581e-16 | 3.602581e-16 | 0.34400 |
+| `gpu_runtime_k10_np2` | 2 | 1.041065e-08 | 1.041065e-08 | 0.47139 |
+| `gpu_dense_k8_np2` | 2 | 2.176706e-09 | 2.176706e-09 | 0.41567 |
 
 The kind 8 and 9 cases ran on an A100 (compute capability 8.0), where the FP8
 GEMMs fall back to FP16/FP32 (`DENSE_FP8= 0` in their GEMM counts): the FP8
@@ -202,7 +209,10 @@ kind 5 adaptive `DENSE_DP= 2156 DENSE_SP= 2067 DENSE_HP= 737 DENSE_FP8= 0 LOW_RA
 The differences are within run-to-run noise (3 % or less); no change on the
 branch touches the GPU kernels' arithmetic or the task graphs' critical path.
 The small-case matrix times (tables above) are likewise unchanged within
-noise. No multi-node or multi-GPU measurement was possible on this machine.
+noise. The large-case timing was taken before the link changes of section
+5.5; after them the matrix times of the GPU cases are unchanged within noise
+and those of the CPU cases are identical to the earlier runs. No multi-node or
+multi-GPU measurement was possible on this machine.
 
 ### 5.4 Not validated
 
@@ -215,6 +225,43 @@ noise. No multi-node or multi-GPU measurement was possible on this machine.
 - The Fugaku (`ON_FUGAKU`) build.
 - The intermediate commits individually (only the final tree).
 
+### 5.5 First CI run and the follow-up fixes
+
+The first run of the workflow on GitHub (pull request ecrc/hicma-x#13) failed
+in both jobs:
+
+- **CPU job**: every test driver failed to link with undefined `LAPACKE_*`
+  references from `libhcore.so`. hcore's own CMake records no link
+  dependency, and with Ubuntu's `--as-needed` default nothing else on the
+  line provided the symbols (locally MKL reached them through DPLASMA). hcore
+  and starsh now link `LAPACKE::LAPACKE`, and `hicma_parsec` links the same
+  target instead of a separate BLAS discovery plus a hard-coded MKL block,
+  which had loaded two MKL interface layers and two threading layers into one
+  process.
+- **CUDA job**: configure failed because the container has no Python
+  (DPLASMA's precision generator); flex and bison were missing as well. They
+  are installed now.
+- **Found while validating the fix**: with hcore's new dependency the link
+  order put `libgslcblas` (GSL's reference CBLAS, linked by STARS-H) ahead of
+  MKL, and DPLASMA's `cblas_dgemm` bound to it: the CPU factorizations ran 40x
+  slower (dense FP64, N=4096: 0.065 s to 2.64 s), residuals shifted (FP64
+  1.9e-16 to 1.4e-15) and the dense adaptive mixed-precision cases crossed
+  their 1e-8 bound. `libgslcblas` is removed from the starsh target (any CBLAS
+  satisfies GSL) and hcore is linked before starsh; `LD_DEBUG=bindings` then
+  shows `cblas_dgemm` bound to `libmkl_gf_lp64`, and every residual and time
+  returned to the baseline values.
+- `potrf_mp_dense_adaptive`, `potrf_mp_dense_admem` and `gpu_tlr_mp` carry
+  `--check_tol 1e-7`: their residual is 6.6e-9 with one BLAS binding and
+  1.1e-8 with another, bounded by the FP32 arithmetic of half of their GEMMs
+  rather than by the 1e-8 compression accuracy; the banded sibling case
+  already used 1e-7. A failed check now prints its residual and bound.
+
+Re-validation after these commits: CPU, CUDA and HIP trees build; CPU `ctest`
+20 / 20; CUDA-tree `ctest` 30 / 30; install consumers from both prefixes
+(residual 2.69e-16); the 75-case matrix identical to the baseline except the
+intended mesh change (tables in 5.2). The CI rerun was pending when this
+document was written; its result is recorded in the pull request.
+
 ## 6. Release checklist
 
 | Item | Status |
@@ -225,7 +272,7 @@ noise. No multi-node or multi-GPU measurement was possible on this machine.
 | Test instructions (`TESTS.md`, CTest labels, `scripts/validation_matrix.sh`) | done |
 | API / behaviour changes documented (`RELEASE.md` "Upgrading from 0.1.0") | done |
 | Known limitations documented (`RELEASE.md`, `TESTS.md`) | done |
-| CI covers correctness (`--check 1` in CTest and `scripts/test_CI.sh`), install, CUDA compile | done in the workflow; the workflow has not run on GitHub from this branch |
+| CI covers correctness (`--check 1` in CTest and `scripts/test_CI.sh`), install, CUDA compile | workflow in place; the first GitHub run failed on two environment issues, fixed (section 5.5); rerun pending at the time of writing |
 | P0 items of the plan | all done and validated |
 | P1 items | done except: per-call status checks in the non-FP8 GPU kernels (P1-6, partial), warning-flags option (P1-11) |
 | P2 items | done except P2-6, P2-9, P2-12 (deferred) and the remaining parts of P2-5, P2-7, P2-8 |
@@ -242,7 +289,8 @@ noise. No multi-node or multi-GPU measurement was possible on this machine.
 2. **Mixed-precision residual bounds**: the registered CTest cases use
    `--check_tol` values measured on this machine (1e-6, 1e-7). Other BLAS
    libraries or GPUs may need looser bounds; the cases print the residual.
-3. **CI**: the workflow file is rewritten but has not run on GitHub.
+3. **CI**: the first GitHub run failed on environment issues that are fixed
+   (section 5.5); the rerun's result is in the pull request.
 4. **Hardware not available here**: AMD GPUs, H100 (FP8), multi-node. A run of
    `scripts/validation_matrix.sh <build> <label> gpu` on those systems before
    tagging is recommended.
