@@ -2849,6 +2849,14 @@ void hicma_parsec_free_memory( parsec_context_t *parsec,
     parsec_tiled_matrix_destroy( &data->dcA.band.super );
     parsec_tiled_matrix_destroy( &data->dcA.off_band.super );
 
+    // Destroy dcAd: hicma_parsec_data_init always initializes it, and its tile
+    // memory was freed by hicma_parsec_memory_flush_choleksy above. When a GPU
+    // evicts a tile that a task still references, PaRSEC keeps the emptied
+    // device copy attached to the tile's parsec_data_t, outside the LRU lists it
+    // flushes at shutdown. Only destroying the collection releases those copies;
+    // otherwise parsec_fini aborts with "data copies ... still in use".
+    parsec_tiled_matrix_destroy( (parsec_tiled_matrix_t*)&data->dcAd );
+
     /* ===========================================
      * Destroy rank matrix descriptor (dcAr)
      * =========================================== */
