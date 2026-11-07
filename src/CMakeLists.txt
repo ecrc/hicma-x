@@ -71,7 +71,6 @@ set(JDF
     kernels/band_free_memory.jdf
     kernels/band_regenerate.jdf
     kernels/band_size_dense_auto_tuning.jdf
-    kernels/diagonal_correction_calculation.jdf
     
     # POTRF JDF files
     kernels/potrf_L_dense_tlr_dp.jdf
@@ -88,19 +87,14 @@ set(JDF
     
     # GEMM and related JDF files
     kernels/isyrk_LT.jdf
-    #kernels/misyrk_LT.jdf
-    kernels/gemm_TN_summa.jdf
     kernels/gemmex_TN_summa.jdf
     kernels/gemm_TN.jdf
-    #kernels/gemm_TN_batched.jdf
     kernels/gemmex_TN.jdf
-    kernels/reorder_gemm.jdf
     
     # Utility JDF files
     kernels/rank_gather.jdf
     kernels/rank_check.jdf
     kernels/rank_print.jdf
-    kernels/matrix_ssum.jdf
     kernels/matrix_uncompress.jdf
     kernels/matrix_compress.jdf
     kernels/decision_make_comp.jdf
@@ -116,7 +110,6 @@ set(JDF
     kernels/memory_allocation_dense_static.jdf
     kernels/memory_allocation_dense_decision.jdf
     kernels/memory_free_dense_decision.jdf
-    kernels/matrix_dsum.jdf
     kernels/matrix_check_norm_diff.jdf
     kernels/matrix_det.jdf
     
@@ -125,7 +118,6 @@ set(JDF
     kernels/Tile_to_Lapack.jdf
     kernels/Tile_to_Lapack_single.jdf
     kernels/Lapack_to_Tile_Single.jdf
-    kernels/Lapack_to_Tile_sym.jdf
     kernels/Tile_to_Lapack_sym.jdf
     kernels/Tile_to_Lapack_sym_single.jdf
     kernels/Tile_to_Lapack_int.jdf
@@ -133,18 +125,15 @@ set(JDF
     
     # Other utility JDF files
     kernels/replicate_to_rows.jdf
-    kernels/sqrt_kernel.jdf
     kernels/genotype_generator.jdf
     kernels/dist_allocate.jdf
     kernels/dist_allocate_sym.jdf
     kernels/convert_d2i.jdf
     kernels/convert_i2d.jdf
     kernels/convert_s2i.jdf
-    kernels/convert_i2s.jdf
     kernels/sqr_sum_vec_cyclic.jdf
     kernels/copy_vector_bcdd.jdf
     kernels/matrix_add.jdf
-    kernels/cast_double_diag.jdf
     kernels/memory_free_tile.jdf
     kernels/dist_read.jdf
     kernels/matrix_sum_vec.jdf
@@ -160,7 +149,6 @@ set(JDF
     climate_emulator/climate_emulator_diff_double.jdf
     climate_emulator/climate_emulator_geqsht_inverse_pre_computed_version.jdf
     climate_emulator/climate_emulator_mse.jdf
-    climate_emulator/climate_emulator_print_double.jdf
     climate_emulator/climate_emulator_geqsht_forward_reshape.jdf
     climate_emulator/climate_emulator_matrix_norm_get.jdf
     
@@ -169,7 +157,6 @@ set(JDF
     kernels/dist_allocate_hamming.jdf
     kernels/hamming_binary_generator.jdf
     kernels/matrix_unique_element.jdf
-    kernels/check_read_data.jdf
 )
 
 # CUDA support

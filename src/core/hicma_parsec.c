@@ -667,18 +667,6 @@ int hicma_parsec_matrix_post_analysis( parsec_context_t *parsec,
         print_final_storage_decisions(params);
     }
 
-#if 0
-    /* Debug code for matrix sum calculation (currently disabled) */
-    double total = hicma_parsec_matrix_dsum( parsec, (parsec_tiled_matrix_t*)&data->dcAd,
-            (parsec_tiled_matrix_t*)&data->dcAr, params->decisions );
-    if( 0 == params->rank ) {
-        fprintf(stderr, "sum of matrix %lf\n", total);
-    }
-
-    /* Debug code for matrix printing (currently disabled) */
-    dplasma_dprint(parsec, params->uplo, (parsec_tiled_matrix_t *)&data->dcAd);
-#endif
-
     /* Collect final rank statistics after Cholesky factorization */
     SYNC_TIME_START();
     hicma_parsec_rank_stat(parsec, "final_rank_tile", (parsec_tiled_matrix_t*)&data->dcAr, params, &params->fminrk, &params->fmaxrk, &params->favgrk);
@@ -770,90 +758,6 @@ void hicma_parsec_fini( parsec_context_t* parsec,
     hicma_parsec_cleanup_parsec(parsec, params);
 }
 
-/**
- * @brief Write matrix A to file in various formats
- * 
- * This function writes the matrix A to a file using either MPI-IO for distributed
- * output or standard file I/O for single-node output. The matrix can be written
- * in symmetric or general format depending on the symm parameter.
- * 
- * @param[in] parsec PaRSEC execution context
- * @param[in] filename Output filename
- * @param[in] AA Reference matrix (unused in current implementation)
- * @param[in] data HiCMA data structures containing the matrix to write
- * @param[in] params HiCMA parameters for matrix dimensions and distribution
- * @param[in] symm Flag indicating if matrix should be written in symmetric format
- */
-void hicma_parsec_writeA(parsec_context_t *parsec,
-        const char *filename,
-        parsec_tiled_matrix_t *AA,
-        hicma_parsec_data_t *data,
-        hicma_parsec_params_t *params,
-        int symm)
-{
-    /* Extract matrix A from data structures */
-    parsec_tiled_matrix_t* A = (parsec_tiled_matrix_t *)&data->dcAd;
-    parsec_tiled_matrix_t* X = (parsec_tiled_matrix_t *)&data->dcX;
-    
-    /* Extract matrix distribution parameters */
-    int rank = params->rank;
-    int nodes = params->nodes;
-    int P = params->P;  /* Grid rows */
-    int Q = params->Q;  /* Grid columns */
-    int MB = A->mb;     /* Block size in rows */
-    int NB = A->nb;     /* Block size in columns */
-    int NT = params->NT; /* Number of tiles */
-    int M = A->lm;      /* Local matrix rows */
-    int N = A->ln;      /* Local matrix columns */
-    
-    /* Display write operation start message */
-    if(rank == 0) fprintf(stderr, RED "\nWrite matrix A to file:\n" RESET);
-  
-#if MPIIO
-    /* Use MPI-IO for distributed file writing */
-    MPI_Datatype darrayA;
-
-    /* Create MPI datatype for 2D cyclic distribution */
-    Creating_MPI_Datatype_2D(nodes, rank,
-            N, M, MPI_DISTRIBUTE_CYCLIC, MPI_DISTRIBUTE_CYCLIC,
-            NB, NB, P, Q,
-            MPI_DOUBLE, &darrayA);
-
-    /* Allocate buffer for matrix data */
-    double* DA = (double *) malloc( A->llm*A->lln * sizeof(double));
-
-    /* Convert from tile format to LAPACK format */
-    if(symm)
-        hicma_parsec_Tile_to_Lapack_sym( parsec, (parsec_tiled_matrix_t *)A, DA, P, nodes/P);
-    else
-        hicma_parsec_Tile_to_Lapack( parsec, (parsec_tiled_matrix_t *)A, DA, P, nodes/P);
-
-    /* Debug output for matrix dimensions */
-    printf("\n %d, %d, %d, %d, %d, %d\n", A->llm, A->llm, M, N, MB, NB);
-    
-    /* Write matrix using MPI-IO */
-    MPI_Writing_dfile(filename, rank, DA, A->llm*A->llm, MPI_DOUBLE, darrayA);
-    
-    /* Clean up allocated memory */
-    parsec_data_free(DA);
-#else
-    /* Use standard file I/O for single-node output */
-    double* DA = (double *)malloc((size_t)A->llm*(size_t)A->lln*
-                                    (size_t)parsec_datadist_getsizeoftype(A->mtype));
-
-    /* Convert from tile format to LAPACK format */
-    if(symm)
-        hicma_parsec_Tile_to_Lapack_sym( parsec, (parsec_tiled_matrix_t *)A, DA, P, nodes/P);
-    else
-        hicma_parsec_Tile_to_Lapack( parsec, (parsec_tiled_matrix_t *)A, DA, P, nodes/P);
-    
-    /* Write matrix to binary file */
-    writeMatrixToBinaryFile(filename, N, N, DA);
-
-    /* Clean up allocated memory */
-    free(DA);
-#endif
-}
 /**
  * @brief Write matrix B to file in various formats
  * 

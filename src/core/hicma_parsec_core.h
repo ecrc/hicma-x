@@ -316,20 +316,6 @@ void hicma_parsec_core_syrk_runtime_decision_cpu(parsec_tiled_matrix_t* descA,
  * Data type conversion functions
  * ============================================================================ */
 
-/**
- * @brief Convert matrix to FP8 bit format
- * 
- * @param[in] params_tlr HICMA parameters
- * @param[in] A Input matrix
- * @param[in] A_use Output matrix in FP8 format
- * @param[in] m Number of rows
- * @param[in] n Number of columns
- * @param[in] mb Block size for rows
- * @param[in] nb Block size for columns
- */
-void hicma_parsec_convert_2fp8_bit(hicma_parsec_params_t *params_tlr,
-                                   float *A, float *A_use, int m, int n, int mb, int nb);
-
 void hicma_parsec_count_datatype_conversion(hicma_parsec_params_t *params_tlr,
                                             int counter_id);
 
@@ -338,15 +324,6 @@ int hicma_parsec_gpu_counter_id(hicma_parsec_params_t *params_tlr,
                                 parsec_device_cuda_module_t *cuda_device,
                                 parsec_cuda_exec_stream_t *cuda_stream);
 #endif
-
-/**
- * @brief Print tile matrix in new format
- * 
- * @param[in] A Matrix data
- * @param[in] m Number of rows
- * @param[in] n Number of columns
- */
-void parsec_print_tilenew(float *A, int m, int n);
 
 /**
  * @brief CPU implementation of dense GEMM with dense C, dense A, dense B
@@ -522,42 +499,6 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_cpu(parsec_tiled_matrix_t* descA,
                                                void *C, void *A, void *B,
                                                int m, int n, int k,
                                                int Crank, int Arank, int Brank);
-
-/**
- * @brief SVD-based low-rank GEMM implementation
- * 
- * Performs matrix multiplication using SVD decomposition for low-rank matrices.
- * 
- * @param[in] C Result matrix
- * @param[in] A Input matrix A
- * @param[in] B Input matrix B
- * @param[in] m Number of rows
- * @param[in] n Number of columns
- * @param[in] k Inner dimension
- * @param[in] Crank Rank of matrix C
- * @param[in] Arank Rank of matrix A
- * @param[in] Brank Rank of matrix B
- */
-void hicma_parsec_core_dgemm_lr_svd(void *C, void *A, void *B, int m, int n, int k,
-                                    int Crank, int Arank, int Brank);
-
-/**
- * @brief SVD-based low-rank GEMM with low-rank result
- * 
- * Performs matrix multiplication using SVD decomposition where result is also low-rank.
- * 
- * @param[in] C Result matrix (low-rank)
- * @param[in] A Input matrix A (low-rank)
- * @param[in] B Input matrix B (low-rank)
- * @param[in] m Number of rows
- * @param[in] n Number of columns
- * @param[in] k Inner dimension
- * @param[in] Crank Rank of matrix C
- * @param[in] Arank Rank of matrix A
- * @param[in] Brank Rank of matrix B
- */
-void hicma_parsec_core_dgemm_lrA_lrB_lrC_svd(void *C, void *A, void *B, int m, int n, int k,
-                                              int Crank, int Arank, int Brank);
 
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
 

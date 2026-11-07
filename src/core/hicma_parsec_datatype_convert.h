@@ -720,17 +720,6 @@ void convert_d2h_binary_CPU(__fp16 *_target, double *_source, int mb, int nb);
 void convert_d2h_unary_CPU(double *data, int mb, int nb);
 
 /**
- * @brief Convert double precision to half precision (unary version)
- *
- * Converts a double precision matrix to half precision in-place.
- *
- * @param[in,out] data Pointer to the matrix data to convert
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- */
-void convert_d2h_unary_CPU(double *data, int mb, int nb);
-
-/**
  * @brief Convert half precision to double precision (binary version)
  * 
  * Converts a half precision matrix to double precision with separate
@@ -743,17 +732,6 @@ void convert_d2h_unary_CPU(double *data, int mb, int nb);
  */
 void convert_h2d_binary_CPU(double *_target, __fp16 *_source, int mb, int nb);
 
-void convert_h2d_unary_CPU(__fp16 *data, int mb, int nb);
-
-/**
- * @brief Convert half precision to double precision (unary version)
- *
- * Converts a half precision matrix to double precision in-place.
- *
- * @param[in,out] data Pointer to the matrix data to convert
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- */
 void convert_h2d_unary_CPU(__fp16 *data, int mb, int nb);
 
 /**
@@ -1319,31 +1297,6 @@ bool hicma_parsec_convert_in_trsm(hicma_parsec_params_t *params_tlr, int m, int 
  * @see hicma_parsec_params_t for parameter structure details
  */
 void hicma_parsec_convert_2h_bit(void *A, float *A_use, int mb, int nb, uint16_t decision);
-
-/**
- * @brief Convert float to half precision
- * 
- * Converts a single precision (float) matrix to half precision format.
- * This function performs the conversion on CPU using optimized algorithms
- * designed for high-performance computing applications.
- * 
- * @param[in] nrows Number of rows in the matrix
- * @param[in] ncols Number of columns in the matrix
- * @param[in] _source Source single precision data buffer
- * @param[in] ld_s Leading dimension of source matrix
- * @param[out] _target Target half precision data buffer
- * @param[in] ld_t Leading dimension of target matrix
- * 
- * @note This function is optimized for CPU execution
- * @note Memory layout (row-major vs column-major) is preserved
- * @note The function assumes the target buffer is pre-allocated
- * @note Useful for mixed precision computations
- * @note Half precision support requires appropriate hardware/compiler support
- * 
- * @see convert_s2h_unary_CPU() for in-place conversion
- * @see convert_s2h_binary_CPU() for binary conversion
- */
-void float2half_CPU(int nrows, int ncols, const float *_source, int ld_s, void *_target, int ld_t);
 
 /**
  * @brief FP32 to IEEE binary16 in software, rounding to nearest even

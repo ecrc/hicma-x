@@ -142,23 +142,6 @@ int gpu_load_balance_2d( int m, int n, hicma_parsec_params_t *params )
 }
 
 /**
- * @brief Calculate load balance for dense operations with device count
- *
- * Determines the optimal GPU device for dense operations when
- * the number of CUDA devices is explicitly specified.
- *
- * @param[in] m Number of rows
- * @param[in] n Number of columns
- * @param[in] NT Number of tiles
- * @param[in] nb_cuda_devices Number of CUDA devices
- * @return Load balance factor (GPU device index)
- */
-int gpu_load_dense( int m, int n, int NT, int nb_cuda_devices)
-{
-    return (n * NT + m) % nb_cuda_devices;
-}
-
-/**
  * @brief Calculate load balance for TLR operations
  *
  * Determines the optimal GPU device for TLR (Tile Low Rank)
@@ -196,23 +179,6 @@ int gpu_load_mixed_precision( int m, int n, int NT, int P, int nb_cuda_devices, 
     else
         return (n * NT + m) % nb_cuda_devices;
 }
-
-/**
- * @brief Disable CPU to just run on GPU
- *
- * Disables CPU execution for the specified task pool, forcing all
- * computation to run on GPU devices only.
- *
- * @param[in] tp Task pool to disable CPU for
- */
-void disable_CPU( parsec_taskpool_t * tp ) {
-    for (int i = 0; i < parsec_nb_devices; i++) {
-        parsec_device_module_t *device = parsec_mca_device_get(i);
-        if( device->type == PARSEC_DEV_CPU )
-            tp->devices_index_mask &= ~(1<<i);
-    }
-}
-
 /**
  * @brief Disable GPU to just run on CPU
  *
@@ -228,39 +194,6 @@ void disable_GPU( parsec_taskpool_t * tp ) {
             tp->devices_index_mask &= ~(1<<i);
     }
 }
-
-/* ============================================================================
- * GPU workspace management functions
- * ============================================================================ */
-
-/**
- * @brief Lookup GPU workspace for POTRF operations
- *
- * Finds the appropriate GPU workspace for POTRF operations based on
- * the CUDA device and execution stream.
- *
- * @param[in] cuda_device CUDA device module
- * @param[in] cuda_stream CUDA execution stream
- * @param[in] ws POTRF workspace
- * @return Pointer to stream workspace
- */
-int lookup_gpu_workspace_i( parsec_device_cuda_module_t *cuda_device ) {
-    int i;
-
-    /* Look for device */
-    for(i = 0; i < (int)parsec_nb_devices; i++) {
-        parsec_device_module_t *device = parsec_mca_device_get(i);
-        if( NULL == device ) continue;
-        if( device->type != PARSEC_DEV_CUDA && device->type != PARSEC_DEV_HIP ) continue;
-        parsec_device_cuda_module_t *cuda_device_compare = (parsec_device_cuda_module_t*)device;
-
-        if(cuda_device->cuda_index == cuda_device_compare->cuda_index)
-            break;
-    }
-
-    return i;
-}
-
 int lookup_gpu_workspace_j( parsec_device_cuda_module_t *cuda_device,
         parsec_cuda_exec_stream_t *cuda_stream ) {
     int j;
@@ -437,19 +370,6 @@ void workspace_memory_free( parsec_potrf_workspace_t *ws)
 /* ============================================================================
  * GPU cache and memory management functions
  * ============================================================================ */
-
-/**
- * @brief Reset GPU cache
- *
- * Resets GPU memory cache and device load information to free
- * up memory and reset performance counters.
- *
- * @param[in] parsec PaRSEC context
- */
-void hicma_parsec_gpu_cache_reset( parsec_context_t *parsec ) {
-    parsec_devices_release_memory();
-    parsec_devices_reset_load(parsec);
-}
 
 /**
  * @brief Initialize GPU handle
