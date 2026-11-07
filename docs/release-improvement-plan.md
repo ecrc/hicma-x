@@ -116,4 +116,8 @@ after the library changes.
   GEMMs), and installing the packages. The dense adaptive mixed-precision
   cases use --check_tol 1e-7 (FP32 bound). Re-validated: ctest 20/20 and
   30/30, install consumers, 75-case matrix identical to the baseline.
+- 2026-11-07 (CI, later): the installed consumer of the CI job failed at load
+  time (no runtime search path in the installed library under RUNPATH
+  semantics); fixed with CMAKE_INSTALL_RPATH ($ORIGIN, prefix lib dir, link
+  path). Both CI jobs pass on the final commit of ecrc/hicma-x#13.
 

@@ -272,8 +272,9 @@ in both jobs:
 Re-validation after these commits: CPU, CUDA and HIP trees build; CPU `ctest`
 20 / 20; CUDA-tree `ctest` 30 / 30; install consumers from both prefixes
 (residual 2.69e-16); the 75-case matrix identical to the baseline except the
-intended mesh change (tables in 5.2). The CI rerun was pending when this
-document was written; its result is recorded in the pull request.
+intended mesh change (tables in 5.2). Both CI jobs of pull request
+ecrc/hicma-x#13 pass on the final commit (CPU: build, CTest, regression
+script, install and consumer; CUDA: compile).
 
 ## 6. Release checklist
 
@@ -285,7 +286,7 @@ document was written; its result is recorded in the pull request.
 | Test instructions (`TESTS.md`, CTest labels, `scripts/validation_matrix.sh`) | done |
 | API / behaviour changes documented (`RELEASE.md` "Upgrading from 0.1.0") | done |
 | Known limitations documented (`RELEASE.md`, `TESTS.md`) | done |
-| CI covers correctness (`--check 1` in CTest and `scripts/test_CI.sh`), install, CUDA compile | workflow in place; the first GitHub run failed on two environment issues, fixed (section 5.5); rerun pending at the time of writing |
+| CI covers correctness (`--check 1` in CTest and `scripts/test_CI.sh`), install, CUDA compile | done; the first GitHub run failed on three environment issues, fixed (section 5.5); both jobs pass on the final commit |
 | P0 items of the plan | all done and validated |
 | P1 items | done except: per-call status checks in the non-FP8 GPU kernels (P1-6, partial), warning-flags option (P1-11) |
 | P2 items | done except P2-6, P2-9, P2-12 (deferred) and the remaining parts of P2-5, P2-7, P2-8 |
@@ -302,8 +303,7 @@ document was written; its result is recorded in the pull request.
 2. **Mixed-precision residual bounds**: the registered CTest cases use
    `--check_tol` values measured on this machine (1e-6, 1e-7). Other BLAS
    libraries or GPUs may need looser bounds; the cases print the residual.
-3. **CI**: the first GitHub run failed on environment issues that are fixed
-   (section 5.5); the rerun's result is in the pull request.
+3. **CI**: passes on the final commit after the fixes of section 5.5.
 4. **Hardware not available here**: AMD GPUs, H100 (FP8), multi-node. A run of
    `scripts/validation_matrix.sh <build> <label> gpu` on those systems before
    tagging is recommended.
