@@ -1012,8 +1012,9 @@ void hicma_parsec_core_trsm_cpu( parsec_tiled_matrix_t* descA,
                                 C /*A(m, k)*/, ldam);
 
     } 
-    // Case 2: Dense single or half precision TRSM
-    else if( DENSE_SP == params_tlr->decisions[k*descA->lmt+m] || DENSE_HP == params_tlr->decisions[k*descA->lmt+m] ) {
+    // Case 2: Dense single, half or FP8 precision TRSM (all stored as FP32 on the CPU)
+    else if( DENSE_SP == params_tlr->decisions[k*descA->lmt+m] || DENSE_HP == params_tlr->decisions[k*descA->lmt+m]
+             || DENSE_FP8 == params_tlr->decisions[k*descA->lmt+m] ) {
 
         /* Convert triangular matrix T to single precision if needed */
         void *T_s = parsec_private_memory_pop( p_work_full_sp );
@@ -1060,9 +1061,10 @@ void hicma_parsec_core_trsm_cpu( parsec_tiled_matrix_t* descA,
         return;
 #endif
 
-        // Low-rank TRSM: solve T * Cv = Cv where T is triangular and Cv is rank x Crank
+        // Low-rank TRSM: V <- T^{-1} V, where V has as many rows as T (the
+        // columns of the tile), independently of the tile's row count tempmm
         CORE_dtrsm(PlasmaLeft, PlasmaLower, PlasmaNoTrans, PlasmaNonUnit,
-                tempmm, Crank,
+                descA->mb, Crank,
                 (double)1.0, T, ldak,
                             Cv, ldam);
 
@@ -1091,9 +1093,9 @@ void hicma_parsec_core_trsm_cpu( parsec_tiled_matrix_t* descA,
         hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
         LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, T, descA->mb, T_s, descA->mb );
 
-        // Low-rank single precision TRSM
+        // Low-rank single precision TRSM: V <- T^{-1} V (see the DP case)
         CORE_strsm(PlasmaLeft, PlasmaLower, PlasmaNoTrans, PlasmaNonUnit,
-                tempmm, Crank,
+                descA->mb, Crank,
                 (float)1.0, T_s, ldak,
                              Cv, ldam);
 
@@ -1389,57 +1391,6 @@ void hicma_parsec_core_syrk_runtime_decision_cpu( parsec_tiled_matrix_t* descA,
     /* Operation count */
     hicma_parsec_op_count_syrk( descA, params_tlr, m, k, es->th_id, tempmm, IS_DENSE(m, k)? 0: rank );
 }
-
-
-/**
- * @brief Manually converts single precision (SP) floating point values to 8-bit format
- * 
- * This function performs a manual conversion from 32-bit single precision floating point
- * values to 8-bit format by casting the values. This is used for memory optimization
- * and reduced precision computations in HICMA.
- * 
- * @param[in] params_tlr HICMA parameters (currently unused but kept for interface consistency)
- * @param[in] A Input array of single precision floating point values
- * @param[out] A_use Output array containing the converted 8-bit values
- * @param[in] m Number of rows in the matrix
- * @param[in] n Number of columns in the matrix
- * @param[in] mb Block size in rows
- * @param[in] nb Block size in columns
- */
-void hicma_parsec_convert_2fp8_bit( hicma_parsec_params_t *params_tlr,
-        float *A, float *A_use, int m, int n, int mb, int nb ) {
-    
-        for( int j = 0; j < nb; j++ ) {
-            for( int i = 0; i < mb; i++ ) {
-                A_use[j*mb+i] =(uint8_t) (A[j*mb+i]); // __nv_fp8_e4m3(A[j*mb+i]);
-            }
-        }
-
-} 
-
-/**
- * @brief Prints a tile matrix in a formatted manner for debugging purposes
- * 
- * This function prints the contents of a tile matrix in row-major format,
- * displaying each element with its value. It's primarily used for debugging
- * and verification of matrix computations.
- * 
- * @param[in] A Pointer to the matrix data (row-major storage)
- * @param[in] m Number of rows in the tile
- * @param[in] n Number of columns in the tile
- */
-void parsec_print_tilenew(float *A, int m, int n){
-      printf("\n");
-    for(int i=0;i<m;i++){
-       for(int j=0;j<n;j++){
-       //printf("[%d,%d]:(%f), ", i, j, tempaa[i*dcA->.super.llm+j]);
-          printf("%f, ", A[j*m+i]);
-       }
-       printf("\n");
-    }
-}
-
-
 /**
  * @brief CPU implementation of GEMM (General Matrix Multiply) for dense matrices
  * 
@@ -2084,61 +2035,6 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
             convert_s2h_binary_CPU( B_h, B, descA->mb, descA->nb);
             B_use = B_h;
         }
-
-#if 0
-
-        fjcblas_gemm_r16(CblasColMajor, PlasmaNoTrans, PlasmaTrans,
-                tempmm, descA->mb, descA->mb,
-                (__fp16) 1.0, A_use /*A(m, k)*/, ldam,
-                              B_use /*A(n, k)*/, ldan,
-                (__fp16) 0.0, C_h /*A(m, n)*/, ldam);
-
-        /* HGEMM */
-        if( DENSE_DP == params_tlr->decisions[n*descA->lmt+m] ) {
-            for(int j = 0; j < descA->nb; j++) {
-                for(int i = 0; i < descA->mb; i++) {
-                    ((double *)C)[j*descA->nb+i] -= ((__fp16 *)C_h)[j*descA->mb+i];
-                }
-            }
-        } else {
-            for(int j = 0; j < descA->nb; j++) {
-                for(int i = 0; i < descA->mb; i++) {
-                    ((float*)C)[j*descA->nb+i] -= ((__fp16 *)C_h)[j*descA->mb+i];
-                }
-            }
-            params_tlr->decisions[n*descA->lmt+m] = DENSE_SP;
-        }
-#else
-	/* Convert datatype, C */
-	if( 0 == k ) {
-        if( DENSE_DP == Cprecision ) {
-            hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            convert_d2h_unary_CPU( C, descA->mb, descA->nb);
-        } else {
-            hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            convert_s2h_unary_CPU( C, descA->mb, descA->nb);
-        }
-	}
-
-        /* Call hgemm */
-        fjcblas_gemm_r16(CblasColMajor, PlasmaNoTrans, PlasmaTrans,
-                tempmm, descA->mb, descA->mb,
-                (__fp16)-1.0, A_use /*A(m, k)*/, ldam,
-                              B_use /*A(n, k)*/, ldan,
-                (__fp16) 1.0, C /*A(m, n)*/, ldam);
-
-        /* Convert datatype, C */
-        if( n-1  == k ) {
-        if( DENSE_DP == Cprecision ) {
-            hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            convert_h2d_unary_CPU( C, descA->mb, descA->nb);
-        } else {
-            hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            convert_h2s_unary_CPU( C, descA->mb, descA->nb);
-        }       
-        }
-
-#endif
 
         /* Push back to mempool */
         parsec_private_memory_push(p_work_full_hp, A_h);
@@ -2816,173 +2712,6 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_cpu( parsec_tiled_matrix_t* descA,
 
 
 // TODO Rewrite low-rank kernels
-#if 0
-
-static void hicma_parsec_dtranpose( int mb, int nb, double *d, int lda_d, double *s, int lda_s ) {
-    for( int j = 0; j < nb; j++ ) {
-        for( int i = 0; i < mb; i++ ) {
-            d[j*lda_d+i] = s[i*lda_s+j]; 
-        }
-    }
-}
-
-static void hicma_parsec_dnegtive( int mb, int nb, double* A, int lda ) {
-    for( int j = 0; j < nb; j++ ) {
-        for( int i = 0; i < mb; i++ ) {
-            A[j*lda+i] = -A[j*lda+i]; 
-        }
-    }
-}
-
-/**
- * @brief Core DGEMM operation for low-rank matrix updates in JDF (Job Data Flow)
- * 
- * This function performs the core DGEMM operation for low-rank matrix updates:
- * Cu * trans(Cv) -= U * V
- * 
- * This is used in the context of low-rank matrix factorization where matrices
- * are represented in factorized form (U, V) and need to be updated efficiently.
- * The operation is performed in-place on the combined matrices.
- * 
- * @param[in] mb Number of rows in the matrix blocks
- * @param[in] Crank Rank of the C matrix (Cu/Cv dimensions)
- * @param[in] UVrank Rank of the U/V matrices
- * @param[in,out] Cu Left factor of C matrix (mb × Crank)
- * @param[in,out] Cv Right factor of C matrix (mb × Crank)
- * @param[in] U Left factor of update matrix (mb × UVrank)
- * @param[in] V Right factor of update matrix (mb × UVrank)
- * @param[in] tmp_buff Temporary buffer for intermediate computations
- * 
- * @note This function modifies Cu and Cv in-place
- * @note tmp_buff must be large enough to hold intermediate results
- * @note The operation is: Cu * Cv^T -= U * V^T
- */
-void hicma_parsec_core_dgemm_lr_svd(
-        int mb, int Crank, int UVrank,
-        double *Cu, double *Cv,
-        double *U, double *V,
-        void *tmp_buff ) {
-
-    char uplo = 'A';
-    int rank_combine = Crank + rank;
-    int size = 0;
-
-    U_combine = (double *)(tmp_buff + size);
-    size += mb * rank_combine * sizeof(double); 
-    V_combine = (double *)(tmp_buff + size);
-    size += mb * rank_combine * sizeof(double); 
-
-    /* Copy Cu and U to U_tmp */
-    dlacpy_( &uplo, &mb, &Crank, Cu, &mb, U_combine, &mb ); 
-    dlacpy_( &uplo, &mb, &UVrank, U, &mb, U_combine, &mb ); 
-
-    /* Copy Cv and V to V_tmp */ 
-    dlacpy_( &uplo, &mb, &Crank, Cv, &mb, V_combine, &mb ); 
-    dlacpy_( &uplo, &mb, &UVrank, V, &mb, V_combine, &mb ); 
-
-    /* QR */
-
-
-    /* SVD */
-
-}
-
-
-/**
- * @brief Core DGEMM operation for triple low-rank matrix multiplication in JDF
- * 
- * This function performs the core DGEMM operation for triple low-rank matrix multiplication:
- * Cu * trans(Cv) -= Au * trans(Av) * Bv * trans(Bu)
- * 
- * This is used in the context of hierarchical low-rank matrix operations where
- * three matrices (A, B, C) are all represented in factorized form and need to
- * be multiplied efficiently. The operation updates the C matrix factors.
- * 
- * @param[in] Arank Rank of the A matrix factors (Au/Av dimensions)
- * @param[in] Brank Rank of the B matrix factors (Bu/Bv dimensions)
- * @param[in] Crank Rank of the C matrix factors (Cu/Cv dimensions)
- * @param[in] mb Number of rows in the matrix blocks
- * @param[in] maxrank Maximum rank across all matrices for buffer allocation
- * @param[in] Au Left factor of A matrix (mb × Arank)
- * @param[in] Av Right factor of A matrix (mb × Arank)
- * @param[in] Bu Left factor of B matrix (mb × Brank)
- * @param[in] Bv Right factor of B matrix (mb × Brank)
- * @param[in,out] Cu Left factor of C matrix (mb × Crank)
- * @param[in,out] Cv Right factor of C matrix (mb × Crank)
- * @param[in] tmp_buff Temporary buffer for intermediate computations
- * @param[in] U Temporary buffer for U matrix (mb × maxrank)
- * @param[in] V Temporary buffer for V matrix (mb × maxrank)
- * 
- * @note This function modifies Cu and Cv in-place
- * @note tmp_buff size: max(maxrank * mb * 2 + maxrank * maxrank, mb * maxrank * 4)
- * @note Early return if Arank or Brank is zero
- * @note The operation is: Cu * Cv^T -= Au * Av^T * Bv * Bu^T
- */
-void hicma_parsec_core_dgemm_lrA_lrB_lrC_svd(
-        int Arank, int Brank, int Crank, int mb, int maxrank,
-        double *Au, double *Av,
-        double *Bu, double *Bv,
-        double *Cu, double *Cv,
-        void *tmp_buff, void *U, void *V ) {
-
-    /* Direct return */
-    if( 0 == Arank || 0 == Brank ) return;
-
-    int size = 0, UVrank = 0;
-    double *tmp_mbr = (double *)(tmp_buff + size);
-    size += mb * maxrank * sizeof(double);
-    double *tmp_rr = (double *)(tmp_buff + size); 
-    size += maxrank * maxrank * sizeof(double);
-
-    /* tmp_rr = trans(Av) * Bv */
-    CORE_dgemm(PlasmaTrans, PlasmaNoTrans,
-            Arank, Brank, mb,
-            (double) 1.0, Av             /*A(k, m)*/, mb,
-            Bv             /*A(k, n)*/, mb,
-            (double) 0.0, tmp_rr /*A(m, n)*/, Arank);
-
-    if( Arank > Brank ) {
-        /* tmp_mbr = Au * tmp_rr */
-        CORE_dgemm(PlasmaNoTrans, PlasmaNoTrans,
-                mb, Brank, Arank,
-                (double) 1.0, Au      /*A(m, k)*/, mb,
-                tmp_rr  /*A(k, n)*/, Arank,
-                (double) 0.0, tmp_mbr /*A(m, n)*/, mb);
-
-        /* Update U and V */
-        memcpy( U, tmp_mbr, mb * Brank * sizeof(double) ); 
-        memcpy( V, Bu, mb * Brank * sizeof(double) ); 
-        UVrank = Brank;
-
-    } else {
-        /* tmp_mbr = tmp_rr * trans(Bu) */
-        CORE_dgemm(PlasmaNoTrans, PlasmaTrans,
-                Arank, descA->mb, Brank,
-                (double) 1.0, tmp_rr  /*A(m, k)*/, Arank,
-                Bu      /*A(n, k)*/, descA->mb,
-                (double) 0.0, tmp_mbr /*A(m, n)*/, Arank);
-
-        double *tmp_mbr2 = (double *)(tmp_buff + size); 
-        hicma_parsec_dtranpose( mb, Arank, tmp_mbr2, mb, tmp_mbr, Arank ); 
-
-        /* Update U and V */
-        memcpy( U, Au, mb * Arank * sizeof(double) ); 
-        memcpy( V, tmp_mbr2, mb * Arank * sizeof(double) ); 
-        UVrank = Arank;
-    }
-
-    /* V times -1 */
-    hicma_parsec_dnegtive( mb, UVrank, V, mb );
-
-    /* Call routines until SVD */ 
-    hicma_parsec_core_dgemm_lr_svd( mb, Crank, UVrank, Cu, Cv, U, V, tmp_buff );
-}
-
-
-
-#endif
-
-
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
 
 /**
@@ -3844,6 +3573,12 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
 
                     break;
                 }
+            default:
+                /* 0x80 (FP16 C with FP32 accumulation) is implemented by the
+                 * TRMM only; falling through here used to leave C untouched */
+                fprintf(stderr, "Fatal: --tensor_gemm mask 0x%x is not supported by the dense FP16 "
+                        "Cholesky GEMM (supported: 0x8, 0x10, 0x20, 0x40)\n", tensor_gemm_type);
+                HICMA_GPU_GEMM_FATAL();
         }
 
     } else if( DENSE_FP8 == params_tlr->decisions[n*descA->lmt+m] ) {
@@ -4153,7 +3888,12 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
         // Reallocate memory on CPU if adaptive_memory is enabled
         // Copy back data from C_use to C
         if( DENSE_DP != Cprecision ) {
-            if( params_tlr->adaptive_memory || params_tlr->adaptive_decision ) {
+            /* Always go through the device-side resize: after the k == 0
+             * downcast above the tile's span is the FP32 size whatever the
+             * adaptive_* flags are, and PaRSEC sizes every later copy and
+             * device allocation from span. hicma_reallocate_tile_on_gpu is a
+             * no-op when span already covers the FP64 tile. */
+            {
                 size_t target_bytes = (size_t)descA->mb * (size_t)descA->nb * sizeof(double);
                 parsec_data_copy_t *c_copy = this_task->data._f_C.data_out;
                 parsec_data_copy_t *c_dev_copy = NULL;

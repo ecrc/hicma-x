@@ -69,19 +69,25 @@ typedef unsigned int uint;  /**< Unsigned integer type for compatibility */
 #endif
 
 /* ============================================================================
- * PaRSEC includes
+ * PaRSEC and DPLASMA includes: the headers both projects install, so that this
+ * header compiles from an installed prefix as well as in the source tree
  * ============================================================================ */
-#include "dplasma/parsec/parsec/data_dist/matrix/sym_two_dim_rectangle_cyclic_band.h"  /**< Symmetric band matrix distribution */
-#include "dplasma/parsec/parsec/utils/mca_param.h"  /**< Parameter management utilities */
-#include "dplasma/parsec/parsec/runtime.h"  /**< PaRSEC runtime system */
-#include "dplasma/parsec/parsec/include/parsec/execution_stream.h"  /**< Execution stream management */
-#include "dplasma/tests/common_timing.h"  /**< Common timing utilities for testing */
-#include "dplasma/parsec/parsec/data_dist/matrix/matrix_internal.h"  /**< Internal matrix data structures */
+#include <parsec/runtime.h>
+#include <parsec/execution_stream.h>
+#include <parsec/utils/mca_param.h>
+#include <parsec/private_mempool.h>
+#include <parsec/data_dist/matrix/sym_two_dim_rectangle_cyclic_band.h>
+#include <dplasma.h>
+#include "hicma_parsec_timing.h"
 
-/* ============================================================================
- * DPLASMA includes
- * ============================================================================ */
-#include "dplasma/src/dplasmajdf.h"  /**< DPLASMA Job Data Flow definitions */
+#if defined(HICMA_PARSEC_BUILDING)
+/* Internal DPLASMA and PaRSEC headers that the kernels, JDFs and in-tree
+ * drivers use (CORE_* kernels, dplasma_aux_*, FLOPS macros, the matrix
+ * internals). They are not installed, so they are only seen while building
+ * HiCMA-X itself (HICMA_PARSEC_BUILDING is set by src/CMakeLists.txt). */
+#include "dplasma/src/dplasmajdf.h"
+#include "dplasma/parsec/parsec/data_dist/matrix/matrix_internal.h"
+#endif
 
 /* ============================================================================
  * Starsh includes
@@ -110,9 +116,16 @@ typedef unsigned int uint;  /**< Unsigned integer type for compatibility */
 
 /* CUDA support - NVIDIA GPU acceleration */
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
-#include "parsec/mca/device/cuda/device_cuda.h"  /**< CUDA device management */
+#include <parsec/mca/device/device_gpu.h>  /**< parsec_gpu_task_t and the generic GPU device */
+#include <parsec/utils/zone_malloc.h>      /**< Zone-based memory allocation */
+#if defined(HICMA_PARSEC_BUILDING)
+#include "parsec/mca/device/cuda/device_cuda.h"  /**< CUDA device management (not installed by PaRSEC) */
 #include "parsec/mca/device/cuda/device_cuda_internal.h"  /**< Internal CUDA device functions */
-#include "parsec/utils/zone_malloc.h"  /**< Zone-based memory allocation */
+#else
+/* The installed headers only use these through pointers */
+typedef struct parsec_device_cuda_module_s parsec_device_cuda_module_t;
+typedef struct parsec_cuda_exec_stream_s parsec_cuda_exec_stream_t;
+#endif
 #include <cuda_runtime.h>  /**< CUDA runtime API */
 #include <cuda_fp16.h>     /**< Half precision floating point support */
 #include <cublasLt.h>      /**< cuBLASLt library for tensor operations */
@@ -126,9 +139,9 @@ typedef unsigned int uint;  /**< Unsigned integer type for compatibility */
 
 /* HIP support - AMD GPU acceleration */
 #if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
-#include "parsec/utils/zone_malloc.h"  /**< Zone-based memory allocation */
-#include "hicma_parsec_hip_cuda.h"     /**< HIP-CUDA compatibility layer */
-#include "../dplasma/parsec/parsec/mca/device/hip/device_hip.h"  /**< HIP device management */
+#include <parsec/mca/device/device_gpu.h>  /**< parsec_gpu_task_t and the generic GPU device */
+#include <parsec/utils/zone_malloc.h>      /**< Zone-based memory allocation */
+#include "hicma_parsec_hip_cuda.h"         /**< HIP-CUDA compatibility layer (brings the HIP device types) */
 #endif
 
 /* ============================================================================
@@ -178,7 +191,9 @@ extern "C" {  /**< Enable C linkage for C++ compatibility */
 
 /* Application-specific flags - control specialized computation modes */
 #define FOR_CLIMATE_EMULATOR    0  /**< Enable climate emulator mode for atmospheric modeling */
-#define GENOMICS                    0  /**< Enable genomics mode for genetic analysis */
+#ifndef GENOMICS
+#define GENOMICS                    0  /**< Genomics mode (kernel ridge regression); set by -DHICMA_PARSEC_GENOMICS=ON */
+#endif
 #define GENOMICS_ALLOCATE_SP    0  /**< Allocate in single precision for genomics (memory optimization) */
 #define GENOMICS_ALLOCATE_INT   0  /**< Use integer allocation for genomics (genotype data) */
 #define CHOLESKY_CPU_ONLY       0  /**< Force CPU-only Cholesky decomposition (disable GPU) */
@@ -613,6 +628,7 @@ typedef struct hicma_parsec_params_s {
     double radius;            /**< Radius in RBF kernel */
     double density;           /**< Density of sphere packing for RBF application */
     double fixedacc;          /**< Fixed accuracy threshold */
+    double check_tol;         /**< --check_tol: residual bound of --check; <= 0 means fixedacc */
     double add_diag;          /**< Value added to diagonal elements in some problems */
     double band_size_auto_tuning_termination; /**< Termination threshold for band size auto-tuning on GPU */
 
@@ -820,6 +836,8 @@ typedef struct hicma_parsec_params_s {
     int band_size_dist_provided; /**< Whether band size distribution was provided */
     int info;                    /**< Return status information */
     int *info_gpu;               /**< GPU return status information */
+    int info_gpu_pinned;         /**< info_gpu was allocated with cudaMallocHost/hipHostMalloc */
+    int dcAd_host_registered;    /**< dcAd.mat was pinned with cudaHostRegister */
 
     /* ========================================================================
      * GPU configuration
@@ -858,6 +876,23 @@ static inline double hicma_tile_meta_norm(const void *meta)
 static inline uint16_t hicma_tile_meta_precision(const void *meta)
 {
     return (uint16_t)((const hicma_tile_meta_t *)meta)->precision;
+}
+
+/**
+ * Problem kinds whose STARS-H data already carries --adddiag on the diagonal:
+ * randtlr (0, `diag` is added), electrodynamics (1, 5, `diag` *is* the diagonal
+ * value) and the RBF mesh kernels (6, 7, `reg` with isreg = 1), see
+ * hicma_parsec_kernel_init. For those the generation and the check reference
+ * (matrix_compress.jdf, band_regenerate.jdf) must not add it again; for the
+ * spatial-statistics kinds the kernel takes `noise` instead and the shift is
+ * added by the tasks.
+ */
+static inline int hicma_parsec_kernel_adds_diag(int kind_of_problem)
+{
+    switch( kind_of_problem ) {
+        case 0: case 1: case 5: case 6: case 7: return 1;
+        default: return 0;
+    }
 }
 
 /** Linear index of tile (m, n) in the per-tile arrays (decisions, norm_tile, ...). */
@@ -1027,7 +1062,6 @@ typedef struct hicma_parsec_data_s {
     parsec_matrix_sym_block_cyclic_band_t dcDist;     /**< Distribution matrix for kernel execution */
     parsec_matrix_sym_block_cyclic_band_t dcRank;     /**< Rank information matrix (if PRINT_RANK enabled) */
     parsec_matrix_block_cyclic_t dcFake;              /**< Fake matrix for auto-band distribution */
-    parsec_matrix_sym_block_cyclic_band_t dcReorder;  /**< Reordering matrix for GEMM */
     
     /* ========================================================================
      * Result validation matrices
@@ -1362,32 +1396,6 @@ int hicma_parsec_band_size_dense_auto_tuning( parsec_context_t *parsec,
         starsh_params_t *params_kernel );
 
 /**
- * @brief Reorder GEMM operations for improved cache locality
- *
- * This function reorders General Matrix-Matrix multiplication (GEMM) operations
- * to improve cache locality and memory access patterns. The reordering is
- * disabled by default but can be enabled for specific performance optimizations.
- *
- * The reordering process:
- * - Analyzes the matrix access patterns
- * - Reorders operations to minimize cache misses
- * - Optimizes memory bandwidth utilization
- * - Maintains numerical correctness
- *
- * @param parsec PaRSEC context for distributed computation
- * @param data Pointer to HICMA data structures containing matrix descriptors
- * @param params Pointer to HICMA parameters controlling reordering behavior
- * @return 0 on success, non-zero on error
- *
- * @note This function is disabled by default for compatibility
- * @note Reordering may affect numerical precision in some cases
- * @note Performance benefits depend on matrix size and system architecture
- */
-int hicma_parsec_reorder_gemm( parsec_context_t *parsec,
-        hicma_parsec_data_t *data,
-        hicma_parsec_params_t *params );
-
-/**
  * @brief Calculate memory requirements for Cholesky factorization
  *
  * This function calculates the memory requirements for the Cholesky factorization
@@ -1542,32 +1550,6 @@ int hicma_parsec_change_nb_elts(parsec_context_t *parsec,
         dplasma_enum_t uplo,
         parsec_tiled_matrix_t *A,
         size_t element_size);
-
-/**
- * @brief Warm up system for POTRF computation
- * 
- * This function performs a warm-up computation to initialize the system
- * and ensure optimal performance for subsequent POTRF operations. It
- * creates a small test matrix and performs a Cholesky factorization
- * to warm up both CPU and GPU resources.
- * 
- * The warm-up process:
- * - Creates a small test matrix with specified random seed
- * - Performs POTRF factorization on the test matrix
- * - Initializes GPU devices and memory pools
- * - Establishes optimal execution paths
- * 
- * @param rank MPI rank of the current process
- * @param uplo Upper or lower triangular flag for factorization
- * @param random_seed Random seed for test matrix generation
- * @param parsec PaRSEC context for distributed computation
- * 
- * @note This function creates a small test matrix for warm-up
- * @note GPU devices are warmed up after CPU to ensure proper initialization
- * @note The warm-up matrix is automatically cleaned up after use
- */
-void hicma_parsec_warmup_potrf(int rank, dplasma_enum_t uplo, int random_seed, parsec_context_t *parsec);
-
 
 /**
  * @brief Cholesky factorization for dense matrices with TLR (Tile Low-Rank) format
@@ -2025,43 +2007,6 @@ int hicma_parsec_adaptive_maxrank( hicma_parsec_params_t *params );
 unsigned long int hicma_parsec_op_counts(char op, unsigned long int a, unsigned long int b, unsigned long int c, unsigned long int d);
 
 /**
- * @brief Get previous k index for reordered GEMM operations
- * 
- * This function retrieves the previous k index in the reordered GEMM computation
- * sequence. It is used to determine the correct order of operations when GEMM
- * reordering is enabled for improved cache locality and performance.
- * 
- * @param descRG Pointer to reorder GEMM descriptor
- * @param m Row index of the current tile
- * @param n Column index of the current tile
- * @param k Current k index
- * @return Previous k index in the reordered sequence, or -1 if not found
- * 
- * @note This function is only used when GEMM reordering is enabled
- * @note Returns -1 for the first operation in the sequence
- */
-int reorder_gemm_k_pre(parsec_tiled_matrix_t *descRG, int m, int n, int k);
-
-/**
- * @brief Get next k index for reordered GEMM operations
- * 
- * This function retrieves the next k index in the reordered GEMM computation
- * sequence. It is used to determine the correct order of operations when GEMM
- * reordering is enabled for improved cache locality and performance.
- * 
- * @param descRG Pointer to reorder GEMM descriptor
- * @param m Row index of the current tile
- * @param n Column index of the current tile
- * @param k Current k index
- * @return Next k index in the reordered sequence, or -1 if not found
- * 
- * @note This function is only used when GEMM reordering is enabled
- * @note Returns -1 for the last operation in the sequence
- */
-int reorder_gemm_k_next(parsec_tiled_matrix_t *descRG, int m, int n, int k);
-
-
-/**
  * @brief Check norm difference between computed and reference matrices
  *
  * This function computes and checks the norm difference between the computed
@@ -2193,45 +2138,6 @@ void hicma_parsec_matrix_sum_vec( parsec_context_t *parsec,
 void parsec_print_cm_sym(parsec_context_t* parsec, parsec_tiled_matrix_t *dcA,  int node, int p, int q);
 
 /**
- * @brief Print general matrix tile in human-readable format
- * 
- * This function extracts and prints a specific tile from a general (non-symmetric)
- * distributed matrix in a formatted, human-readable way. It is primarily used
- * for debugging and verification purposes to inspect matrix contents during computation.
- * 
- * @param parsec PaRSEC context for distributed computation
- * @param dcA Pointer to the distributed general matrix descriptor
- * @param node Node identifier for the tile location
- * @param p Row index of the tile in the tile grid
- * @param q Column index of the tile in the tile grid
- * 
- * @note This function allocates temporary memory that is freed before return
- * @note Output format is compatible with MATLAB matrix notation
- * @note The entire matrix tile is printed (not just triangular part)
- */
-void parsec_print_cm(parsec_context_t* parsec, parsec_tiled_matrix_t * dcA, int node, int p, int q);
-
-/**
- * @brief Print int8 matrix tile in human-readable format
- * 
- * This function extracts and prints a specific tile from a distributed matrix
- * with int8 data type in a formatted, human-readable way. It is primarily used
- * for debugging and verification purposes to inspect matrix contents during
- * computation, particularly for integer-based algorithms.
- * 
- * @param parsec PaRSEC context for distributed computation
- * @param dcA Pointer to the distributed matrix descriptor with int8 data
- * @param node Node identifier for the tile location
- * @param p Row index of the tile in the tile grid
- * @param q Column index of the tile in the tile grid
- * 
- * @note This function allocates temporary memory that is freed before return
- * @note Output format shows integer values instead of floating-point
- * @note The entire matrix tile is printed with proper integer formatting
- */
-void parsec_print_cm_int8(parsec_context_t* parsec, parsec_tiled_matrix_t * dcA, int node, int p, int q);
-
-/**
  * @brief Replicate matrix data to rows for distributed computation
  * 
  * This function replicates matrix data across rows in a distributed matrix
@@ -2244,23 +2150,6 @@ void parsec_print_cm_int8(parsec_context_t* parsec, parsec_tiled_matrix_t * dcA,
  * @return 0 on success, error code on failure
  */
 int hicma_parsec_replicate_to_rows(parsec_context_t *parsec, parsec_tiled_matrix_t *dcAA, parsec_tiled_matrix_t *dcC);
-
-/**
- * @brief Apply square root kernel operation to matrix elements
- * 
- * Performs element-wise square root operation on matrix tiles with optional
- * diagonal addition and radius scaling. This is commonly used in numerical
- * algorithms requiring square root transformations.
- * 
- * @param parsec PaRSEC context for distributed computation
- * @param dcA Matrix descriptor to apply square root operation
- * @param rad Radius parameter for scaling
- * @param add_diag Value to add to diagonal elements
- * @param kernel Kernel type identifier for operation variant
- * @return 0 on success, error code on failure
- */
-int hicma_parsec_sqrt_kernel(parsec_context_t *parsec, parsec_tiled_matrix_t *dcA,
-                            double rad, double add_diag, int kernel);
 
 /**
  * @brief Generate genotype matrix for genetic algorithm computations
@@ -2295,24 +2184,6 @@ int parsec_genotype_generator(parsec_context_t *parsec,
 int parsec_hamming_binary_generator(parsec_context_t *parsec,
         parsec_tiled_matrix_t *A,
         hicma_parsec_params_t *params);
-
-/**
- * @brief Generate mixed precision GEMM operation with decision mapping
- * 
- * Creates a mixed precision General Matrix-Matrix multiplication operation
- * using a decision map to determine precision levels for different matrix
- * regions. This enables adaptive precision for optimal performance and accuracy.
- * 
- * @param parsec PaRSEC context for distributed computation
- * @param A Matrix descriptor for the operation
- * @param decision_map Array mapping matrix regions to precision levels
- * @param params HICMA parameters controlling the operation
- * @return 0 on success, error code on failure
- */
-int parsec_gemmmp_TN_generator(parsec_context_t *parsec,
-        parsec_tiled_matrix_t *A,
-        uint16_t* decision_map,
-        hicma_parsec_params_t *params);        
 
 /**
  * @brief Allocate distributed matrix memory for general matrices
@@ -2362,24 +2233,6 @@ int parsec_dist_allocate_sym(parsec_context_t *parsec,
 int parsec_dist_allocate_hamming(parsec_context_t *parsec,
                          parsec_tiled_matrix_t *A, 
                          int inttype,
-                         hicma_parsec_params_t *params_tlr);
-
-/**
- * @brief Allocate distributed matrix memory for mixed precision GEMM operations
- * 
- * Allocates memory for a distributed matrix with mixed precision support
- * for General Matrix-Matrix multiplication operations. Uses decision mapping
- * to optimize memory allocation based on precision requirements.
- * 
- * @param parsec PaRSEC context for distributed computation
- * @param A Matrix descriptor for mixed precision GEMM operations
- * @param decision_map Array mapping matrix regions to precision levels
- * @param params_tlr HICMA parameters controlling allocation strategy
- * @return 0 on success, error code on failure
- */
-int parsec_dist_allocate_gemmmp_TN(parsec_context_t *parsec,
-                         parsec_tiled_matrix_t *A, 
-                         uint16_t* decision_map,
                          hicma_parsec_params_t *params_tlr);
 
 /**
@@ -2527,32 +2380,6 @@ int hicma_parsec_hamming_binary( parsec_context_t *parsec,
                hicma_parsec_data_t *data);
 
 /**
- * @brief Mixed precision general matrix-matrix multiplication (GEMM)
- * 
- * Performs the general matrix-matrix multiplication operation C = alpha*A*B + beta*C
- * using mixed precision arithmetic. This function automatically selects optimal
- * precision levels for different parts of the computation to balance accuracy
- * and performance.
- * 
- * @param parsec PaRSEC context for distributed computation
- * @param transA Transpose operation on matrix A
- * @param transB Transpose operation on matrix B
- * @param alpha Scaling factor for A*B
- * @param A First input matrix
- * @param B Second input matrix
- * @param beta Scaling factor for matrix C
- * @param C Result matrix
- * @param params_tlr HICMA parameters controlling precision selection
- * @param data HICMA data structures for computation
- * @return 0 on success, error code on failure
- */
-int parsec_gemmmp_TN(parsec_context_t *parsec,
-                    dplasma_enum_t transA, dplasma_enum_t transB,
-                    float alpha, parsec_tiled_matrix_t* A, parsec_tiled_matrix_t* B,
-                    float beta,  parsec_tiled_matrix_t* C, hicma_parsec_params_t * params_tlr,
-                    hicma_parsec_data_t *data);
-
-/**
  * @brief Warmup routine for Cholesky factorization (L variant)
  * 
  * Performs a warmup operation for the Cholesky factorization algorithm
@@ -2590,16 +2417,6 @@ int hicma_parsec_potrf_L_warmup_dense(parsec_context_t *parsec,
 int parsec_band_free_memory(parsec_context_t *parsec,
         parsec_tiled_matrix_t *dcA,
         hicma_parsec_params_t *params, int indicator);
-
-/**
- * Cast diagonal tiles from FP32 to FP64
- *
- * @param [in] parsec:       parsec context
- * @param [inout] dcA:      the rank data, already distributed and allocated
- */
-int hicma_parsec_cast_double_diag(parsec_context_t *parsec,
-        parsec_tiled_matrix_t *dcA,
-        hicma_parsec_params_t *params );
 
 /**
  * @brief Compute squared sum of vector elements in distributed computation
@@ -2659,22 +2476,6 @@ int hicma_parsec_matrix_unique_element( parsec_context_t *parsec,
         hicma_parsec_params_t *params_tlr);
 
 /**
- * @brief Validate data read operations in distributed computation
- * 
- * Performs validation checks on data read operations to ensure data
- * integrity and correct handling of distributed matrix data. This function
- * is used for debugging and verification of data flow correctness.
- * 
- * @param parsec PaRSEC context for distributed computation
- * @param A Matrix descriptor to validate
- * @param params_tlr HICMA parameters controlling validation
- * @return 0 if data read is correct, error code if issues found
- */
-int hicma_parsec_check_read_data( parsec_context_t *parsec,
-        parsec_tiled_matrix_t *A,
-        hicma_parsec_params_t *params_tlr);
-
-/**
  * @brief CPU implementation of Hamming distance binary conversion
  * 
  * Converts input matrix to binary representation for Hamming distance computation.
@@ -2706,35 +2507,6 @@ void hicma_parsec_hamming_subtract_ones_CPU(int nrows, int ncols, int8_t *aout, 
  * @param value Target value for identity matching
  */
 void hicma_parsec_hamming_get_id_matrix_CPU(int nrows, int ncols, uint8_t *aout, int8_t *ain, int lda, int value);
-
-/**
- * @brief CPU implementation of 32-bit integer memory copy
- * 
- * Performs a memory copy operation for 32-bit integer arrays. This function
- * is optimized for integer data and provides a simple interface for copying
- * integer matrices between memory locations.
- * 
- * @param nrows Number of rows in the arrays
- * @param ncols Number of columns in the arrays
- * @param _src Source array (int*)
- * @param _dest Destination array (int*)
- */
-void hicma_parsec_memcpy_int32_CPU( int nrows, int ncols, int *_src, int *_dest);
-
-/**
- * @brief CPU implementation of Hamming distance matrix merging
- * 
- * Merges two matrices for Hamming distance computation by adding the values
- * from the input matrix to the output matrix. The input matrix is accessed
- * in transposed order for efficient computation.
- * 
- * @param nrows Number of rows in the matrices
- * @param ncols Number of columns in the matrices
- * @param aout Output matrix (int) - accumulates the merged result
- * @param ain Input matrix (int) - values to add (transposed)
- * @param lda Leading dimension of both matrices
- */
-void hicma_parsec_hamming_merge_CPU(int nrows, int ncols, int *aout, int *ain, int lda);
 
 /**
  * @brief Perform datatype conversion on a dense matrix

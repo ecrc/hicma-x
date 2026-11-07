@@ -142,23 +142,6 @@ int gpu_load_balance_2d( int m, int n, hicma_parsec_params_t *params )
 }
 
 /**
- * @brief Calculate load balance for dense operations with device count
- *
- * Determines the optimal GPU device for dense operations when
- * the number of CUDA devices is explicitly specified.
- *
- * @param[in] m Number of rows
- * @param[in] n Number of columns
- * @param[in] NT Number of tiles
- * @param[in] nb_cuda_devices Number of CUDA devices
- * @return Load balance factor (GPU device index)
- */
-int gpu_load_dense( int m, int n, int NT, int nb_cuda_devices)
-{
-    return (n * NT + m) % nb_cuda_devices;
-}
-
-/**
  * @brief Calculate load balance for TLR operations
  *
  * Determines the optimal GPU device for TLR (Tile Low Rank)
@@ -196,23 +179,6 @@ int gpu_load_mixed_precision( int m, int n, int NT, int P, int nb_cuda_devices, 
     else
         return (n * NT + m) % nb_cuda_devices;
 }
-
-/**
- * @brief Disable CPU to just run on GPU
- *
- * Disables CPU execution for the specified task pool, forcing all
- * computation to run on GPU devices only.
- *
- * @param[in] tp Task pool to disable CPU for
- */
-void disable_CPU( parsec_taskpool_t * tp ) {
-    for (int i = 0; i < parsec_nb_devices; i++) {
-        parsec_device_module_t *device = parsec_mca_device_get(i);
-        if( device->type == PARSEC_DEV_CPU )
-            tp->devices_index_mask &= ~(1<<i);
-    }
-}
-
 /**
  * @brief Disable GPU to just run on CPU
  *
@@ -228,39 +194,6 @@ void disable_GPU( parsec_taskpool_t * tp ) {
             tp->devices_index_mask &= ~(1<<i);
     }
 }
-
-/* ============================================================================
- * GPU workspace management functions
- * ============================================================================ */
-
-/**
- * @brief Lookup GPU workspace for POTRF operations
- *
- * Finds the appropriate GPU workspace for POTRF operations based on
- * the CUDA device and execution stream.
- *
- * @param[in] cuda_device CUDA device module
- * @param[in] cuda_stream CUDA execution stream
- * @param[in] ws POTRF workspace
- * @return Pointer to stream workspace
- */
-int lookup_gpu_workspace_i( parsec_device_cuda_module_t *cuda_device ) {
-    int i;
-
-    /* Look for device */
-    for(i = 0; i < (int)parsec_nb_devices; i++) {
-        parsec_device_module_t *device = parsec_mca_device_get(i);
-        if( NULL == device ) continue;
-        if( device->type != PARSEC_DEV_CUDA && device->type != PARSEC_DEV_HIP ) continue;
-        parsec_device_cuda_module_t *cuda_device_compare = (parsec_device_cuda_module_t*)device;
-
-        if(cuda_device->cuda_index == cuda_device_compare->cuda_index)
-            break;
-    }
-
-    return i;
-}
-
 int lookup_gpu_workspace_j( parsec_device_cuda_module_t *cuda_device,
         parsec_cuda_exec_stream_t *cuda_stream ) {
     int j;
@@ -313,7 +246,7 @@ void workspace_memory_allocate( parsec_potrf_workspace_t **ws ) {
 
     for( int i = 0; i < parsec_nb_devices; i++ ) {
         (*ws)->gpu_workspace[i].stream_workspace = (parsec_potrf_stream_workspace_t *)calloc( PARSEC_GPU_MAX_STREAMS, sizeof(parsec_potrf_stream_workspace_t) );
-        (*ws)->gpu_workspace[i].cuda_device = (parsec_device_cuda_module_t *)malloc( sizeof(parsec_device_cuda_module_t) );
+        (*ws)->gpu_workspace[i].cuda_device = NULL;  /* set to the PaRSEC device module for GPU devices */
     }
 }
 
@@ -437,19 +370,6 @@ void workspace_memory_free( parsec_potrf_workspace_t *ws)
 /* ============================================================================
  * GPU cache and memory management functions
  * ============================================================================ */
-
-/**
- * @brief Reset GPU cache
- *
- * Resets GPU memory cache and device load information to free
- * up memory and reset performance counters.
- *
- * @param[in] parsec PaRSEC context
- */
-void hicma_parsec_gpu_cache_reset( parsec_context_t *parsec ) {
-    parsec_devices_release_memory();
-    parsec_devices_reset_load(parsec);
-}
 
 /**
  * @brief Initialize GPU handle
@@ -650,12 +570,12 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t 
             if( params->fp8_enabled ) {
                 // lightHandle
                 cublasLtHandle_t lightHandle;
-                cublasLtCreate(&lightHandle);
+                HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == cublasLtCreate(&lightHandle), "cuBLASLt handle");
                 data->ws_gpu->gpu_workspace[i].stream_workspace[j].lightHandle = lightHandle;
 
                 // matmulDesc
                 cublasLtMatmulDesc_t matmulDesc;
-                cublasLtMatmulDescCreate(&matmulDesc, CUBLAS_COMPUTE_32F, CUDA_R_32F);
+                HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == cublasLtMatmulDescCreate(&matmulDesc, CUBLAS_COMPUTE_32F, CUDA_R_32F), "cuBLASLt matmul descriptor");
                 const cublasOperation_t transa = CUBLAS_OP_T, transb = CUBLAS_OP_N;
                 cublasLtMatmulDescSetAttribute(
                         matmulDesc, CUBLASLT_MATMUL_DESC_TRANSA, &transa,
@@ -670,10 +590,10 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t 
                 cublasLtMatrixLayout_t Bdesc;
                 cublasLtMatrixLayout_t Cdesc;
                 int fp8_ld = hicma_fp8_ld(mb);
-                cublasLtMatrixLayoutCreate(&Adesc, CUDA_R_8F_E4M3, fp8_ld, fp8_ld, fp8_ld);
-                cublasLtMatrixLayoutCreate(&Bdesc, CUDA_R_8F_E4M3, fp8_ld, fp8_ld, fp8_ld);
+                HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == cublasLtMatrixLayoutCreate(&Adesc, CUDA_R_8F_E4M3, fp8_ld, fp8_ld, fp8_ld), "cuBLASLt A layout");
+                HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == cublasLtMatrixLayoutCreate(&Bdesc, CUDA_R_8F_E4M3, fp8_ld, fp8_ld, fp8_ld), "cuBLASLt B layout");
                 //cublasLtMatrixLayoutCreate(&Cdesc, CUDA_R_16F, mb, mb, mb);
-                cublasLtMatrixLayoutCreate(&Cdesc, CUDA_R_32F, fp8_ld, fp8_ld, fp8_ld);
+                HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == cublasLtMatrixLayoutCreate(&Cdesc, CUDA_R_32F, fp8_ld, fp8_ld, fp8_ld), "cuBLASLt C layout");
                 data->ws_gpu->gpu_workspace[i].stream_workspace[j].Adesc = Adesc;
                 data->ws_gpu->gpu_workspace[i].stream_workspace[j].Bdesc = Bdesc;
                 data->ws_gpu->gpu_workspace[i].stream_workspace[j].Cdesc = Cdesc;
@@ -682,13 +602,13 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t 
                 // workspace
                 size_t workspaceSize = 32 * 1024 * 1024;
                 void *workspace;
-                cudaMalloc(&workspace, workspaceSize);
+                HICMA_GPU_HANDLE_CHECK(cudaSuccess == cudaMalloc(&workspace, workspaceSize), "cuBLASLt workspace allocation");
                 data->ws_gpu->gpu_workspace[i].stream_workspace[j].workspaceSize = workspaceSize;
                 data->ws_gpu->gpu_workspace[i].stream_workspace[j].workspace = workspace;
 
                 // heuristicResultsArray 
                 cublasLtMatmulPreference_t pref;
-                cublasLtMatmulPreferenceCreate(&pref);
+                HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == cublasLtMatmulPreferenceCreate(&pref), "cuBLASLt preference");
                 cublasLtMatmulPreferenceSetAttribute(
                         pref, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES,
                         &workspaceSize, sizeof(workspaceSize));
@@ -721,7 +641,7 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t 
                 HICMA_GPU_HANDLE_CHECK(cudaSuccess == cudaMemcpy(fp8_scale, fp8_scale_init, sizeof(fp8_scale_init), cudaMemcpyHostToDevice), "FP8 scale buffer");
                 const float *a_scale = fp8_scale + 2, *b_scale = fp8_scale + 6;
                 cublasLtMatmulDesc_t matmulDesc_scaled;
-                cublasLtMatmulDescCreate(&matmulDesc_scaled, CUBLAS_COMPUTE_32F, CUDA_R_32F);
+                HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == cublasLtMatmulDescCreate(&matmulDesc_scaled, CUBLAS_COMPUTE_32F, CUDA_R_32F), "cuBLASLt scaled matmul descriptor");
                 cublasLtMatmulDescSetAttribute(matmulDesc_scaled, CUBLASLT_MATMUL_DESC_TRANSA, &transa, sizeof(transa));
                 cublasLtMatmulDescSetAttribute(matmulDesc_scaled, CUBLASLT_MATMUL_DESC_TRANSB, &transb, sizeof(transb));
                 cublasLtMatmulDescSetAttribute(matmulDesc_scaled, CUBLASLT_MATMUL_DESC_A_SCALE_POINTER, &a_scale, sizeof(a_scale));
@@ -798,30 +718,23 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t 
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].handle_cublas_tensor = handle_cublas_tensor;
             //printf("i %d j %d : %p\n", i, j, data->ws_gpu->gpu_workspace[i].stream_workspace[j].handle_cublas_tensor);
 
-            /* GPU buffer for A, B, C, mbr, and rr */
-            if( 1 || DENSE_MP_BAND == kind_of_cholesky
-                    || DENSE_SP_HP_BAND == kind_of_cholesky
-                    || DENSE_TLR_MP == kind_of_cholesky
-                    || DENSE_MP_GPU == kind_of_cholesky
-                    || DENSE_MP_GPU_FP8 == kind_of_cholesky
-                    || DENSE_MP_GPU_FP8_ADAPTIVE == kind_of_cholesky
-                    || DENSE_MP_GPU_FP8_SP == kind_of_cholesky ) {
-                data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_A = zone_malloc( cuda_device->super.memory, mb * nb * sizeof(double) );
+            /* GPU buffers for A, B and C: a full tile, or the U/V pair of a
+             * low-rank operand converted to another precision (mb x 2*rank
+             * with rank <= maxrank), whichever is larger */
+            {
+                size_t cols = (2 * maxrank > nb) ? (size_t)(2 * maxrank) : (size_t)nb;
+                size_t full_tile_bytes = (size_t)mb * cols * sizeof(double);
+                data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_A = zone_malloc( cuda_device->super.memory, full_tile_bytes );
                 HICMA_GPU_HANDLE_CHECK(NULL != data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_A, "GPU workspace allocation");
 
-                data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_B = zone_malloc( cuda_device->super.memory, mb * nb * sizeof(double) );
+                data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_B = zone_malloc( cuda_device->super.memory, full_tile_bytes );
                 HICMA_GPU_HANDLE_CHECK(NULL != data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_B, "GPU workspace allocation");
 
-                data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_C = zone_malloc( cuda_device->super.memory, mb * nb * sizeof(double) );
+                data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_C = zone_malloc( cuda_device->super.memory, full_tile_bytes );
                 HICMA_GPU_HANDLE_CHECK(NULL != data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_C, "GPU workspace allocation");
             }
 
-            if( 1 || DENSE_TLR_DP == kind_of_cholesky
-                    || DENSE_TLR_MP == kind_of_cholesky
-                    || DENSE_MP_GPU == kind_of_cholesky
-                    || DENSE_MP_GPU_FP8 == kind_of_cholesky
-                    || DENSE_MP_GPU_FP8_ADAPTIVE == kind_of_cholesky
-                    || DENSE_MP_GPU_FP8_SP == kind_of_cholesky ) {
+            {
                 if( maxrank > 0 ) {
                     data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_mbr =
                         zone_malloc( cuda_device->super.memory, mb * maxrank * sizeof(double) );
@@ -848,30 +761,14 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t 
  * @param[in] kind_of_cholesky Type of Cholesky factorization
  */
 void gpu_temporay_buffer_fini( hicma_parsec_data_t *data, int kind_of_cholesky ) {
-    /* Only free memory for cases including GPU */
-#if 0
-    if( !(DENSE_TLR_DP == kind_of_cholesky
-                || DENSE_MP_BAND == kind_of_cholesky
-                || DENSE_SP_HP_BAND == kind_of_cholesky
-                || DENSE_TLR_MP == kind_of_cholesky
-                || DENSE_MP_GPU == kind_of_cholesky
-                || DENSE_MP_GPU_FP8 == kind_of_cholesky) )
-        return;
-#endif
-
-    /** Find all CUDA devices */
-    int nb = 0;
-    for(int i = 0; i < (int)parsec_nb_devices; i++) {
-        parsec_device_module_t *device = parsec_mca_device_get(i);
-        if( PARSEC_DEV_CUDA == device->type || PARSEC_DEV_HIP == device->type ) {
-            nb++;
-        }
-    }
-
-    if( nb > 0 ) {
+    (void)kind_of_cholesky;
+    /* workspace_memory_free touches the stream workspaces of GPU devices only,
+     * then releases the per-device arrays and the struct, which
+     * gpu_temporay_buffer_init allocated even when no GPU was found */
+    if( NULL != data->ws_gpu ) {
         workspace_memory_free( data->ws_gpu );
+        data->ws_gpu = NULL;
     }
-
 }
 
 /* ============================================================================

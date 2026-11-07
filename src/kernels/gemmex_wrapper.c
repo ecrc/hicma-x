@@ -232,7 +232,7 @@ hicma_parsec_gemmex_default_new(dplasma_enum_t transA, dplasma_enum_t transB,
                           double beta,  parsec_tiled_matrix_t* C,
                           dplasma_info_t opt, hicma_parsec_params_t * params_tlr, hicma_parsec_data_t *data)
 {
-    parsec_taskpool_t* gemmex_tp;
+    parsec_taskpool_t* gemmex_tp = NULL;
     void** eval_gpu_gemmex;
 
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)

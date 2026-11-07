@@ -51,49 +51,6 @@ typedef union FP16
         uint Sign : 1;
     };
 } FP16;
-
-// Original ISPC reference version; this always rounds ties up.
-static FP16 float_to_half(FP32 f)
-{
-    FP16 o = { 0 };
-
-    // Based on ISPC reference code (with minor modifications)
-    if (f.Exponent == 0) // Signed zero/denormal (which will underflow)
-        o.Exponent = 0;
-    else if (f.Exponent == 255) // Inf or NaN (all exponent bits set)
-    {
-        o.Exponent = 31;
-        o.Mantissa = f.Mantissa ? 0x200 : 0; // NaN->qNaN and Inf->Inf
-    }
-    else // Normalized number
-    {
-        // Exponent unbias the single, then bias the halfp
-        int newexp = f.Exponent - 127 + 15;
-        if (newexp >= 31) // Overflow, return signed infinity
-            o.Exponent = 31;
-        else if (newexp <= 0) // Underflow
-        {
-            if ((14 - newexp) <= 24) // Mantissa might be non-zero
-            {
-                uint mant = f.Mantissa | 0x800000; // Hidden 1 bit
-                o.Mantissa = mant >> (14 - newexp);
-                if ((mant >> (13 - newexp)) & 1) // Check for rounding
-                    o.u++; // Round, might overflow into exp bit, but this is OK
-            }
-        }
-        else
-        {
-            o.Exponent = newexp;
-            o.Mantissa = f.Mantissa >> 13;
-            if (f.Mantissa & 0x1000) // Check for rounding
-                o.u++; // Round, might overflow to inf, this is OK
-        }
-    }
-
-    o.Sign = f.Sign;
-    return o;
-}
-
 // Same as above, but with full round-to-nearest-even.
 static FP16 float_to_half_rtne(FP32 f)
 {
@@ -170,52 +127,6 @@ static FP32 half_to_float(FP16 h)
     o.u |= (h.u & 0x8000) << 16;    // sign bit
     return o;
 }
-
-static FP32 half_to_float_fast(FP16 h)
-{
-    static const FP32 magic = { (254 - 15) << 23 };
-    static const FP32 was_infnan = { (127 + 16) << 23 };
-    FP32 o;
-
-    o.u = (h.u & 0x7fff) << 13;     // exponent/mantissa bits
-    o.f *= magic.f;                 // exponent adjust
-    if (o.f >= was_infnan.f)        // make sure Inf/NaN survive
-        o.u |= 255 << 23;
-    o.u |= (h.u & 0x8000) << 16;    // sign bit
-    return o;
-}
-
-// Helper function to convert FP32 to FP16
-static uint16_t float32_to_float16(float value) {
-    uint32_t float32 = *((uint32_t *)&value);
-    uint32_t sign = (float32 >> 16) & 0x8000;
-    uint32_t exponent = (float32 >> 23) & 0xFF;
-    uint32_t mantissa = float32 & 0x007FFFFF;
-    uint16_t float16;
-
-    if (exponent == 0) { // Zero or denormal
-        // Handle denormalized numbers with rounding
-        mantissa >>= (13 - 1);
-        float16 = sign | (mantissa + (mantissa == 0x3FF));
-    } else if (exponent == 0xFF) { // Infinity or NaN
-        float16 = sign | 0x7C00 | ((mantissa != 0) ? 0x0200 : 0);
-    } else {
-        int16_t new_exponent = exponent - 127 + 15;
-        if (new_exponent >= 0x1F) { // Overflow, set to infinity
-            float16 = sign | 0x7C00;
-        } else if (new_exponent <= 0) { // Underflow or denormalized
-            mantissa = (mantissa | 0x00800000) >> (1 - new_exponent);
-            // Handle denormalized numbers with rounding
-            mantissa >>= (13 - 1);
-            float16 = sign | (mantissa + (mantissa == 0x3FF));
-        } else { // Normal case
-            float16 = sign | (new_exponent << 10) | (mantissa >> 13);
-        }
-    }
-
-    return float16;
-}
-
 /* ============================================================================
    Unified Conversion Functions
    ============================================================================ */
@@ -2140,18 +2051,6 @@ void hicma_parsec_convert_2h_bit(void *A, float *A_use, int mb, int nb, uint16_t
         }
     }
 } 
-
-void float2half_CPU( int nrows, int ncols,
-                const float *_source, int ld_s,
-                void *_target, int ld_t ) {
-
-     uint16_t *target = (uint16_t *)_target;
-     float *source = (float *)_source;
-     for( int j = 0; j < ncols; j++ )
-         for( int i = 0; i < nrows; i++ )
-             target[j*ld_t+i] = float32_to_float16( source[j*ld_s+i] ); 
-}
-
 
 uint16_t hicma_parsec_float_to_half_bits(float value) {
     FP32 f;

@@ -96,64 +96,7 @@ char* str_problem[NB_PROBLEM]={
 DATATYPE_ANALYSIS *dist_array;
 
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
-/**
- * @brief Cleanup function for CUDA handles
- * 
- * This function is called during cleanup to properly destroy CUDA library handles.
- * It releases cuBLAS and cuSOLVER handles and frees the associated memory.
- * This is essential for preventing resource leaks in GPU-accelerated computations.
- * 
- * @param _h Pointer to dplasma_cuda_handles_t structure containing CUDA handles
- * @param _n Unused parameter (for compatibility with callback signature)
- * 
- * @note This function should not be called if DPLASMA GPU support is disabled
- * @note Proper cleanup is critical for avoiding CUDA context leaks
- */
-static void destroy_cuda_handles(void *_h, void *_n)
-{
-    // Note: This function should not be called if DPLASMA GPU support is disabled
-    dplasma_cuda_handles_t *handles = (dplasma_cuda_handles_t*)_h;
-    (void)_n;  // Suppress unused parameter warning
-    
-    // Destroy cuBLAS handle - releases GPU memory and context resources
-    cublasDestroy_v2(handles->cublas_handle);
-    
-    // Destroy cuSOLVER handle - releases solver-specific GPU resources
-    cusolverDnDestroy(handles->cusolverDn_handle);
-    
-    // Free the handles structure - releases host memory
-    free(handles);
-}
 #endif
-
-/**
- * @brief Macro for conditional matrix allocation in PaRSEC
- * 
- * This macro generates code to allocate a matrix descriptor if the condition is true.
- * It creates a matrix descriptor of the specified type, initializes it with the given
- * parameters, allocates memory for the matrix data, and sets a collection key.
- * 
- * The macro is used to conditionally allocate matrix descriptors based on runtime
- * conditions, which is useful for memory optimization and avoiding unnecessary
- * allocations when certain matrices are not needed.
- * 
- * @param DC Matrix descriptor variable name (will be declared as TYPE##_t)
- * @param COND Condition for allocation (evaluated at runtime)
- * @param TYPE Matrix type (e.g., parsec_matrix_sym_block_cyclic)
- * @param INIT_PARAMS Initialization parameters for the matrix descriptor
- * 
- * @note The macro calculates memory size based on local tiles, block size, and data type
- * @note A collection key is set using the variable name for debugging and tracking
- */
-#define PASTE_CODE_ALLOCATE_MATRIX(DC, COND, TYPE, INIT_PARAMS)      \
-    TYPE##_t DC;                                                     \
-    if(COND) {                                                          \
-        TYPE##_init INIT_PARAMS;                                        \
-        DC.mat = parsec_data_allocate((size_t)DC.super.nb_local_tiles * \
-                                        (size_t)DC.super.bsiz *      \
-                                        (size_t)parsec_datadist_getsizeoftype(DC.super.mtype)); \
-        parsec_data_collection_set_key((parsec_data_collection_t*)&DC, #DC);          \
-    }
 
 /**
  * @brief Configuration option structure for improved argument management
@@ -304,6 +247,7 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         {"NB", "Tile size (required)", 0, &params->NB},
         {"KB", "Tile size along K; must equal NB (default: NB)", 0, &params->KB},
         {"check", "Verify the results (--check, or --check 0|1)", 3, &params->check},
+        {"check_tol", "Residual bound ||LL^T-A||_F/||A||_F accepted by --check (default: fixedacc)", 1, &params->check_tol},
         {"verbose", "Extra verbose output: 1=normal, >1=more verbose about decisions", 0, &params->verbose},
         {"help", "Show this help message", 3, NULL},
         
@@ -410,6 +354,9 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         printf("  --help               Show this help message\n");
         printf("  --check [0|1]        Enable correctness check (--check alone means 1)\n");
         printf("  --verbose            Set verbosity level\n");
+        fflush(stdout);
+        /* Leave MPI cleanly: exit() before MPI_Finalize makes Open MPI report an abort and can drop the output */
+        if( params->mpi_initialized_by_hicma ) MPI_Finalize();
         exit(0);
     }
     
@@ -519,6 +466,58 @@ static void hicma_parsec_counters_allocate(hicma_parsec_params_t *params)
     params->nb_datatype_conversions = (uint64_t *)calloc(params->counter_stride, sizeof(uint64_t));
 }
 
+/*
+ * Allocate every per-core / per-GPU statistics array once, after
+ * hicma_parsec_setup_parsec knows the real core count and the number of GPUs
+ * PaRSEC actually enabled. hicma_parsec_free_memory frees them unconditionally
+ * (free(NULL) is fine), so this must run exactly once per init.
+ */
+static void hicma_parsec_stats_allocate(hicma_parsec_params_t *params)
+{
+    int cores = params->cores;
+
+    params->op_band = (unsigned long *)calloc(cores, sizeof(unsigned long));
+    params->op_offband = (unsigned long *)calloc(cores, sizeof(unsigned long));
+    params->op_path = (unsigned long *)calloc(cores, sizeof(unsigned long));
+    params->op_offpath = (unsigned long *)calloc(cores, sizeof(unsigned long));
+
+    params->gather_time = (double *)calloc(cores, sizeof(double));
+    params->gather_time_tmp = (double *)calloc(cores, sizeof(double));
+    params->kernel_time_cpu_count = cores;
+    params->kernel_time_cpu = (double *)calloc(cores, sizeof(double));
+    params->kernel_time_cpu_intervals = (hicma_kernel_time_interval_t **)calloc(cores, sizeof(hicma_kernel_time_interval_t *));
+    /* Indexed by PaRSEC device_index: 0 = CPU, 1 = recursive, GPUs start at 2. */
+    params->kernel_time_gpu_count = (params->gpus > 0) ? params->gpus + 2 : 0;
+    params->kernel_time_gpu_event_count = params->kernel_time_gpu_count;
+    if( params->kernel_time_gpu_count > 0 ) {
+        params->kernel_time_gpu = (double *)calloc(params->kernel_time_gpu_count, sizeof(double));
+        params->kernel_time_gpu_event = (double *)calloc(params->kernel_time_gpu_event_count, sizeof(double));
+        params->kernel_time_gpu_intervals = (hicma_kernel_time_interval_t **)calloc(params->kernel_time_gpu_count, sizeof(hicma_kernel_time_interval_t *));
+    }
+
+    hicma_parsec_counters_allocate(params);
+
+    /* POTRF info of every diagonal tile, written by the GPU kernels with an
+     * asynchronous copy, so pinned when GPUs are used */
+    params->info_gpu_pinned = 0;
+    if( params->gpus > 0 ) {
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+        if( cudaSuccess == cudaMallocHost((void**)&params->info_gpu, params->NT * sizeof(int)) ) {
+            params->info_gpu_pinned = 1;
+            memset(params->info_gpu, 0, params->NT * sizeof(int));
+        }
+#elif defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+        if( hipSuccess == hipHostMalloc((void **)&params->info_gpu, params->NT * sizeof(int), hipHostMallocDefault) ) {
+            params->info_gpu_pinned = 1;
+            memset(params->info_gpu, 0, params->NT * sizeof(int));
+        }
+#endif
+    }
+    if( !params->info_gpu_pinned ) {
+        params->info_gpu = (int *)calloc( params->NT, sizeof(int) );
+    }
+}
+
 static void hicma_parsec_free_kernel_time_intervals(hicma_kernel_time_interval_t **intervals, int count)
 {
     int i;
@@ -562,6 +561,13 @@ static void hicma_parsec_free_kernel_time_intervals(hicma_kernel_time_interval_t
  */
 void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
 {
+    /* Every driver declares the parameter struct on the stack. Start from all
+     * zeros so that fields without an explicit default below (file names,
+     * statistics, timers) are not read or freed uninitialized. Callers must not
+     * set fields before hicma_parsec_init(); climate_emulator_init sets its
+     * overrides after it. */
+    memset(params, 0, sizeof(*params));
+
     // Default: assume we did not initialize MPI
     params->mpi_initialized_by_hicma = 0;
     // Initialize MPI with thread support if available
@@ -638,6 +644,7 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     params->cores = -1;         // Number of cores per node (-1 = auto-detect from system)
     params->gpus  = 0;          // Number of GPUs to use (0 = CPU only, >0 enables GPU acceleration)
     params->fp8 = 1;                 // Use FP8 GEMMs where the GPUs support them (0=never)
+    params->check_tol = -1.0;        // --check accepts residuals up to fixedacc unless set
     params->fp8_enabled = 0;         // Set in setup_parsec() from --fp8, the kind and the GPUs' compute capability
     params->kernel_time_cpu = NULL;
     params->kernel_time_gpu = NULL;
@@ -1038,38 +1045,6 @@ parsec_context_t* hicma_parsec_setup_parsec(int argc, char **argv, hicma_parsec_
 			nb_total_comp_threads += ctx->virtual_processes[p]->nb_cores;
 		}
 		params->cores = nb_total_comp_threads;
-
-        /* Performance Monitoring Arrays - track operations per core */
-        // Band operations (operations within the dense diagonal band)
-        params->op_band = (unsigned long *)calloc(params->cores, sizeof(unsigned long));
-        // Off-band operations (operations outside the dense diagonal band)
-        params->op_offband = (unsigned long *)calloc(params->cores, sizeof(unsigned long));
-        // Path operations (operations along the critical path)
-        params->op_path = (unsigned long *)calloc(params->cores, sizeof(unsigned long));
-        // Off-path operations (operations not on the critical path)
-        params->op_offpath = (unsigned long *)calloc(params->cores, sizeof(unsigned long));
-
-        /* Timing Arrays - track execution time per core */
-        // Gather time in JDF (Job Data Flow) execution
-        params->gather_time = (double *)calloc(params->cores, sizeof(double));
-        params->gather_time_tmp = (double *)calloc(params->cores, sizeof(double));
-        params->kernel_time_cpu_count = params->cores;
-        params->kernel_time_cpu = (double *)calloc(params->kernel_time_cpu_count, sizeof(double));
-        params->kernel_time_cpu_intervals = (hicma_kernel_time_interval_t **)calloc(params->kernel_time_cpu_count, sizeof(hicma_kernel_time_interval_t *));
-        /* Indexed by PaRSEC device_index: 0 = CPU, 1 = recursive, GPUs start at 2. */
-        params->kernel_time_gpu_count = (params->gpus > 0) ? params->gpus + 2 : 0;
-        params->kernel_time_gpu_event_count = params->kernel_time_gpu_count;
-        if(params->kernel_time_gpu_count > 0) {
-            params->kernel_time_gpu = (double *)calloc(params->kernel_time_gpu_count, sizeof(double));
-            params->kernel_time_gpu_event = (double *)calloc(params->kernel_time_gpu_event_count, sizeof(double));
-            params->kernel_time_gpu_intervals = (hicma_kernel_time_interval_t **)calloc(params->kernel_time_gpu_count, sizeof(hicma_kernel_time_interval_t *));
-        } else {
-            params->kernel_time_gpu = NULL;
-            params->kernel_time_gpu_event = NULL;
-            params->kernel_time_gpu_intervals = NULL;
-        }
-
-        hicma_parsec_counters_allocate(params);
     }
 
     // Print parameter summary for verification
@@ -1104,7 +1079,7 @@ parsec_context_t* hicma_parsec_setup_parsec(int argc, char **argv, hicma_parsec_
         cublasStatus_t status = CUBLAS_STATUS_SUCCESS;
         // Register CUDA handles for proper cleanup
         parsec_info_register(&parsec_per_stream_infos, "DPLASMA::CUDA::HANDLES",
-                             destroy_cuda_handles, NULL,
+                             dplasma_destroy_cuda_handles, NULL,
                              dplasma_create_cuda_handles, NULL,
                              NULL);
 #endif
@@ -1118,6 +1093,22 @@ parsec_context_t* hicma_parsec_setup_parsec(int argc, char **argv, hicma_parsec_
         fprintf(stderr, RED "Rank %d: Update nb_gpus from input %d to real %d\n" RESET, params->rank, params->gpus, hicma_parsec_min(nb_gpus_check, params->gpus));
     }
     params->gpus = hicma_parsec_min(nb_gpus_check, params->gpus);
+    /* The precision decisions and the collectives in hicma_parsec_potrf depend
+     * on gpus > 0, and every rank must take the same branches: use the
+     * smallest count found on any rank (a rank with no visible device makes
+     * the whole run CPU-only). */
+    {
+        int gpus_min = params->gpus;
+        MPI_Allreduce(MPI_IN_PLACE, &gpus_min, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+        if( gpus_min != params->gpus && params->verbose ) {
+            fprintf(stderr, RED "Rank %d: another rank has only %d usable GPUs, using %d instead of %d\n" RESET,
+                    params->rank, gpus_min, gpus_min, params->gpus);
+        }
+        params->gpus = gpus_min;
+    }
+
+    /* cores and gpus are final: allocate the per-worker statistics once */
+    hicma_parsec_stats_allocate(params);
 
     /* FP8 GEMMs go through cuBLASLt E4M3, which needs compute capability
      * >= 8.9 (Ada/Hopper and newer). On V100/A100 the matmul fails with
@@ -1165,6 +1156,45 @@ parsec_context_t* hicma_parsec_setup_parsec(int argc, char **argv, hicma_parsec_
     if( !params->fp8_enabled ) {
         params->band_size_dense_hp = params->band_size_dense;
     }
+
+    /* Kinds 8, 9 and 10 convert with round-to-nearest in their own bodies
+     * while the shared kernels would honor stochastic rounding: refuse the
+     * mix instead of silently rounding two different ways. */
+    if( params->enable_stochastic_rounding
+        && (DENSE_MP_GPU_FP8 == params->kind_of_cholesky
+            || DENSE_MP_GPU_FP8_SP == params->kind_of_cholesky
+            || DENSE_MP_GPU_FP8_ADAPTIVE == params->kind_of_cholesky) ) {
+        if( 0 == params->rank ) {
+            fprintf(stderr, RED "--enable_stochastic_rounding is not implemented for kind_of_cholesky %d "
+                    "(kinds 8, 9 and 10); use kind 5 or --enable_stochastic_rounding 0\n" RESET,
+                    params->kind_of_cholesky);
+        }
+        exit(1);
+    }
+
+    /* The sender-side conversion of --datatype_convert 2 exists only in the
+     * GPU bodies; the CPU body of potrf_dtrsm_send would forward an unwritten
+     * buffer. */
+    if( ADAPTIVE_CONVERT == params->datatype_convert && 0 == params->gpus ) {
+        if( 0 == params->rank ) {
+            fprintf(stderr, RED "--datatype_convert 2 needs GPUs: setting datatype_convert= 0\n" RESET);
+        }
+        params->datatype_convert = RECEIVER_CONVERT;
+    }
+
+#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    /* Kinds 1-4 have CUDA bodies only; on HIP their wrappers would install the
+     * GPU hooks on the wrong chore and run on the CPU with GPU statistics. */
+    if( params->gpus > 0
+        && (DENSE_TLR_MP == params->kind_of_cholesky || DENSE_TLR_DP == params->kind_of_cholesky
+            || DENSE_MP_BAND == params->kind_of_cholesky || DENSE_SP_HP_BAND == params->kind_of_cholesky) ) {
+        if( 0 == params->rank ) {
+            fprintf(stderr, RED "kind_of_cholesky %d has no HIP bodies: run it with --gpus 0 "
+                    "or use kind 5 (DENSE_MP_GPU)\n" RESET, params->kind_of_cholesky);
+        }
+        exit(1);
+    }
+#endif
 
     /* With adaptive_memory, convert_d2s gives SP tiles an SP-sized host buffer.
      * Only the GPU runtime GEMM reallocates before promoting C to DP; the CPU
@@ -1314,13 +1344,14 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
     
     // Copy full executable path
     // Find the executable name within the path and truncate to get directory
-    sprintf(params->exe_file_path, "%s", argv[0]); 
+    snprintf(params->exe_file_path, sizeof(params->exe_file_path), "%s", argv[0]);
 
     char *slash = strrchr(params->exe_file_path, '/');
-    if (!slash) {
+    if (NULL != slash) {
+        slash[1] = '\0';                          // keep the directory part
+    } else {
         params->exe_file_path[0] = '\0';          // no '/', nothing before it
     }
-    *(slash + 1) = '\0';
     
     /* ===========================================
      * Initialize decision counters
@@ -1334,9 +1365,9 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
     params->nb_low_rank_dp = 0.0;     // Number of double precision low-rank tiles
     params->nb_low_rank_sp = 0.0;     // Number of single precision low-rank tiles
 
-    if( params->cores > 0 ) {
-        hicma_parsec_counters_allocate(params);
-    }
+    /* Per-core and per-GPU statistics arrays are allocated once in
+     * hicma_parsec_setup_parsec, after the core count and the number of
+     * usable GPUs are known (hicma_parsec_stats_allocate). */
 
     /* ===========================================
      * Initialize performance tracking
@@ -1448,37 +1479,11 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
     params->favgrk = 0.0;
 
     /* flops */
-    if( params->cores > 0 ) {
-        params->op_band = (unsigned long *)calloc(params->cores, sizeof(unsigned long));
-        params->op_offband = (unsigned long *)calloc(params->cores, sizeof(unsigned long));
-        params->op_path = (unsigned long *)calloc(params->cores, sizeof(unsigned long));
-        params->op_offpath = (unsigned long *)calloc(params->cores, sizeof(unsigned long));
-    }
     HICMA_PASTE_CODE_FLOPS(FLOPS_DPOTRF, ((double)params->N), params->flops);
 
     /* check results accuracy */
-    double result_accuracy = 0.0;
+    params->result_accuracy = 0.0;
 
-    /* Gather time in JDF */
-    if( params->cores > 0 ) {
-        params->gather_time = (double *)calloc(params->cores, sizeof(double));
-        params->gather_time_tmp = (double *)calloc(params->cores, sizeof(double));
-        params->kernel_time_cpu_count = params->cores;
-        params->kernel_time_cpu = (double *)calloc(params->kernel_time_cpu_count, sizeof(double));
-        params->kernel_time_cpu_intervals = (hicma_kernel_time_interval_t **)calloc(params->kernel_time_cpu_count, sizeof(hicma_kernel_time_interval_t *));
-        /* Indexed by PaRSEC device_index: 0 = CPU, 1 = recursive, GPUs start at 2. */
-        params->kernel_time_gpu_count = (params->gpus > 0) ? params->gpus + 2 : 0;
-        params->kernel_time_gpu_event_count = params->kernel_time_gpu_count;
-        if(params->kernel_time_gpu_count > 0) {
-            params->kernel_time_gpu = (double *)calloc(params->kernel_time_gpu_count, sizeof(double));
-            params->kernel_time_gpu_event = (double *)calloc(params->kernel_time_gpu_event_count, sizeof(double));
-            params->kernel_time_gpu_intervals = (hicma_kernel_time_interval_t **)calloc(params->kernel_time_gpu_count, sizeof(hicma_kernel_time_interval_t *));
-        } else {
-            params->kernel_time_gpu = NULL;
-            params->kernel_time_gpu_event = NULL;
-            params->kernel_time_gpu_intervals = NULL;
-        }
-    }
     params->critical_path_time = 0.0;
     params->potrf_time = 0.0;
     params->trsm_time = 0.0;
@@ -1499,17 +1504,10 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
     params->uplo = PlasmaLower;            /* Only support lower right now */ 
     params->band_size_dist_provided = 1;   /* band_size_dist is provided */
     params->info = 0;
-    if(params->gpus > 0) {
-#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
-        cudaMallocHost((void**)&params->info_gpu, params->NT * sizeof(int));
-#elif defined(PARSEC_HAVE_DEV_HIP_SUPPORT) 
-        hipHostMalloc((void **)&params->info_gpu, params->NT * sizeof(int), hipHostMallocDefault);
-#else
-        fprintf(stderr, RED"Devices is not supported!!!");
-#endif
-    } else {
-        params->info_gpu = (int *)calloc( params->NT, sizeof(int) );
-    }
+    /* info_gpu is allocated in hicma_parsec_stats_allocate once the number of
+     * usable GPUs is known */
+    params->info_gpu = NULL;
+    params->info_gpu_pinned = 0;
 
 #if PREDICTION 
     params->NP= (params->N * 0.8);
@@ -2047,6 +2045,16 @@ int hicma_parsec_params_check( hicma_parsec_params_t *params )
         exit(1);
     }
 
+    /* Workspaces (pools, GPU scratch) are sized by compmaxrank while HCORE
+     * caps the ranks at maxrank: keep compmaxrank >= maxrank */
+    if( params->compmaxrank < params->maxrank ) {
+        if( params->rank == 0 ) {
+            fprintf(stderr, RED "compmaxrank= %d is smaller than maxrank= %d: setting compmaxrank= %d\n" RESET,
+                    params->compmaxrank, params->maxrank, params->maxrank);
+        }
+        params->compmaxrank = params->maxrank;
+    }
+
     /* If maxrank > NB / 2, it's better to enable band_size_dense auto tuning */ 
     if( params->maxrank > params->NB / 2 ) {
         if( params->rank == 0 )
@@ -2325,9 +2333,14 @@ int hicma_parsec_data_init( hicma_parsec_data_t *data, hicma_parsec_params_t *pa
         data->dcAd.mat = parsec_data_allocate(allocate_size);
         // Register memory in advance
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
-        data->dcAd.super.super.register_memory = NULL;
-        data->dcAd.super.super.unregister_memory = NULL;
-        cudaHostRegister(data->dcAd.mat, allocate_size, cudaHostRegisterDefault); 
+        /* Pin the whole matrix once for the GPU transfers; if that fails (or
+         * no GPU is used) PaRSEC keeps its own lazy per-tile registration */
+        params->dcAd_host_registered = 0;
+        if( params->gpus > 0 && cudaSuccess == cudaHostRegister(data->dcAd.mat, allocate_size, cudaHostRegisterDefault) ) {
+            data->dcAd.super.super.register_memory = NULL;
+            data->dcAd.super.super.unregister_memory = NULL;
+            params->dcAd_host_registered = 1;
+        }
 #endif
         
 #endif
@@ -2619,78 +2632,6 @@ int hicma_parsec_band_size_dense_auto_tuning( parsec_context_t *parsec,
 
 
 /**
- * @brief Reorder GEMM operations for improved cache locality
- * 
- * This function implements matrix reordering to optimize the sequence of
- * General Matrix Multiply (GEMM) operations during Cholesky factorization.
- * The reordering aims to improve cache locality and reduce memory access
- * overhead by reorganizing the computation order.
- * 
- * The function initializes data structures for the reordered computation:
- * - Creates a reorder descriptor for tracking the new computation order
- * - Sets up band-specific data structures for dense and distributed regions
- * - Configures the matrix layout for optimal memory access patterns
- * 
- * @param parsec PaRSEC context for distributed computation
- * @param data Pointer to HICMA data structures (modified with reorder info)
- * @param params Pointer to HICMA parameters containing reorder settings
- * @return 0 on success, non-zero on error
- * 
- * @note This feature is disabled by default and controlled by params->reorder_gemm
- * @note The reordering affects both dense and sparse computation regions
- * @note Memory layout is optimized for the specific problem size and system
- */
-int hicma_parsec_reorder_gemm( parsec_context_t *parsec,
-        hicma_parsec_data_t *data,
-        hicma_parsec_params_t *params )
-{
-    int rank = params->rank;
-    int nodes = params->nodes;
-    int NT = params->NT;
-    int band_p = params->band_p;
-    int band_size_dense = params->band_size_dense;
-    int band_size_dist = params->band_size_dist;
-    int uplo = params->uplo;
-    int P = params->P;
-    int auto_band = params->auto_band;
-    int sparse = params->sparse;
-    int reorder_gemm = params->reorder_gemm;
-
-    /* Just return */
-    if( 0 == reorder_gemm ) return 0;
-
-    /* Re-order GEMM */
-    /* dcReorder data descriptor */
-    parsec_matrix_sym_block_cyclic_init(&data->dcReorder.off_band, PARSEC_MATRIX_INTEGER,
-            rank, 1, NT, NT, NT*NT, 0, 0,
-            NT, NT*NT, P, nodes/P, uplo);
-
-    /* Init band */
-    parsec_matrix_block_cyclic_init(&data->dcReorder.band, PARSEC_MATRIX_INTEGER, PARSEC_MATRIX_TILE,
-                              rank, 1, NT, band_size_dense, NT*NT, 0, 0,
-                              band_size_dist, NT*NT, band_p, nodes/band_p,
-                              1, 1, 0, 0);
-
-    /* Init two_dim_block_cyclic_band_t structure */
-    if( (auto_band || band_size_dense > 1) && 0 == sparse ) 
-        hicma_parsec_parsec_matrix_sym_block_cyclic_band_init( &data->dcReorder, nodes, rank, band_size_dense );
-    else
-        parsec_matrix_sym_block_cyclic_band_init( &data->dcReorder, nodes, rank, band_size_dense );
-    parsec_data_collection_set_key((parsec_data_collection_t*)&data->dcReorder, "dcReorder_super");
-    parsec_data_collection_set_key(&data->dcReorder.band.super.super, "dcReorder_band");
-
-/* Disabled */
-#if 0
-    parsec_reorder_gemm(parsec, (parsec_tiled_matrix_t*)&data->.dcAr,
-                                (parsec_tiled_matrix_t*)&data->dcReorder,
-                                Ar_copy, disp, nb_elem_r, band_size_dense,
-                                reorder_gemm);
-#endif
-
-    return 0;
-}
-
-/**
  * @brief Calculate memory requirements for Cholesky factorization
  * 
  * This function computes the memory requirements for the Cholesky factorization
@@ -2868,24 +2809,15 @@ void hicma_parsec_free_memory( parsec_context_t *parsec,
     parsec_tiled_matrix_destroy( &data->dcAr.band.super );
     parsec_tiled_matrix_destroy( &data->dcAr.off_band.super );
 
-    /* ===========================================
-     * Destroy reordering matrix descriptor (dcReorder)
-     * =========================================== */
-    
-    // Free reordering matrix if GEMM reordering is enabled
-    if( params->reorder_gemm ) { 
-        parsec_band_free_memory(parsec, (parsec_tiled_matrix_t *)&data->dcReorder, params, FREE_BAND_MEMORY);
-        parsec_band_free_memory(parsec, (parsec_tiled_matrix_t *)&data->dcReorder, params, FREE_OFFBAND_MEMORY);
-        parsec_tiled_matrix_destroy( (parsec_tiled_matrix_t*)&data->dcReorder );
-        parsec_tiled_matrix_destroy( &data->dcReorder.band.super );
-        parsec_tiled_matrix_destroy( &data->dcReorder.off_band.super );
-    }
-
     /* dcDist */
     if( params->sparse ) {
         parsec_tiled_matrix_destroy( (parsec_tiled_matrix_t*)&data->dcDist );
         parsec_tiled_matrix_destroy( &data->dcDist.band.super );
         parsec_tiled_matrix_destroy( &data->dcDist.off_band.super );
+        /* The balanced distribution's rank_of reads dist_array, so it goes
+         * only after every descriptor that may call rank_of is destroyed */
+        free( dist_array );
+        dist_array = NULL;
     }
 
     /* dcRank */
@@ -2977,17 +2909,16 @@ void hicma_parsec_free_memory( parsec_context_t *parsec,
     free( params->norm_tileB );
 
     /* Others */
-    if (params->gpus > 0) {
+    if( params->info_gpu_pinned ) {
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
         cudaFreeHost( params->info_gpu );
 #elif defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
         hipHostFree( params->info_gpu );
-#else
-        free( params->info_gpu );
 #endif
     } else {
         free( params->info_gpu );
     }
+    params->info_gpu = NULL;
 
     /* GPU workspace */
 #if (defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)) && GPU_BUFFER_ONCE 
@@ -3005,7 +2936,8 @@ void hicma_parsec_memory_flush_choleksy( parsec_context_t *parsec,
         parsec_memory_free_tile(parsec, (parsec_tiled_matrix_t*)&data->dcAd, params, 1);
 #else
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
-        cudaHostUnregister(data->dcAd.mat);
+        if( params->dcAd_host_registered ) cudaHostUnregister(data->dcAd.mat);
+        params->dcAd_host_registered = 0;
 #endif
         /*
          * This branch allocated one contiguous dcAd.mat slab. Tile pointers are
@@ -3033,89 +2965,6 @@ void hicma_parsec_memory_flush_choleksy( parsec_context_t *parsec,
     parsec_memory_free_tile(parsec, (parsec_tiled_matrix_t *)&data->dcA, params, 1);
 #endif
 }
-
-static uint32_t always_local_rank_of(parsec_data_collection_t * desc, ...)
-{
-    return desc->myrank;
-}
-
-static uint32_t always_local_rank_of_key(parsec_data_collection_t * desc, parsec_data_key_t key)
-{
-    (void)key;
-    return desc->myrank;
-}
-
-/**
- * @brief Warm up Cholesky factorization on all available devices
- * 
- * This function performs a warm-up run of the Cholesky factorization (POTRF)
- * on all available computational devices (CPU, GPU, etc.) to initialize
- * device contexts, load kernels, and establish performance baselines.
- * This is important for accurate performance measurements.
- * 
- * @param rank Process rank (unused, for compatibility)
- * @param uplo Upper or lower triangular matrix specification
- * @param random_seed Random seed for matrix generation
- * @param parsec PaRSEC context for task execution
- * 
- * @note This function creates a small test matrix for warm-up
- * @note GPU devices are warmed up after CPU to ensure proper initialization
- */
-void hicma_parsec_warmup_potrf(int rank, dplasma_enum_t uplo, int random_seed, parsec_context_t *parsec)
-{
-    int MB = 64;
-    int NB = 64;
-    int MT = 4;
-    int NT = 4;
-    int N = NB*NT;
-    int M = MB*MT;
-    int did;
-    int info;
-
-    PASTE_CODE_ALLOCATE_MATRIX(dcA, 1,
-        parsec_matrix_sym_block_cyclic, (&dcA, PARSEC_MATRIX_COMPLEX_DOUBLE,
-                                   rank, MB, NB, M, N, 0, 0,
-                                   M, N, 1, 1, uplo));
-    dcA.super.super.rank_of = always_local_rank_of;
-    dcA.super.super.rank_of_key = always_local_rank_of_key;
-
-    /* Do the CPU warmup first */
-    dplasma_dplgsy(parsec, (double)(N), uplo, &dcA.super, random_seed);
-    parsec_taskpool_t *dpotrf = dplasma_dpotrf_New(uplo, &dcA.super, &info );
-    dpotrf->devices_index_mask = 1<<0; /* Only CPU ! */
-    parsec_context_add_taskpool(parsec, dpotrf);
-    parsec_context_start(parsec);
-    parsec_context_wait(parsec);
-    dplasma_dpotrf_Destruct(dpotrf);
-
-    /* Now do the other devices, skipping RECURSIVE */
-    /* We know that there is a GPU-enabled version of this operation, so warm it up if some device is enabled */
-    for(did = 2; did < (int)parsec_nb_devices; did++) {
-        if(PARSEC_MATRIX_LOWER == uplo) {
-            for(int i = 0; i < MT; i++) {
-                for(int j = 0; j <= i; j++) {
-                    parsec_data_t *dta = dcA.super.super.data_of(&dcA.super.super, i, j);
-                    parsec_advise_data_on_device( dta, did, PARSEC_DEV_DATA_ADVICE_PREFERRED_DEVICE );
-                }
-            }
-        } else {
-            for(int i = 0; i < MT; i++) {
-                for(int j = i; j < NT; j++) {
-                    parsec_data_t *dta = dcA.super.super.data_of(&dcA.super.super, i, j);
-                    parsec_advise_data_on_device( dta, did, PARSEC_DEV_DATA_ADVICE_PREFERRED_DEVICE );
-                }
-            }
-        }
-        dplasma_dplgsy( parsec, (double)(N), uplo,
-                        (parsec_tiled_matrix_t *)&dcA, random_seed);
-        dplasma_dpotrf( parsec, uplo, &dcA.super );
-        parsec_devices_release_memory();
-    }
-
-    parsec_data_free(dcA.mat); dcA.mat = NULL;
-    parsec_tiled_matrix_destroy( (parsec_tiled_matrix_t*)&dcA );
-}
-
 /**
  * @brief Calculate memory address offset for a specific tile in a tiled matrix
  * 
@@ -3271,94 +3120,6 @@ void parsec_print_cm_sym(parsec_context_t* parsec, parsec_tiled_matrix_t *dcA,  
     printf("]");
     free(tempaa);
 }
-
-/**
- * @brief Print general matrix tile in human-readable format
- * 
- * This function extracts and prints a specific tile from a general (non-symmetric)
- * distributed matrix in a formatted, human-readable way. It is primarily used
- * for debugging and verification purposes to inspect matrix contents during computation.
- * 
- * The function:
- * - Allocates temporary memory to store the tile data
- * - Converts the tile from PaRSEC format to LAPACK format
- * - Prints the entire matrix in MATLAB-style format with proper indexing
- * - Shows both dimensions (M x N) in the output header
- * 
- * @param parsec PaRSEC context for distributed computation
- * @param dcA Pointer to the distributed general matrix descriptor
- * @param node Node identifier for the tile location
- * @param p Row index of the tile in the tile grid
- * @param q Column index of the tile in the tile grid
- * 
- * @note This function allocates temporary memory that is freed before return
- * @note Output format is compatible with MATLAB matrix notation
- * @note The entire matrix tile is printed (not just triangular part)
- */
-void parsec_print_cm(parsec_context_t* parsec, parsec_tiled_matrix_t * dcA, int node, int p, int q){
-
-    float *tempaa=(float *)malloc((size_t)dcA->llm*(size_t)dcA->lln*
-                                        (size_t)parsec_datadist_getsizeoftype(dcA->mtype));
-    hicma_parsec_Tile_to_Lapack_single( parsec, (parsec_tiled_matrix_t *)dcA, tempaa, p, q);
-
-      
-    printf("\nM:%d, N:%d, Node(%d): \n", dcA->llm, dcA->lln, node);
-    printf("[");
-    for(int i=0;i<dcA->llm;i++){
-       for(int j=0;j<dcA->lln;j++){
-       //printf("[%d,%d]:(%f), ", i, j, tempaa[i*dcA->.super.llm+j]);
-          printf("%f ", tempaa[j*dcA->lm+i]);
-       }
-       printf(";\n");
-    }
-    printf("]");
-    free(tempaa);
-}
-
-/**
- * @brief Print int8 matrix tile in human-readable format
- * 
- * This function extracts and prints a specific tile from a distributed matrix
- * with int8 data type in a formatted, human-readable way. It is primarily used
- * for debugging and verification purposes to inspect matrix contents during
- * computation, particularly for integer-based algorithms.
- * 
- * The function:
- * - Allocates temporary memory to store the tile data as int8_t
- * - Converts the tile from PaRSEC format to LAPACK format
- * - Prints the matrix in MATLAB-style format with integer values
- * - Shows both dimensions (M x N) in the output header
- * 
- * @param parsec PaRSEC context for distributed computation
- * @param dcA Pointer to the distributed matrix descriptor with int8 data
- * @param node Node identifier for the tile location
- * @param p Row index of the tile in the tile grid
- * @param q Column index of the tile in the tile grid
- * 
- * @note This function allocates temporary memory that is freed before return
- * @note Output format shows integer values instead of floating-point
- * @note The entire matrix tile is printed with proper integer formatting
- */
-void parsec_print_cm_int8(parsec_context_t* parsec, parsec_tiled_matrix_t * dcA, int node, int p, int q){
-
-    int8_t *tempaa=(int8_t *)malloc((size_t)dcA->llm*(size_t)dcA->lln*
-                                        (size_t)parsec_datadist_getsizeoftype(dcA->mtype));
-    hicma_parsec_Tile_to_Lapack_int8( parsec, (parsec_tiled_matrix_t *)dcA, tempaa, p, q);
-
-      
-    printf("\nM:%d, N:%d, Node(%d): \n", dcA->llm, dcA->lln, node);
-    printf("[");
-    for(int i=0;i<dcA->llm;i++){
-       for(int j=0;j<dcA->lln;j++){
-       //printf("[%d,%d]:(%f), ", i, j, tempaa[i*dcA->.super.llm+j]);
-          printf("%d ", tempaa[j*dcA->lm+i]);
-       }
-       printf(";\n");
-    }
-    printf("]");
-    free(tempaa);
-}
-
 /**
  * @brief CPU implementation of Hamming distance binary conversion
  * 
@@ -3417,172 +3178,3 @@ void hicma_parsec_hamming_get_id_matrix_CPU(int nrows, int ncols, uint8_t *aout,
         }
     }
 }
-
-/**
- * @brief CPU implementation of integer memory copy
- * 
- * Performs a simple memory copy operation for integer arrays.
- * This is a utility function for copying integer data between
- * source and destination arrays.
- * 
- * @param nrows Number of rows in the arrays
- * @param ncols Number of columns in the arrays
- * @param _src Source array (int*)
- * @param _dest Destination array (int*)
- */
-void hicma_parsec_memcpy_int32_CPU( int nrows, int ncols, int *_src, int *_dest) {
-    memcpy(_dest, _src, nrows*ncols*sizeof(int));
-}
-
-/**
- * @brief CPU implementation of Hamming distance matrix merging
- * 
- * Merges two Hamming distance matrices by adding corresponding elements.
- * This operation is used to combine partial Hamming distance computations
- * or to accumulate distances from multiple binary conversions.
- * 
- * Note: The operation performs aout[j*lda+i] += ain[i*lda+j], which
- * adds the transpose of the input matrix to the output matrix.
- * 
- * @param nrows Number of rows in the matrices
- * @param ncols Number of columns in the matrices
- * @param aout Output matrix (int) - accumulates the merged result
- * @param ain Input matrix (int) - values to add (transposed)
- * @param lda Leading dimension of both matrices
- */
-void hicma_parsec_hamming_merge_CPU(int nrows, int ncols, int *aout, int *ain, int lda) {
-    for (int i = 0; i < nrows; i++) {
-        for (int j = 0; j < ncols; j++) {
-            // Add transposed input matrix to output matrix
-            // This accumulates Hamming distances from different binary conversions
-            aout[j * lda + i] += ain[i * lda + j];
-        }
-    }
-}
-
-
-
-#if 0 
-extern void dgesdd_qc_(char *jobz, lapack_int *m, 
-        lapack_int *n, double* a, lapack_int *lda,
-        double* s, double* u, lapack_int *ldu,
-        double* vt, lapack_int *ldvt, double* work,
-        lapack_int *lwork, lapack_int* iwork, lapack_int *info );
-
-lapack_int LAPACKE_dgesdd_work( int matrix_layout, char jobz, lapack_int m,
-        lapack_int n, double* a, lapack_int lda,
-        double* s, double* u, lapack_int ldu,
-        double* vt, lapack_int ldvt, double* work,
-        lapack_int lwork, lapack_int* iwork ) {
-        lapack_int info = 0;
-        /* Call LAPACK function and adjust info */
-        dgesdd_qc_( &jobz, &m, &n, a, &lda, s, u, &ldu, vt, &ldvt, work,
-                        &lwork, iwork, &info );
-        if( info < 0 ) {
-                info = info - 1;
-        }
-        return info;
-}
-
-extern void dorgqr_qc_(lapack_int *m, lapack_int *n,
-        lapack_int *k, double* a, lapack_int *lda,
-        const double* tau, double* work,
-        lapack_int *lwork, lapack_int *info );
-
-lapack_int LAPACKE_dorgqr_work( int matrix_layout, lapack_int m, lapack_int n,
-        lapack_int k, double* a, lapack_int lda,
-        const double* tau, double* work,
-        lapack_int lwork )
-{
-    lapack_int info = 0;
-    /* Call LAPACK function and adjust info */
-    dorgqr_qc_( &m, &n, &k, a, &lda, tau, work, &lwork, &info );
-    if( info < 0 ) {
-        info = info - 1;
-    }
-    return info;
-}
-
-
-extern void dgeqrf_qc_(lapack_int *m, lapack_int *n,
-        double* a, lapack_int *lda, double* tau,
-        double* work, lapack_int *lwork, lapack_int *info );
-
-lapack_int LAPACKE_dgeqrf_work( int matrix_layout, lapack_int m, lapack_int n,
-        double* a, lapack_int lda, double* tau,
-        double* work, lapack_int lwork )
-{
-    lapack_int info = 0;
-    printf("self dgeqrf\n");
-    /* Call LAPACK function and adjust info */
-    dgeqrf_qc_( &m, &n, a, &lda, tau, work, &lwork, &info );
-    if( info < 0 ) {
-        info = info - 1;
-    }
-    return info;
-}
-
-#endif
-
-
-#if 0
-
-void DLASCL(char* type, lapack_int* kl, lapack_int* ku, double* cfrom,
-               double* cto, lapack_int* m, lapack_int* n, double* a,
-               lapack_int* lda, lapack_int* info) {
-    lapack_int i, j;
-    double scale_factor;
-
-    // Initialize info to 0 (success)
-    *info = 0;
-
-    // Check for invalid inputs
-    if (*cfrom == 0.0 || isnan(*cfrom) || isnan(*cto) || isinf(*cfrom) || isinf(*cto)) {
-        *info = -4;  // Indicating an illegal value for parameter CFROM
-        return;
-    }
-
-    // Compute scaling factor
-    scale_factor = (*cto) / (*cfrom);
-
-    // Scale the matrix A
-    for (j = 0; j < *n; j++) {
-        for (i = 0; i < *m; i++) {
-            a[i + j * (*lda)] *= scale_factor;
-        }
-    }
-}
-
-void dlascl_(char* type, lapack_int* kl, lapack_int* ku, double* cfrom,
-               double* cto, lapack_int* m, lapack_int* n, double* a,
-               lapack_int* lda, lapack_int* info) {
-    //printf("%s %d %d %lf %lf %d %d %d\n", type, *kl, *ku, *cfrom, *cto, *m, *n, *lda);
-    //LAPACK_dlascl( type, kl, ku, cfrom, cto, m, n, a, lda, info);
-    //return;
-
-    lapack_int i, j;
-    double scale_factor;
-
-    // Initialize info to 0 (success)
-    *info = 0;
-
-    // Check for invalid inputs
-    if (*cfrom == 0.0 || isnan(*cfrom) || isnan(*cto) || isinf(*cfrom) || isinf(*cto)) {
-        *info = -4;  // Indicating an illegal value for parameter CFROM
-    	printf("%s %d %d %lf %lf %d %d %d\n", type, *kl, *ku, *cfrom, *cto, *m, *n, *lda);
-        return;
-    }
-
-    // Compute scaling factor
-    scale_factor = (*cto) / (*cfrom);
-
-    // Scale the matrix A
-    for (i = 0; i < *m; i++) {
-        for (j = 0; j < *n; j++) {
-            //a[j + i * (*lda)] *= scale_factor;
-            a[i + j * (*lda)] *= scale_factor;
-        }
-    }
-}
-
-#endif

@@ -40,6 +40,28 @@
  * ============================================================================= */
 
 /**
+ * The Cholesky path (matrix generation, --check, the low-rank kernels) assumes
+ * square tiles: matrix_compress.jdf and band_regenerate.jdf generate band tiles
+ * as tempmm x tempmm, matrix_uncompress.jdf copies them the same way, and the
+ * HCORE low-rank storage uses one leading dimension for U and V. With
+ * N % NB != 0 the last tile row is only partially generated and the results are
+ * wrong (3e+3 residuals on a dense FP64 run, an abort in HCORE for TLR), so
+ * refuse it here. The TRMM path handles partial tiles and does not go through
+ * this function.
+ */
+static void hicma_parsec_require_full_tiles(const hicma_parsec_params_t *params, const char *what)
+{
+    if( 0 != params->N % params->NB ) {
+        if( 0 == params->rank ) {
+            fprintf(stderr, RED "%s requires N to be a multiple of NB (N= %d, NB= %d): "
+                    "the Cholesky drivers do not support a partial last tile\n" RESET,
+                    what, params->N, params->NB);
+        }
+        exit(1);
+    }
+}
+
+/**
  * @brief Initialize HiCMA PaRSEC environment and data structures
  * 
  * This function sets up the complete HiCMA PaRSEC environment including:
@@ -139,6 +161,8 @@ int hicma_parsec_matrix_generation( parsec_context_t *parsec,
         hicma_parsec_params_t *params,
         starsh_params_t *params_kernel )
 {
+    hicma_parsec_require_full_tiles(params, "matrix generation");
+
     /* Start matrix generation timer for performance measurement */
     SYNC_TIME_START();
     
@@ -338,6 +362,18 @@ int hicma_parsec_potrf( parsec_context_t *parsec,
     /* Validation: Currently only lower triangular matrices are supported */
     assert( params->uplo == PlasmaLower );
 
+    hicma_parsec_require_full_tiles(params, "Cholesky factorization");
+
+    /* FP16 C with FP32 accumulation exists in the TRMM GEMMs only; the dense
+     * FP16 Cholesky GEMM aborts on it (hicma_parsec_core.c), so say so here */
+    if( params->tensor_gemm & MASK_TF16_A16_B16_C16_OP32 ) {
+        if( 0 == params->rank ) {
+            fprintf(stderr, RED "--tensor_gemm 0x80 (FP16 C, FP32 accumulation) is supported by the TRMM only, "
+                    "not by the Cholesky GEMMs\n" RESET);
+        }
+        return 1;
+    }
+
     /* Auto-configure lookahead parameter if not specified (-1 means auto) */
     assert( params->lookahead >= -1 );
     if( -1 == params->lookahead ) {
@@ -381,55 +417,56 @@ int hicma_parsec_potrf( parsec_context_t *parsec,
             (size_t)params->MT * params->NT * sizeof(uint16_t));
 
     /* Execute the appropriate Cholesky factorization algorithm based on configuration */
+    int rc = 0;
     switch( params->kind_of_cholesky ) {
         case DENSE_TLR_MP:
             /* Mixed precision tile low-rank Cholesky factorization */
-            potrf_L_dense_tlr_mp( parsec, data, params );
+            rc = potrf_L_dense_tlr_mp( parsec, data, params );
             break;
 
         case DENSE_TLR_DP:
             /* Double precision tile low-rank Cholesky */
-            potrf_L_dense_tlr_dp( parsec, data, params );
+            rc = potrf_L_dense_tlr_dp( parsec, data, params );
             break;
 
         case DENSE_MP_BAND:
             /* Mixed precision band-based Cholesky */
-            hicma_parsec_hsdpotrf( parsec, data, params );
+            rc = hicma_parsec_hsdpotrf( parsec, data, params );
             break;
 
         case DENSE_SP_HP_BAND:
             /* Single precision half precision band-based Cholesky */
-            hicma_parsec_shpotrf( parsec, data, params );
+            rc = hicma_parsec_shpotrf( parsec, data, params );
             break;
 
         case DENSE_MP_GPU:
             /* Mixed precision GPU-accelerated Cholesky */
-            potrf_L_dense_mp_gpu( parsec, data, params );
+            rc = potrf_L_dense_mp_gpu( parsec, data, params );
             break;
 
         case SPARSE_TLR_DP_GENERAL:
             /* Sparse tile low-rank double precision general Cholesky */
-            potrf_L_sparse_tlr_dp_general( parsec, data, params, analysis );
+            rc = potrf_L_sparse_tlr_dp_general( parsec, data, params, analysis );
             break;
 
         case SPARSE_TLR_DP_BALANCE:
             /* Sparse tile low-rank double precision balanced Cholesky */
-            potrf_L_sparse_tlr_dp_balance( parsec, data, params, analysis );
+            rc = potrf_L_sparse_tlr_dp_balance( parsec, data, params, analysis );
             break;
 
         case DENSE_MP_GPU_FP8:
             /* Mixed precision GPU-accelerated Cholesky with FP8 */
-            potrf_L_dense_mp_gpu_fp8( parsec, data, params );
+            rc = potrf_L_dense_mp_gpu_fp8( parsec, data, params );
             break;
 
         case DENSE_MP_GPU_FP8_SP:
             /* Mixed precision GPU-accelerated Cholesky with FP8 and single precision */
-            potrf_L_dense_mp_gpu_fp8_sp( parsec, data, params );
+            rc = potrf_L_dense_mp_gpu_fp8_sp( parsec, data, params );
             break;
 
         case DENSE_MP_GPU_FP8_ADAPTIVE: 
             /* Mixed precision GPU-accelerated Cholesky with FP8 */
-            potrf_L_dense_mp_gpu_fp8_adaptive( parsec, data, params );
+            rc = potrf_L_dense_mp_gpu_fp8_adaptive( parsec, data, params );
             break;
 
         default:
@@ -438,6 +475,15 @@ int hicma_parsec_potrf( parsec_context_t *parsec,
                 fprintf(stderr, RED "ERROR: Cholesky is not called. Make sure the right parameters are used !!!\n\n");
             }
             return 1;
+    }
+
+    if( 0 != rc ) {
+        /* The kind refused the parameters (message printed by its New); every
+         * rank sees the same parameters, so every rank is here */
+        if( 0 == params->rank ) {
+            fprintf(stderr, RED "ERROR: the Cholesky taskpool could not be created, see above\n" RESET);
+        }
+        exit(1);
     }
 
     /* Synchronize and measure total Cholesky execution time */
@@ -621,18 +667,6 @@ int hicma_parsec_matrix_post_analysis( parsec_context_t *parsec,
         print_final_storage_decisions(params);
     }
 
-#if 0
-    /* Debug code for matrix sum calculation (currently disabled) */
-    double total = hicma_parsec_matrix_dsum( parsec, (parsec_tiled_matrix_t*)&data->dcAd,
-            (parsec_tiled_matrix_t*)&data->dcAr, params->decisions );
-    if( 0 == params->rank ) {
-        fprintf(stderr, "sum of matrix %lf\n", total);
-    }
-
-    /* Debug code for matrix printing (currently disabled) */
-    dplasma_dprint(parsec, params->uplo, (parsec_tiled_matrix_t *)&data->dcAd);
-#endif
-
     /* Collect final rank statistics after Cholesky factorization */
     SYNC_TIME_START();
     hicma_parsec_rank_stat(parsec, "final_rank_tile", (parsec_tiled_matrix_t*)&data->dcAr, params, &params->fminrk, &params->fmaxrk, &params->favgrk);
@@ -724,90 +758,6 @@ void hicma_parsec_fini( parsec_context_t* parsec,
     hicma_parsec_cleanup_parsec(parsec, params);
 }
 
-/**
- * @brief Write matrix A to file in various formats
- * 
- * This function writes the matrix A to a file using either MPI-IO for distributed
- * output or standard file I/O for single-node output. The matrix can be written
- * in symmetric or general format depending on the symm parameter.
- * 
- * @param[in] parsec PaRSEC execution context
- * @param[in] filename Output filename
- * @param[in] AA Reference matrix (unused in current implementation)
- * @param[in] data HiCMA data structures containing the matrix to write
- * @param[in] params HiCMA parameters for matrix dimensions and distribution
- * @param[in] symm Flag indicating if matrix should be written in symmetric format
- */
-void hicma_parsec_writeA(parsec_context_t *parsec,
-        const char *filename,
-        parsec_tiled_matrix_t *AA,
-        hicma_parsec_data_t *data,
-        hicma_parsec_params_t *params,
-        int symm)
-{
-    /* Extract matrix A from data structures */
-    parsec_tiled_matrix_t* A = (parsec_tiled_matrix_t *)&data->dcAd;
-    parsec_tiled_matrix_t* X = (parsec_tiled_matrix_t *)&data->dcX;
-    
-    /* Extract matrix distribution parameters */
-    int rank = params->rank;
-    int nodes = params->nodes;
-    int P = params->P;  /* Grid rows */
-    int Q = params->Q;  /* Grid columns */
-    int MB = A->mb;     /* Block size in rows */
-    int NB = A->nb;     /* Block size in columns */
-    int NT = params->NT; /* Number of tiles */
-    int M = A->lm;      /* Local matrix rows */
-    int N = A->ln;      /* Local matrix columns */
-    
-    /* Display write operation start message */
-    if(rank == 0) fprintf(stderr, RED "\nWrite matrix A to file:\n" RESET);
-  
-#if MPIIO
-    /* Use MPI-IO for distributed file writing */
-    MPI_Datatype darrayA;
-
-    /* Create MPI datatype for 2D cyclic distribution */
-    Creating_MPI_Datatype_2D(nodes, rank,
-            N, M, MPI_DISTRIBUTE_CYCLIC, MPI_DISTRIBUTE_CYCLIC,
-            NB, NB, P, Q,
-            MPI_DOUBLE, &darrayA);
-
-    /* Allocate buffer for matrix data */
-    double* DA = (double *) malloc( A->llm*A->lln * sizeof(double));
-
-    /* Convert from tile format to LAPACK format */
-    if(symm)
-        hicma_parsec_Tile_to_Lapack_sym( parsec, (parsec_tiled_matrix_t *)A, DA, P, nodes/P);
-    else
-        hicma_parsec_Tile_to_Lapack( parsec, (parsec_tiled_matrix_t *)A, DA, P, nodes/P);
-
-    /* Debug output for matrix dimensions */
-    printf("\n %d, %d, %d, %d, %d, %d\n", A->llm, A->llm, M, N, MB, NB);
-    
-    /* Write matrix using MPI-IO */
-    MPI_Writing_dfile(filename, rank, DA, A->llm*A->llm, MPI_DOUBLE, darrayA);
-    
-    /* Clean up allocated memory */
-    parsec_data_free(DA);
-#else
-    /* Use standard file I/O for single-node output */
-    double* DA = (double *)malloc((size_t)A->llm*(size_t)A->lln*
-                                    (size_t)parsec_datadist_getsizeoftype(A->mtype));
-
-    /* Convert from tile format to LAPACK format */
-    if(symm)
-        hicma_parsec_Tile_to_Lapack_sym( parsec, (parsec_tiled_matrix_t *)A, DA, P, nodes/P);
-    else
-        hicma_parsec_Tile_to_Lapack( parsec, (parsec_tiled_matrix_t *)A, DA, P, nodes/P);
-    
-    /* Write matrix to binary file */
-    writeMatrixToBinaryFile(filename, N, N, DA);
-
-    /* Clean up allocated memory */
-    free(DA);
-#endif
-}
 /**
  * @brief Write matrix B to file in various formats
  * 

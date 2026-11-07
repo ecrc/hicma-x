@@ -1,5 +1,7 @@
-#include "hicma_parsec.h"
+/* DPLASMA's test header defines its own TIME_* macros; HiCMA's timing header
+ * (via hicma_parsec.h) replaces them, so it comes second */
 #include "dplasma/tests/common.h"
+#include "hicma_parsec.h"
 #include "dplasmaaux.h"
 
 #include <errno.h>

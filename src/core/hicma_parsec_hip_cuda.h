@@ -51,7 +51,13 @@
 #include "parsec.h"
 
 // PaRSEC HIP device module for GPU task scheduling and execution
-#include "dplasma/parsec/parsec/mca/device/hip/device_hip.h"
+#if defined(HICMA_PARSEC_BUILDING)
+#include "parsec/mca/device/hip/device_hip.h"   /* not installed by PaRSEC; in-tree only */
+#else
+/* The installed headers only use these through pointers */
+typedef struct parsec_device_hip_module_s parsec_device_hip_module_t;
+typedef struct parsec_hip_exec_stream_s parsec_hip_exec_stream_t;
+#endif
 
 /* ============================================================================
  * CLIMATE_EMULATOR compatibility definitions

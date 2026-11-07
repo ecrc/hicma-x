@@ -16,7 +16,6 @@
 
 //#include "gemm_NN_summa.h"
 //#include "gemm_NT_summa.h"
-#include "gemm_TN_summa.h"
 //#include "gemm_TT_summa.h"
 
 /**
@@ -54,162 +53,6 @@ static parsec_hook_return_t evaluate_gpu_gemm(parsec_task_t* task) {
 }
 
 /**
- * @brief Create a new SUMMA-based GEMM taskpool for distributed matrix multiplication
- * 
- * This function creates a taskpool for GEMM operations using the SUMMA algorithm,
- * which is designed for scalable distributed matrix multiplication. It handles
- * GPU device discovery, memory allocation, and task scheduling setup.
- * 
- * @param[in] transA Transpose operation for matrix A (dplasmaNoTrans, dplasmaTrans, dplasmaConjTrans)
- * @param[in] transB Transpose operation for matrix B (dplasmaNoTrans, dplasmaTrans, dplasmaConjTrans)
- * @param[in] alpha Scalar multiplier for the matrix product
- * @param[in] A Input matrix A descriptor
- * @param[in] B Input matrix B descriptor
- * @param[in] beta Scalar multiplier for matrix C
- * @param[in] C Output matrix C descriptor (input/output)
- * @param[in] opt Algorithm options (currently unused)
- * @param[in] params_tlr HICMA PaRSEC parameters including rank, nodes, etc.
- * @param[in] data HICMA PaRSEC data structures including GPU workspace
- * @return Pointer to the created taskpool, or NULL on error
- */
-parsec_taskpool_t *
-hicma_parsec_syrk_summa_new(dplasma_enum_t transA, dplasma_enum_t transB,
-                        float alpha, parsec_tiled_matrix_t* A, parsec_tiled_matrix_t* B,
-                        float beta,  parsec_tiled_matrix_t* C,
-                        dplasma_info_t opt, hicma_parsec_params_t * params_tlr, hicma_parsec_data_t *data)
-{
-    int P, Q, IP, JQ, m, n;
-    parsec_taskpool_t *gemm_tp;
-    parsec_matrix_block_cyclic_t *Cdist;
-    void** eval_gpu_gemm;
-
-    /* Extract grid parameters from matrix C's block-cyclic distribution */
-    P = ((parsec_matrix_block_cyclic_t*)C)->grid.rows;
-    Q = ((parsec_matrix_block_cyclic_t*)C)->grid.cols;
-    IP = ((parsec_matrix_block_cyclic_t*)C)->grid.ip;
-    JQ = ((parsec_matrix_block_cyclic_t*)C)->grid.jq;
-
-    /* Calculate maximum dimensions for the distributed matrix */
-    m = dplasma_imax(C->mt, P);
-    n = dplasma_imax(C->nt, Q);
-
-    /* Allocate memory for the distributed matrix descriptor */
-    Cdist = (parsec_matrix_block_cyclic_t*)malloc(sizeof(parsec_matrix_block_cyclic_t));
-
-    /* Initialize the distributed matrix descriptor for SUMMA algorithm */
-    parsec_matrix_block_cyclic_init(
-            Cdist, PARSEC_MATRIX_FLOAT, PARSEC_MATRIX_TILE,
-            C->super.myrank,
-            1, 1, 
-            m, n, 
-            0, 0, 
-            m, n, 
-            P, Q, 1, 1, IP, JQ);
-    /* Clear data ownership pointers for the distributed matrix */
-    Cdist->super.super.data_of = NULL;
-    Cdist->super.super.data_of_key = NULL;
-
-#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
-    /* Discover and enumerate available CUDA/HIP GPU devices */
-    int nb = 0;
-    for(int i = 0; i < (int)parsec_nb_devices; i++) {
-        parsec_device_module_t *device = parsec_mca_device_get(i);
-        if( PARSEC_DEV_CUDA == device->type ) {
-            nb++;
-        }
-    }
-
-    /* Handle case where no GPU devices are found */
-    if(nb == 0) {
-        char hostname[256];
-        gethostname(hostname, 256);
-    }
-
-    /* Allocate array to store device indices */
-    int *dev_index = (int*)malloc(nb * sizeof(int));
-    nb = 0;
-    for(int i = 0; i < (int)parsec_nb_devices; i++) {
-        parsec_device_module_t *device = parsec_mca_device_get(i);
-        if( PARSEC_DEV_CUDA == device->type ) {
-            dev_index[nb++] = device->device_index;
-        }
-    }
-#endif
-
-    /* Route to appropriate GEMM implementation based on transpose operations */
-    if( dplasmaNoTrans == transA ) {
-        if( dplasmaNoTrans == transB ) {
-            /* NN (NoTrans-NoTrans) operation - not yet implemented */
-            dplasma_error("parsec_gemm_NN_summa_new",
-                          "It will be supported in future");
-        } else {
-            /* NT (NoTrans-Trans) operation - not yet implemented */
-            dplasma_error("parsec_gemm_NT_summa_new",
-                          "It will be supported in future");
-        }
-    } else {
-        if( dplasmaNoTrans == transB ) {
-            /* TN (Trans-NoTrans) operation - currently supported */
-            PARSEC_DEBUG_VERBOSE(3, parsec_debug_output, "gemm_TN_summa\n");
-            parsec_gemm_TN_summa_taskpool_t* tp;
-            tp = parsec_gemm_TN_summa_new(transA, transB, alpha, beta,
-                                           A, B, C, (parsec_data_collection_t*)Cdist, params_tlr);
-
-            /* Allocate and initialize memory pool for integer workspace */
-            tp->_g_p_work_int = (parsec_memory_pool_t*)malloc(sizeof(parsec_memory_pool_t));
-            parsec_private_memory_init( tp->_g_p_work_int, C->mb * C->mb * sizeof(int) );
-
-            printf("\n %s %d\n", __FILE__, __LINE__);
-
-            /* Find the correct taskclass ID for GEMM operations */
-            int gemm_id, gpu_id = 0;
-            for( int i = 0; i < tp->super.nb_task_classes; i++ ) {
-                if( !strcmp(tp->super.task_classes_array[i]->name, "GEMM") )
-                    gemm_id = tp->super.task_classes_array[i]->task_class_id;
-            }
-
-#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
-            if( DEBUG_INFO && 0 == params_tlr->rank && params_tlr->verbose ) printf("gemm_id= %d gpu_id= %d\n", gemm_id, gpu_id);
-
-            /* Set up GPU evaluation hook for GEMM tasks */
-            eval_gpu_gemm  = (void *)&tp->super.task_classes_array[gemm_id]->incarnations[gpu_id].evaluate;
-            *eval_gpu_gemm  = &evaluate_gpu_gemm;
-
-            /* Configure GPU workspace and device information */
-            tp->_g_ws_gpu = (void *)data->ws_gpu;
-            tp->_g_nb_cuda_devices = nb;
-            tp->_g_cuda_device_index = dev_index;
-#endif
-
-            /* Set up data type arenas for matrix operations */
-            parsec_add2arena( &((parsec_gemm_TN_summa_taskpool_t*)tp)->arenas_datatypes[PARSEC_gemm_TN_DEFAULT_ADT_IDX],
-                            parsec_datatype_float_t, PARSEC_MATRIX_FULL,
-                             1, C->mb, C->nb, C->mb,
-                            PARSEC_ARENA_ALIGNMENT_SSE, -1);
-        #if HAVE_I8
-            /* Add arena for 8-bit integer data type if supported */
-            parsec_add2arena( &((parsec_gemm_TN_summa_taskpool_t*)tp)->arenas_datatypes[PARSEC_gemm_TN_FULL_I8_ADT_IDX],
-                             MPI_BYTE, PARSEC_MATRIX_FULL,
-                             1, A->mb, A->nb, A->mb,
-                            PARSEC_ARENA_ALIGNMENT_SSE, -1);
-        #endif
-
-            /* Cast to generic taskpool type for return */
-            gemm_tp = (parsec_taskpool_t*)tp;
-
-        } else {
-            /* TT (Trans-Trans) operation - not yet implemented */
-            dplasma_error("parsec_gemm_TT_summa_new",
-                          "It will be supported in future");
-        }
-    }
-
-    /* Suppress unused parameter warning */
-    (void)opt; //No user-defined options for this algorithm
-    return gemm_tp;
-}
-
-/**
  * @brief Create a new default GEMM taskpool for distributed matrix multiplication
  * 
  * This function creates a taskpool for GEMM operations using the default algorithm,
@@ -234,7 +77,7 @@ hicma_parsec_syrk_default_new(dplasma_enum_t transA, dplasma_enum_t transB,
         float beta,  parsec_tiled_matrix_t* C,
         dplasma_info_t opt, hicma_parsec_params_t * params_tlr, hicma_parsec_data_t *data)
 {
-    parsec_taskpool_t* gemm_tp;
+    parsec_taskpool_t* gemm_tp = NULL;
     void** eval_gpu_gemm;
 
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
@@ -514,40 +357,7 @@ void hicma_parsec_syrk_Destruct( parsec_taskpool_t *tp )
 {
     parsec_gemm_TN_taskpool_t *gemm_tp = (parsec_gemm_TN_taskpool_t *)tp;
 
-    /* Handle SUMMA-based GEMM taskpools */
-    if(
-            gemm_tp->_g_gemm_type == HICMA_GEMM_NN_SUMMA ||
-            gemm_tp->_g_gemm_type == HICMA_GEMM_NT_SUMMA ||
-            gemm_tp->_g_gemm_type == HICMA_GEMM_TN_SUMMA ||
-            gemm_tp->_g_gemm_type == HICMA_GEMM_TT_SUMMA) {
-        parsec_gemm_TN_summa_taskpool_t *gemm_summa_tp = (parsec_gemm_TN_summa_taskpool_t *)tp;
-        parsec_tiled_matrix_t* Cdist = (parsec_tiled_matrix_t*)gemm_summa_tp->_g_Cdist;
-        
-        /* Clean up distributed matrix descriptor */
-        if ( NULL != Cdist ) {
-            parsec_tiled_matrix_destroy( Cdist );
-            free( Cdist );
-        }
-
-#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
-        /* Free GPU device index array */
-        if( gemm_summa_tp->_g_nb_cuda_devices > 0 ) {
-            if( NULL != gemm_summa_tp->_g_cuda_device_index )
-                free(gemm_summa_tp->_g_cuda_device_index);
-        }
-#endif 
-
-        /* Clean up data type arenas */
-        parsec_del2arena( &gemm_summa_tp->arenas_datatypes[PARSEC_gemm_TN_DEFAULT_ADT_IDX] );
-
-#if HAVE_I8
-        /* Clean up 8-bit integer arena if supported */
-        parsec_del2arena( &gemm_summa_tp->arenas_datatypes[PARSEC_gemm_TN_FULL_I8_ADT_IDX] );
-#endif
-        /* Finalize private memory pool */
-        parsec_private_memory_fini( gemm_summa_tp->_g_p_work_int );
-
-    } else if( gemm_tp->_g_gemm_type == HICMA_GEMM_NN ||
+    if( gemm_tp->_g_gemm_type == HICMA_GEMM_NN ||
             gemm_tp->_g_gemm_type == HICMA_GEMM_NT ||
             gemm_tp->_g_gemm_type == HICMA_GEMM_TN ||
             gemm_tp->_g_gemm_type == HICMA_GEMM_TT) {
@@ -568,6 +378,7 @@ void hicma_parsec_syrk_Destruct( parsec_taskpool_t *tp )
 
         /* Finalize private memory pool */
         parsec_private_memory_fini( gemm_tp->_g_p_work_int );
+        free( gemm_tp->_g_p_work_int );
     }
 
     /* Free the taskpool itself */

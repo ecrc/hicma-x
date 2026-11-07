@@ -916,7 +916,7 @@ BODY
                 Au, Av, Ar, ldamu,
                 (double)1.0,
                 Cu, Cv, &new_Crank, ldamu,
-                params_tlr->fixedrk, 2*params_tlr->maxrank, params_tlr->compmaxrank, params_tlr->fixedacc, work_new,
+                params_tlr->fixedrk, params_tlr->maxrank, params_tlr->compmaxrank, params_tlr->fixedacc, work_new,
                 &flops,
                 /** parameters coming from HCORE_dgemm_qr_svd */
                 _CU,

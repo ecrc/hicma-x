@@ -57,6 +57,8 @@ BODY
         if( params_tlr->check || !params_tlr->adaptive_memory ) {
             // In-place conversion (unary operation) - note: this is actually s2d, not d2s
             convert_s2d_unary_CPU(A, descA->mb, descA->mb);
+            /* The buffer was FP64-sized all along; the tile holds FP64 again */
+            this_task->data._f_A.data_out->original->span = (size_t)descA->mb * descA->nb * sizeof(double);
         } else {
             // Allocate new memory and convert to double precision
             if( params_tlr->gpus > 0 ) {

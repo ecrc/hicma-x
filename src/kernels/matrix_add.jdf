@@ -307,21 +307,21 @@ parsec_taskpool_t* hicma_parsec_matrix_add_New(parsec_tiled_matrix_t* A,
 
 #if !GPU_BUFFER_ONCE
     /* Allocate workspace on GPU in not allocated */
-    gpu_temporay_buffer_init( data, params, A->mb, A->nb, storagemaxrank, params->kind_of_cholesky );
+    gpu_temporay_buffer_init( data, params_tlr, A->mb, A->nb, params_tlr->compmaxrank, params_tlr->kind_of_cholesky );
 #endif
 #endif
 
     tp = parsec_matrix_add_new( A, vec, params_tlr);
 
     /* Find the correct taskclass ID */
-    int matrix_add_id, fill_id, gpu_id = 0;
+    int matrix_add_id = -1, gpu_id = 0;
     for( int i = 0; i < tp->super.nb_task_classes; i++ ) {
         if( !strcmp(tp->super.task_classes_array[i]->name, "matrix_add") )
             matrix_add_id = tp->super.task_classes_array[i]->task_class_id;
     }
 
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
-    if( 0 == params_tlr->rank ) printf("add_id= %d fill_id= %d gpu_id= %d\n", matrix_add_id, fill_id, gpu_id);
+    if( 0 == params_tlr->rank && DEBUG_INFO ) printf("add_id= %d gpu_id= %d\n", matrix_add_id, gpu_id);
 
     /* GPU evaluate of chores */
     eval_gpu_matrix_add  = (void *)&tp->super.task_classes_array[matrix_add_id]->incarnations[gpu_id].evaluate;

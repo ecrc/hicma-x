@@ -92,6 +92,16 @@ BODY
                          params_kernel->index + n*descA->mb,  // Global column start index
                          params_kernel->data, params_kernel->data,  // Kernel data (passed twice for symmetric kernels)
                          this_task->data._f_D.data_out->device_private, ldd);  // Output buffer and leading dimension
+
+    /* Same diagonal shift as matrix_compress.jdf, so that the reference matrix
+     * of --check is the matrix that was factorized */
+    if( m == n && 0.0 != params_tlr->add_diag
+            && !hicma_parsec_kernel_adds_diag(params_tlr->kind_of_problem) ) {
+        double *D = (double *)this_task->data._f_D.data_out->device_private;
+        for( int i = 0; i < tempmm; i++ ) {
+            D[i * ldd + i] += params_tlr->add_diag;
+        }
+    }
 }
 END
 

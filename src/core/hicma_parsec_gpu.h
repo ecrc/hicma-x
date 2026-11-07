@@ -55,16 +55,6 @@ int hicma_parsec_check_gpu_arch( hicma_parsec_params_t *params );
 void hicma_parsec_disable_GPU( parsec_taskpool_t * tp );
 
 /**
- * @brief Disable CPU to run only on GPU
- * 
- * Disables CPU execution for the specified task pool, forcing all
- * computation to run on GPU devices only.
- * 
- * @param[in] tp Task pool to disable CPU for
- */
-void disable_CPU( parsec_taskpool_t * tp );
-
-/**
  * @brief Disable GPU to run only on CPU
  * 
  * Disables GPU execution for the specified task pool, forcing all
@@ -103,20 +93,6 @@ int gpu_load_balance( int m, int n, hicma_parsec_params_t *params );
  * @return Load balance factor (GPU device index)
  */
 int gpu_load_balance_2d( int m, int n, hicma_parsec_params_t *params );
-
-/**
- * @brief Calculate load balance for dense operations with device count
- * 
- * Determines the optimal GPU device for dense operations when
- * the number of CUDA devices is explicitly specified.
- * 
- * @param[in] m Number of rows
- * @param[in] n Number of columns
- * @param[in] NT Number of tiles
- * @param[in] nb_cuda_devices Number of CUDA devices
- * @return Load balance factor (GPU device index)
- */
-int gpu_load_dense( int m, int n, int NT, int nb_cuda_devices);
 
 /**
  * @brief Calculate load balance for TLR operations
@@ -166,7 +142,6 @@ int gpu_load_mixed_precision( int m, int n, int NT, int P, int nb_cuda_devices, 
 parsec_potrf_stream_workspace_t *lookup_gpu_workspace( parsec_device_cuda_module_t *cuda_device,
         parsec_cuda_exec_stream_t *cuda_stream,
         parsec_potrf_workspace_t *ws );
-int lookup_gpu_workspace_i( parsec_device_cuda_module_t *cuda_device );
 int lookup_gpu_workspace_j( parsec_device_cuda_module_t *cuda_device,
         parsec_cuda_exec_stream_t *cuda_stream );
 
@@ -193,16 +168,6 @@ void workspace_memory_free( parsec_potrf_workspace_t *ws);
 /* ============================================================================
  * GPU cache and memory management functions
  * ============================================================================ */
-
-/**
- * @brief Reset GPU cache
- * 
- * Resets GPU memory cache and device load information to free
- * up memory and reset performance counters.
- * 
- * @param[in] parsec PaRSEC context
- */
-void hicma_parsec_gpu_cache_reset( parsec_context_t *parsec );
 
 /**
  * @brief Initialize GPU handle
@@ -650,44 +615,6 @@ void float_2int_array_unary(int nrows, int ncols,
                     cudaStream_t stream);
 
 /**
- * @brief Convert int array to float array on GPU
- * 
- * Converts an int array to float array on GPU with separate
- * input and output arrays.
- * 
- * @param[in] nrows Number of rows
- * @param[in] ncols Number of columns
- * @param[in] T Input int array
- * @param[in] ldf Leading dimension of T
- * @param[out] F Output float array
- * @param[in] ldi Leading dimension of F
- * @param[in] stream CUDA stream
- */
-void int2float_array(int nrows, int ncols,
-                    int *T, int ldf,
-                   float *F, int ldi,
-                    cudaStream_t stream);
-
-/**
- * @brief Convert float array to int array on GPU
- * 
- * Converts a float array to int array on GPU with separate
- * input and output arrays.
- * 
- * @param[in] nrows Number of rows
- * @param[in] ncols Number of columns
- * @param[in] F Input float array
- * @param[in] ldf Leading dimension of F
- * @param[out] T Output int array
- * @param[in] ldi Leading dimension of T
- * @param[in] stream CUDA stream
- */
-void float_2int_array(int nrows, int ncols,
-		    float *F, int ldf,
-                    int *T, int ldi,
-                    cudaStream_t stream);
-
-/**
  * @brief Convert int array to float array on GPU (in-place)
  * 
  * Converts an int array to float array on GPU in-place without
@@ -701,114 +628,6 @@ void float_2int_array(int nrows, int ncols,
  */
 void int_2float_array_unary(int nrows, int ncols,
                     int *T, int ldi,
-                    cudaStream_t stream);
-
-/**
- * @brief Convert int array to float array on GPU
- * 
- * Converts an int array to float array on GPU with separate
- * input and output arrays.
- * 
- * @param[in] nrows Number of rows
- * @param[in] ncols Number of columns
- * @param[in] T Input int array
- * @param[in] ldi Leading dimension of T
- * @param[out] F Output float array
- * @param[in] ldf Leading dimension of F
- * @param[in] stream CUDA stream
- */
-void int_2float_array(int nrows, int ncols,
-                    int *T, int ldi,
-                    float *F, int ldf,
-                    cudaStream_t stream);
-
-/**
- * @brief Convert double array to int array on GPU (in-place)
- * 
- * Converts a double array to int array on GPU in-place without
- * allocating additional memory.
- * 
- * @param[in] nrows Number of rows
- * @param[in] ncols Number of columns
- * @param[in] F Input double array
- * @param[in] ldf Leading dimension of F
- * @param[in] stream CUDA stream
- */
-void double_2int_array_unary(int nrows, int ncols,
-                    double *F, int ldf,
-                    cudaStream_t stream);
-
-/**
- * @brief Convert int array to double array on GPU
- * 
- * Converts an int array to double array on GPU with separate
- * input and output arrays.
- * 
- * @param[in] nrows Number of rows
- * @param[in] ncols Number of columns
- * @param[in] T Input int array
- * @param[in] ldf Leading dimension of T
- * @param[out] F Output double array
- * @param[in] ldi Leading dimension of F
- * @param[in] stream CUDA stream
- */
-void int2double_array(int nrows, int ncols,
-                    int *T, int ldf,
-                   double *F, int ldi,
-                    cudaStream_t stream);
-
-/**
- * @brief Convert double array to int array on GPU
- * 
- * Converts a double array to int array on GPU with separate
- * input and output arrays.
- * 
- * @param[in] nrows Number of rows
- * @param[in] ncols Number of columns
- * @param[in] F Input double array
- * @param[in] ldf Leading dimension of F
- * @param[out] T Output int array
- * @param[in] ldi Leading dimension of T
- * @param[in] stream CUDA stream
- */
-void double_2int_array(int nrows, int ncols,
-		    double *F, int ldf,
-                    int *T, int ldi,
-                    cudaStream_t stream);
-
-/**
- * @brief Convert int array to double array on GPU (in-place)
- * 
- * Converts an int array to double array on GPU in-place without
- * allocating additional memory.
- * 
- * @param[in] nrows Number of rows
- * @param[in] ncols Number of columns
- * @param[in] T Input int array
- * @param[in] ldi Leading dimension of T
- * @param[in] stream CUDA stream
- */
-void int_2double_array_unary(int nrows, int ncols,
-                    int *T, int ldi,
-                    cudaStream_t stream);
-
-/**
- * @brief Convert int array to double array on GPU
- * 
- * Converts an int array to double array on GPU with separate
- * input and output arrays.
- * 
- * @param[in] nrows Number of rows
- * @param[in] ncols Number of columns
- * @param[in] T Input int array
- * @param[in] ldi Leading dimension of T
- * @param[out] F Output double array
- * @param[in] ldf Leading dimension of F
- * @param[in] stream CUDA stream
- */
-void int_2double_array(int nrows, int ncols,
-                    int *T, int ldi,
-                    double *F, int ldf,
                     cudaStream_t stream);
 
 /* ============================================================================
@@ -914,32 +733,6 @@ void memcpy_bf_GPU( int nrows, int ncols, void *_src, void *_dest, cudaStream_t 
  * ============================================================================ */
 
 /**
- * @brief Print double precision matrix on GPU
- * 
- * Prints the contents of a double precision matrix stored on GPU
- * for debugging and verification purposes.
- * 
- * @param[in] nrows Number of rows
- * @param[in] ncols Number of columns
- * @param[in] A Input matrix data
- * @param[in] stream CUDA stream
- */
-void matrix_print_double_GPU( int nrows, int ncols, double *A, cudaStream_t stream );
-
-/**
- * @brief Print single precision matrix on GPU
- * 
- * Prints the contents of a single precision matrix stored on GPU
- * for debugging and verification purposes.
- * 
- * @param[in] nrows Number of rows
- * @param[in] ncols Number of columns
- * @param[in] A Input matrix data
- * @param[in] stream CUDA stream
- */
-void matrix_print_float_GPU( int nrows, int ncols, float *A, cudaStream_t stream );
-
-/**
  * @brief Print int32 matrix on GPU
  * 
  * Prints the contents of an int32 matrix stored on GPU
@@ -969,30 +762,6 @@ void matrix_print_int8_GPU( int nrows, int ncols, int *A, cudaStream_t stream );
  * GPU matrix generation
  * ============================================================================ */
 
-/**
- * @brief Generate dense matrix on GPU using DCMG (Double-Cholesky Matrix Generation)
- * 
- * Generates a dense matrix on GPU using the DCMG algorithm for
- * matrix generation and testing purposes.
- * 
- * @param[out] A Output matrix data
- * @param[in] m Number of rows
- * @param[in] n Number of columns
- * @param[in] m0 Starting row index
- * @param[in] n0 Starting column index
- * @param[in] l1_x_cuda Pointer to x-coordinates of local theta
- * @param[in] l1_y_cuda Pointer to y-coordinates of local theta
- * @param[in] l2_x_cuda Pointer to x-coordinates of local theta
- * @param[in] l2_y_cuda Pointer to y-coordinates of local theta
- * @param[in] localtheta Pointer to local theta values
- * @param[in] distance_metric Distance metric type
- * @param[in] lda Leading dimension of A
- * @param[in] stream CUDA stream
- */
-void dcmg_array_GPU( double *A, int m, int n, int m0,
-                int n0, double* l1_x_cuda, double* l1_y_cuda, double* l2_x_cuda, double* l2_y_cuda,
-                double *localtheta, int distance_metric, int lda, cudaStream_t stream);
-
 /* ============================================================================
  * GPU Hamming operations
  * ============================================================================ */
@@ -1011,7 +780,7 @@ void dcmg_array_GPU( double *A, int m, int n, int m0,
  * @param[in] value Value to subtract
  * @param[in] stream CUDA stream
  */
-void hicma_parsec_hamming_subtract_ones_GPU(int nrows, int ncols, int *aout, int *ain, int lda, int value, cudaStream_t stream);
+void hicma_parsec_hamming_subtract_ones_GPU(int nrows, int ncols, int8_t *aout, int8_t *ain, int lda, int value, cudaStream_t stream);
 
 /**
  * @brief Get identity matrix on GPU
@@ -1027,7 +796,7 @@ void hicma_parsec_hamming_subtract_ones_GPU(int nrows, int ncols, int *aout, int
  * @param[in] value Value to set
  * @param[in] stream CUDA stream
  */
-void hicma_parsec_hamming_get_id_matrix_GPU(int nrows, int ncols, int *aout, int *ain, int lda, int value, cudaStream_t stream);
+void hicma_parsec_hamming_get_id_matrix_GPU(int nrows, int ncols, int8_t *aout, int8_t *ain, int lda, int value, cudaStream_t stream);
 
 /**
  * @brief Perform bitmask tensergemm on GPU
@@ -1047,39 +816,9 @@ void hicma_parsec_hamming_get_id_matrix_GPU(int nrows, int ncols, int *aout, int
  */
 int bitmask_tensergemm_GPU( int8_t *input, void *A,  void *B, int32_t *C, int m, int k, int target_value, cudaStream_t stream );
 
-/**
- * @brief Merge matrices on GPU
- * 
- * Merges matrices on GPU for Hamming distance calculations
- * and matrix combination operations.
- * 
- * @param[in] nrows Number of rows
- * @param[in] ncols Number of columns
- * @param[out] aout Output matrix
- * @param[in] ain Input matrix
- * @param[in] lda Leading dimension of ain
- * @param[in] stream CUDA stream
- */
-void hicma_parsec_hamming_merge_GPU(int nrows, int ncols, int *aout, int *ain, int lda, cudaStream_t stream);
-
-/**
- * @brief Copy int32 data from source to destination on GPU
- * 
- * Performs memory copy operation for int32 data on GPU between
- * source and destination locations.
- * 
- * @param[in] nrows Number of rows
- * @param[in] ncols Number of columns
- * @param[in] _src Source data pointer
- * @param[out] _dest Destination data pointer
- * @param[in] stream CUDA stream
- */
-void hicma_parsec_memcpy_int32_GPU( int nrows, int ncols, void *_src, void *_dest, cudaStream_t stream );
-
 // d_dst: device pointer to 1 double (cudaMalloc)
 // x: host scalar value
 // stream: stream to enqueue the kernel (0 = default)
-void copy_float_to_device_double(double* d_dst, float x, cudaStream_t stream);
 void set_device_double(double* d_dst, double x, cudaStream_t stream);
 void copy_device_float_to_device_double(double* d_dst, const float* d_src, cudaStream_t stream);
 
@@ -1087,95 +826,9 @@ void copy_device_float_to_device_double(double* d_dst, const float* d_src, cudaS
  * GPU core operations
  * ============================================================================ */
 
-/**
- * @brief Perform denseC denseA denseB gemm on GPU
- * 
- * Performs GEMM operation on GPU with dense matrices A, B, and C
- * using optimized cuBLAS kernels and mixed precision support.
- * 
- * @param[in] descA Descriptor for matrix A
- * @param[in] descB Descriptor for matrix B
- * @param[in] descC Descriptor for matrix C
- * @param[in] params_tlr TLR parameters
- * @param[in] ws_gpu GPU workspace
- * @param[in] cuda_device CUDA device module
- * @param[in] gpu_task GPU task
- * @param[in] cuda_stream CUDA execution stream
- * @param[out] C Output matrix C
- * @param[out] A Input matrix A
- * @param[out] B Input matrix B
- * @param[in] m Number of rows
- * @param[in] n Number of columns
- * @param[in] k Number of columns
- * @param[in] Crank Rank of matrix C
- * @param[in] Arank Rank of matrix A
- * @param[in] Brank Rank of matrix B
- * @param[in] alpha Alpha parameter
- * @param[in] beta Beta parameter
- */
-void hicma_parsec_core_gemmmp_TN_denseC_denseA_denseB_gpu( 
-        parsec_tiled_matrix_t* descA, 
-        parsec_tiled_matrix_t* descB, 
-        parsec_tiled_matrix_t* descC,
-        hicma_parsec_params_t *params_tlr,
-        parsec_potrf_workspace_t *ws_gpu,
-        parsec_device_cuda_module_t *cuda_device,
-        parsec_gpu_task_t *gpu_task,
-        parsec_cuda_exec_stream_t *cuda_stream,
-        void *C, void *A, void *B, int m, int n, int k,
-        int Crank, int Arank, int Brank,
-        double alpha, double beta );
-
 /* ============================================================================
  * cuBLAS and CUDA utility functions
  * ============================================================================ */
-
-/**
- * @brief Perform cuBLAS GemmEx operation
- * 
- * Wrapper for cuBLAS GemmEx operation with support for different
- * data types and optimized algorithms.
- * 
- * @param[in] handle cuBLAS handle
- * @param[in] transa Transpose flag for A
- * @param[in] transb Transpose flag for B
- * @param[in] m Number of rows
- * @param[in] n Number of columns
- * @param[in] k Number of columns
- * @param[in] alpha Alpha parameter
- * @param[in] A Input matrix A
- * @param[in] Atype Data type of A
- * @param[in] lda Leading dimension of A
- * @param[in] B Input matrix B
- * @param[in] Btype Data type of B
- * @param[in] ldb Leading dimension of B
- * @param[in] beta Beta parameter
- * @param[out] C Output matrix C
- * @param[in] Ctype Data type of C
- * @param[in] ldc Leading dimension of C
- * @param[in] computeType Compute type
- * @param[in] algo Algorithm
- * @return cuBLAS status
- */
-cublasStatus_t my_cublasGemmEx(cublasHandle_t handle,
-                            cublasOperation_t transa,
-                            cublasOperation_t transb,
-                            int m,
-                            int n, 
-                            int k,
-                            const void    *alpha,
-                            const void     *A,
-                            cudaDataType_t Atype,
-                            int lda,
-                            const void     *B,
-                            cudaDataType_t Btype,
-                            int ldb,
-                            const void    *beta,
-                            void           *C,
-                            cudaDataType_t Ctype,
-                            int ldc, 
-                            cudaDataType_t computeType,
-                            cublasGemmAlgo_t algo);
 
 /**
  * @brief CUDA error checking macro

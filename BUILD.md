@@ -1,6 +1,6 @@
-# HiCMA-PaRSEC Build Guide
+# HiCMA-X Build Guide
 
-This document provides comprehensive instructions for building HiCMA-PaRSEC, a hierarchical matrix computation library powered by the PaRSEC runtime system.
+How to build, test and install HiCMA-X (formerly HiCMA-PaRSEC), a library of tile low-rank and mixed-precision linear algebra on the PaRSEC runtime.
 
 ## Table of Contents
 
@@ -14,13 +14,12 @@ This document provides comprehensive instructions for building HiCMA-PaRSEC, a h
 
 ### Required Dependencies
 
-- **CMake**
-- **C/C++ Compiler**
-- **Fortran Compiler**
-- **MPI**
-- **BLAS**
-- **LAPACKE**
-- **Git**
+- **CMake** 3.21 or later
+- **C11 / C++17 compilers** (GCC 11+, Clang 14+, or the vendor compilers of the machine)
+- **Fortran compiler** (for the BLAS/LAPACK linkage of the test drivers)
+- **MPI** with `MPI_THREAD_MULTIPLE` (Open MPI 4/5, MPICH 4, Cray MPICH)
+- **BLAS** and **LAPACKE** (OpenBLAS or MKL)
+- **Git** (submodules)
 
 ### Submodule Dependencies
 
@@ -105,6 +104,9 @@ ctest --preset=release
 | Option | Default | Description |
 |--------|---------|-------------|
 | `CMAKE_BUILD_TYPE` | `RelWithDebInfo` | Build type (Debug, Release, RelWithDebInfo, MinSizeRel) |
+| `BUILD_TESTING` | `ON` | Build the drivers in `tests/` and register the CTest cases |
+| `HICMA_PARSEC_GENOMICS` | `OFF` | Build the genomics (kernel ridge regression) drivers and compile the library with `GENOMICS=1`; needs CUDA or HIP |
+| `BUILD_SHARED_LIBS` | `ON` | Shared (`ON`) or static libraries |
 | `HICMA_PARSEC_HAVE_CUDA` | `OFF` | Enable CUDA support. Also builds the FP8 (E4M3) GEMMs, which kinds 8, 9 and 10 use only when every GPU has compute capability >= 8.9; `--fp8 0` turns them off at runtime |
 | `HICMA_PARSEC_HAVE_HIP` | `OFF` | Enable HIP support |
 | `ENABLE_SANITIZER` | `OFF` | Enable AddressSanitizer instrumentation |
@@ -113,6 +115,38 @@ ctest --preset=release
 | `CMAKE_CUDA_ARCHITECTURES` | `70 80 90 90a` | Target CUDA architectures |
 
 Check CMake for more options.
+
+#### Testing
+
+```bash
+ctest --test-dir build --output-on-failure -L hicma -LE gpu
+```
+
+Every registered case runs with its correctness check; see `TESTS.md` for the
+labels, the GPU and MPI cases and the stand-alone script.
+
+#### Installing and using the installed library
+
+```bash
+cmake --install build --prefix /opt/hicma-x
+```
+
+A consumer project finds the package and links the exported target; the
+install prefix must also be where the bundled PaRSEC and DPLASMA were
+installed (the same `cmake --install` does both):
+
+```cmake
+find_package(HICMAParsec REQUIRED)
+add_executable(app app.c)
+target_link_libraries(app PRIVATE HICMAParsec::hicma_parsec)
+```
+
+```bash
+cmake -S app -B build-app -DCMAKE_PREFIX_PATH=/opt/hicma-x
+```
+
+`tests/install_consumer/` is such a project (it builds the Cholesky driver
+against the installed package) and CI runs it.
 
 #### Example Configurations
 
@@ -151,7 +185,7 @@ git submodule update --init --recursive
 # Set environment variables for dependencies
 export HCORE_DIR=/path/to/hcore
 export STARSH_DIR=/path/to/starsh
-export BLAS_LIBRARIES=/path/to/blas
+export LAPACKE_ROOT=/path/to/lapacke   # BLAS/LAPACKE stack, found by DPLASMA's FindLAPACKE (or -DBLA_VENDOR=...)
 ```
 
 #### 3. CUDA Issues

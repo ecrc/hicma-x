@@ -14,6 +14,7 @@ set(SRC
     core/hicma_parsec_core_trmm.c
     core/hicma_parsec_gpu.c
     kernels/hicma_kernel_time.c
+    kernels/potrf_common.c
     
     # Wrapper files
     kernels/potrf_L_dense_tlr_dp_wrapper.c
@@ -70,7 +71,6 @@ set(JDF
     kernels/band_free_memory.jdf
     kernels/band_regenerate.jdf
     kernels/band_size_dense_auto_tuning.jdf
-    kernels/diagonal_correction_calculation.jdf
     
     # POTRF JDF files
     kernels/potrf_L_dense_tlr_dp.jdf
@@ -87,19 +87,14 @@ set(JDF
     
     # GEMM and related JDF files
     kernels/isyrk_LT.jdf
-    #kernels/misyrk_LT.jdf
-    kernels/gemm_TN_summa.jdf
     kernels/gemmex_TN_summa.jdf
     kernels/gemm_TN.jdf
-    #kernels/gemm_TN_batched.jdf
     kernels/gemmex_TN.jdf
-    kernels/reorder_gemm.jdf
     
     # Utility JDF files
     kernels/rank_gather.jdf
     kernels/rank_check.jdf
     kernels/rank_print.jdf
-    kernels/matrix_ssum.jdf
     kernels/matrix_uncompress.jdf
     kernels/matrix_compress.jdf
     kernels/decision_make_comp.jdf
@@ -115,7 +110,6 @@ set(JDF
     kernels/memory_allocation_dense_static.jdf
     kernels/memory_allocation_dense_decision.jdf
     kernels/memory_free_dense_decision.jdf
-    kernels/matrix_dsum.jdf
     kernels/matrix_check_norm_diff.jdf
     kernels/matrix_det.jdf
     
@@ -124,7 +118,6 @@ set(JDF
     kernels/Tile_to_Lapack.jdf
     kernels/Tile_to_Lapack_single.jdf
     kernels/Lapack_to_Tile_Single.jdf
-    kernels/Lapack_to_Tile_sym.jdf
     kernels/Tile_to_Lapack_sym.jdf
     kernels/Tile_to_Lapack_sym_single.jdf
     kernels/Tile_to_Lapack_int.jdf
@@ -132,18 +125,15 @@ set(JDF
     
     # Other utility JDF files
     kernels/replicate_to_rows.jdf
-    kernels/sqrt_kernel.jdf
     kernels/genotype_generator.jdf
     kernels/dist_allocate.jdf
     kernels/dist_allocate_sym.jdf
     kernels/convert_d2i.jdf
     kernels/convert_i2d.jdf
     kernels/convert_s2i.jdf
-    kernels/convert_i2s.jdf
     kernels/sqr_sum_vec_cyclic.jdf
     kernels/copy_vector_bcdd.jdf
     kernels/matrix_add.jdf
-    kernels/cast_double_diag.jdf
     kernels/memory_free_tile.jdf
     kernels/dist_read.jdf
     kernels/matrix_sum_vec.jdf
@@ -159,7 +149,6 @@ set(JDF
     climate_emulator/climate_emulator_diff_double.jdf
     climate_emulator/climate_emulator_geqsht_inverse_pre_computed_version.jdf
     climate_emulator/climate_emulator_mse.jdf
-    climate_emulator/climate_emulator_print_double.jdf
     climate_emulator/climate_emulator_geqsht_forward_reshape.jdf
     climate_emulator/climate_emulator_matrix_norm_get.jdf
     
@@ -168,7 +157,6 @@ set(JDF
     kernels/dist_allocate_hamming.jdf
     kernels/hamming_binary_generator.jdf
     kernels/matrix_unique_element.jdf
-    kernels/check_read_data.jdf
 )
 
 # CUDA support
@@ -235,14 +223,24 @@ if(HICMA_PARSEC_HAVE_HIP)
     message(STATUS "HIP separable compilation enabled")
 endif(HICMA_PARSEC_HAVE_HIP)
 
-# Link libraries
-target_link_libraries(hicma_parsec ${LD_LIB_BASIC} starsh)
-
-# Add MPI C++ libraries if available
-if(MPI_CXX_FOUND)
-    target_link_libraries(hicma_parsec ${MPI_CXX_LIBRARIES})
-    message(STATUS "Added MPI C++ libraries to hicma_parsec: ${MPI_CXX_LIBRARIES}")
+# Link libraries. The runtimes and the matrix libraries that hicma_parsec is
+# built on are part of its interface; BLAS/LAPACKE, MPI and the GPU libraries
+# are implementation details of a shared library (NEEDED entries) but must be
+# propagated when the library is static.
+if(BUILD_SHARED_LIBS)
+    set(_hicma_dep_scope PRIVATE)
+else()
+    set(_hicma_dep_scope PUBLIC)
 endif()
+set(_hicma_gpu_libs)
+if(HICMA_PARSEC_HAVE_CUDA)
+    set(_hicma_gpu_libs ${LD_LIB_CUDA_TARGETS})
+elseif(HICMA_PARSEC_HAVE_HIP)
+    set(_hicma_gpu_libs ${LD_LIB_HIP})
+endif()
+target_link_libraries(hicma_parsec
+    PUBLIC parsec dplasma hcore starsh
+    ${_hicma_dep_scope} LAPACKE::LAPACKE ${_hicma_gpu_libs} ${MPI_C_LIBRARIES} ${MPI_CXX_LIBRARIES} stdc++)
 
 # Add dependencies for HIP device headers
 if(HICMA_PARSEC_HAVE_HIP)
@@ -253,19 +251,20 @@ endif(HICMA_PARSEC_HAVE_HIP)
 target_include_directories(hicma_parsec PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/hicma_parsec_compat>
 )
 
-# Add compile definitions
-target_compile_definitions(hicma_parsec PRIVATE
+# Add compile definitions. HICMA_PARSEC_BUILDING lets the public headers
+# include the DPLASMA/PaRSEC internals that are not installed; GENOMICS=1
+# selects the genomics (kernel ridge regression) mode of the library.
+target_compile_definitions(hicma_parsec
+    PRIVATE
+    HICMA_PARSEC_BUILDING
     $<$<BOOL:${HICMA_PARSEC_HAVE_CUDA}>:HICMA_PARSEC_HAVE_CUDA>
     $<$<BOOL:${HICMA_PARSEC_HAVE_HIP}>:HICMA_PARSEC_HAVE_HIP>
     $<$<BOOL:${ON_FUGAKU}>:ON_FUGAKU>
     $<$<BOOL:${ENABLE_SANITIZER}>:ENABLE_SANITIZER>
+    PUBLIC
+    $<$<BOOL:${HICMA_PARSEC_GENOMICS}>:GENOMICS=1>
 )
 
-# Print build information
-message(STATUS "=== HICMA PARSEC Source Configuration ===")
-message(STATUS "Source files: ${SRC}")
-message(STATUS "JDF files: ${JDF}")
-message(STATUS "Library type: $<IF:$<BOOL:${BUILD_SHARED_LIBS}>,shared,static>")
-message(STATUS "=========================================")

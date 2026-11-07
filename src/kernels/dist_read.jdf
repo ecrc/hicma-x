@@ -32,25 +32,32 @@ static int dist_read_float(char* path, int num, float *matrix, int N, int SNP) {
    
    // Construct the full file path by appending genotype file number
    char str[100] = {0};
-   char *cont = (char *)malloc(strlen(path) * sizeof(char)+100);
-   memcpy(cont, path,strlen(path) * sizeof(char)+10);
+   char *cont = (char *)malloc(strlen(path) + 100);
+   memcpy(cont, path, strlen(path) + 1);
    num++;  // Convert 0-based to 1-based file numbering
    snprintf(str, sizeof(str), "/genotype%d.bin", num);
    strcat(cont, str);
 
    // Open the binary genotype file for reading
    f = fopen(cont,"rb");
+   if( NULL == f ) {
+       fprintf(stderr, "cannot open genotype file %s\n", cont);
+       exit(1);
+   }
 
    // Read data row by row from the binary file
    for ( i=0; i<N; i++){
        // Seek to the correct position for this row (each float is 4 bytes)
-       fseek(f, SNP*i*4, SEEK_SET);
+       fseek(f, (long)SNP * i * (long)sizeof(float), SEEK_SET);
 
        // Calculate the starting index in the output matrix (column major order)
        unsigned long long index =i*SNP;
 
        // Read one complete row of SNP data
-       fread(&matrix[index],sizeof(float),SNP,f);
+       if( (size_t)SNP != fread(&matrix[index], sizeof(float), SNP, f) ) {
+           fprintf(stderr, "short read in genotype file %s, row %u\n", cont, i);
+           exit(1);
+       }
 
        // Optional progress reporting (currently disabled)
        if (0&&(i%100000==0)) {

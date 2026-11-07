@@ -223,7 +223,7 @@ info = 0  /* Return code for recursive calls (0 = success) */
 
 // Data flow - input from binding or previous SYRK, output to send task and final storage
 RW T <- (k == 0) ? A potrf_bind_A(k, k) : T potrf_dsyrk(k-1, k)   [ type_remote = FULL_DP ]  /* Input: first tile from binding, others from SYRK */
-     -> T0 potrf_dpotrf_send(k)                                   [ type_remote = FULL_DP ]  /* Output: send to TRSM tasks */
+     -> (k < descA->mt-1) ? T0 potrf_dpotrf_send(k)                                   [ type_remote = FULL_DP ]  /* Output: send to TRSM tasks */
      -> descA(k, k)                                               /* Output: store final result */
 
 // Control flow - trigger termination when last diagonal block is processed
@@ -320,7 +320,7 @@ END
 potrf_dpotrf_send(k) [high_priority = on]
 
 // Execution space - one task per diagonal block
-k = 0 .. descA->mt-1
+k = 0 .. descA->mt-2  /* potrf_dpotrf_send(mt-1) would have no successor: a sink still queued when TERMINATE fires outlives the taskpool */
 
 // Parallel partitioning - operates on diagonal tile (k,k)
 :descA(k, k)
@@ -432,14 +432,14 @@ RW    C <- (k == 0 && m-k < params_tlr->band_size_dense) ? A potrf_bind_A(m, k) 
         <- (k == 0 && m-k >= params_tlr->band_size_dense) ? descA(m, k)         
         <- C potrf_dgemm(m, k, k-1)                                             [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_potrf_L_dense_mp_gpu(params_tlr->decisions, m, k, descA->lmt)]; %} ]
         -> A potrf_dsyrk(k, m)                                                  [ type_remote = BYTE layout_remote = MPI_BYTE count_remote = size ]
-        -> C0 potrf_dtrsm_send(m, k)                                            [ type_remote = BYTE layout_remote = MPI_BYTE count_remote = size ]  
+        -> (!(m == descA->mt-1 && k == descA->mt-2)) ? C0 potrf_dtrsm_send(m, k)                                            [ type_remote = BYTE layout_remote = MPI_BYTE count_remote = size ]  
         -> descA(m, k)                                                         
 
 /* Rank information for low-rank blocks */
 READ  Cr <- (k == 0 && m-k >= params_tlr->band_size_dense) ? descAr(m, k)  
          <- (k != 0 && m-k >= params_tlr->band_size_dense) ? Cr potrf_dgemm(m, k, k-1): NULL   [ type_remote = AR ]
          -> (m-k >= params_tlr->band_size_dense) ? Ar potrf_dsyrk(k, m)                        [ type_remote = AR ]
-         -> (m-k >= params_tlr->band_size_dense) ? Cr potrf_dtrsm_send(m, k)                   [ type_remote = AR ]
+         -> (m-k >= params_tlr->band_size_dense && !(m == descA->mt-1 && k == descA->mt-2)) ? Cr potrf_dtrsm_send(m, k)                   [ type_remote = AR ]
          -> (m-k >= params_tlr->band_size_dense) ? Ar potrf_dgemm(m, k+1..m-1, k)              [ type_remote = AR ]
          -> (m-k >= params_tlr->band_size_dense) ? Br potrf_dgemm(m+1..descA->mt-1, m, k)      [ type_remote = AR ]
          -> (m-k >= params_tlr->band_size_dense) ? descAr(m, k)               
@@ -599,7 +599,7 @@ potrf_dtrsm_send(m, k) [high_priority = on]
 
 // Execution space - same iteration space as TRSM task
 m = 1 .. descA->mt-1  /* Row index: from second row to last row */
-k = 0 .. m-1          /* Column index: from first column to diagonal-1 */
+k = 0 .. %{ return (m == descA->mt-1) ? m-2 : m-1; %}  /* potrf_dtrsm_send(mt-1, mt-2) would have no successor, see potrf_dpotrf_send */          /* Column index: from first column to diagonal-1 */
 
 // Control message size to send, it's the new Cr
 size = 1              /* Size of rank information message */

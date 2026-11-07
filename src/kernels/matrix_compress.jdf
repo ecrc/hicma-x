@@ -126,8 +126,10 @@ BODY
             this_task->data._f_D.data_out->device_private, ldd);
 #endif
 
-    /* Add diagonal correction to ensure positive definiteness */ 
-    if(m == n) {
+    /* Add the diagonal shift, unless the STARS-H kernel already applied it
+     * (hicma_parsec_kernel_adds_diag); band_regenerate.jdf, which produces the
+     * reference matrix of --check, follows the same rule. */
+    if( m == n && !hicma_parsec_kernel_adds_diag(params_tlr->kind_of_problem) ) {
         if( IS_ALLOCATE_DP(m, n) ) {
             for(int i = 0; i < descA->mb; i++) {
                 ((double *)this_task->data._f_D.data_out->device_private)[i*descA->mb+i] += params_tlr->add_diag;

@@ -219,6 +219,8 @@ int check_dpotrf2( parsec_context_t *parsec, int verbose,
          (result > threshold) )
     {
         if( verbose ) printf(RED "-- Factorization is suspicious ! \n" RESET);
+        if( 0 == A0->super.myrank )
+            fprintf(stderr, RED "Check FAILED: ||LL^T-A||_F/||A||_F = %e, accepted bound %e (--check_tol)\n" RESET, result, threshold);
         info_factorization = 1;
     }
     else
@@ -232,7 +234,9 @@ int check_dpotrf2( parsec_context_t *parsec, int verbose,
     LLt.mat = NULL;
     parsec_tiled_matrix_destroy( (parsec_tiled_matrix_t*)&LLt);
 
-    return 0; 
+    /* Every rank computes the same norms (dplasma_dlansy is collective), so
+     * the verdict is identical everywhere and needs no reduction. */
+    return info_factorization;
 }
 
 /**
@@ -255,16 +259,11 @@ int check_diff( parsec_context_t *parsec, int verbose,
                   parsec_tiled_matrix_t *A,
                   parsec_tiled_matrix_t *A0, double threshold )
 {
-    parsec_matrix_block_cyclic_t *twodA = (parsec_matrix_block_cyclic_t *)A0;
-    parsec_matrix_block_cyclic_t LLt;
     int info_factorization;
     double Rnorm = 0.0;  /* Norm of difference L-L0 */
     double A0norm = 0.0; /* Norm of reference matrix L0 */
     double Anorm = 0.0;  /* Norm of computed matrix L */
     double result = 0.0; /* Relative difference result */
-    int N = A->n;        /* Matrix dimension */
-    double eps = LAPACKE_dlamch_work('e'); /* Machine epsilon */
-    int side;
 
     /* Compute Frobenius norms of both matrices for comparison */
     Anorm = dplasma_dlansy(parsec, PlasmaFrobeniusNorm, uplo, A);
@@ -276,21 +275,24 @@ int check_diff( parsec_context_t *parsec, int verbose,
 
     /* Compute the norm of the difference matrix */
     Rnorm = dplasma_dlansy(parsec, PlasmaFrobeniusNorm, uplo, A);
+    result = Rnorm / Anorm;
 
     /* Print detailed comparison results if verbose mode is enabled */
     if ( verbose ) {
         printf("============\n");
         printf("Checking the equality of lower/upper triangular parts of two matrices. Threshold is %.2e\n", threshold);
-        printf( "-- dpotrf: ||L0||_F = %e, HiCMA: ||L||_F = %e, ||L-L0||_F = %e, ||L-L0||_F/||L||_F = %e \n", A0norm, Anorm, Rnorm, Rnorm/Anorm );
+        printf( "-- dpotrf: ||L0||_F = %e, HiCMA: ||L||_F = %e, ||L-L0||_F = %e, ||L-L0||_F/||L||_F = %e \n", A0norm, Anorm, Rnorm, result );
     }
 
     /* Determine if matrices are equal based on threshold
      * Check for NaN or infinite values to catch numerical issues */
     if ( isnan(Rnorm)  || isinf(Rnorm)  ||
          isnan(result) || isinf(result) ||
-         (Rnorm/Anorm > threshold) )
+         (result > threshold) )
     {
         if( verbose ) printf("-- DIFFERENT matrices ! \n");
+        if( 0 == A->super.myrank )
+            fprintf(stderr, RED "Check FAILED: ||L-L0||_F/||L||_F = %e, accepted bound %e (--check_tol)\n" RESET, result, threshold);
         info_factorization = 1;
     }
     else
@@ -299,7 +301,7 @@ int check_diff( parsec_context_t *parsec, int verbose,
         info_factorization = 0;
     }
 
-    return 0; 
+    return info_factorization;
 }
 
 /* ============================================================================
@@ -463,6 +465,20 @@ int hicma_parsec_check_compression( parsec_context_t *parsec,
             dplasma_wait_until_completion(parsec);
             dplasma_dpotrf_Destruct( parsec_dpotrf );
         }
+
+        /* info is set on the rank that owns the failing diagonal tile only.
+         * A reference factorization that breaks down means the uncompressed
+         * matrix is not positive definite (fixedacc too loose, or a wrong
+         * --adddiag), and the comparisons below would be against garbage. */
+        MPI_Allreduce( MPI_IN_PLACE, &info, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD );
+        if( 0 != info ) {
+            if( 0 == rank ) {
+                fprintf(stderr, RED "The reference dense Cholesky of the uncompressed matrix failed: "
+                        "info= %d (leading minor not positive definite)\n" RESET, info);
+            }
+            params->info = info;
+            exit(1);
+        }
     }
 
     /* Compute determinant of the dense Cholesky result
@@ -507,7 +523,8 @@ int hicma_parsec_check_dpotrf( parsec_context_t *parsec,
     int uplo = params->uplo;
     int maxrank = params->maxrank;
     int verbose = params->verbose;
-    double tol = params->fixedacc;
+    /* --check_tol when given, otherwise the compression tolerance */
+    double tol = params->check_tol > 0.0 ? params->check_tol : params->fixedacc;
     int fixedrk = params->fixedrk;
 
     if(rank == 0) fprintf(stderr, RED "\nCheck Cholesky:\n" RESET);

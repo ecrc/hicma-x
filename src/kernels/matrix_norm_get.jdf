@@ -124,10 +124,9 @@ hicma_parsec_matrix_norm_get_New( parsec_context_t *parsec,
         char *datatype_str,
         double *norm_tmp)
 {
-    /* Validate input arguments */
-    if (params_tlr->uplo != PlasmaLower) {
-        dplasma_error("STARSH_appr_New", "illegal value of uplo, should be PlasmaLower\n");
-        return NULL /*-1*/;
+    if( PlasmaLower != uplo && PlasmaUpper != uplo && PlasmaUpperLower != uplo ) {
+        dplasma_error("hicma_parsec_matrix_norm_get_New", "illegal value of uplo");
+        return NULL;
     }
 
     // Create the taskpool with the specified parameters
@@ -185,6 +184,10 @@ double hicma_parsec_matrix_norm_get( parsec_context_t *parsec,
 
     // Create and execute the norm computation taskpool
     parsec_matrix_norm_get = hicma_parsec_matrix_norm_get_New( parsec, uplo, A, params_tlr, norm_tile, datatype_str, norm_tmp );
+    if( NULL == parsec_matrix_norm_get ) {
+        fprintf(stderr, "hicma_parsec_matrix_norm_get: the taskpool could not be created\n");
+        exit(1);
+    }
 
     parsec_context_add_taskpool(parsec, parsec_matrix_norm_get);
     parsec_context_start(parsec);

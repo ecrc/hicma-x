@@ -102,23 +102,26 @@ location* readLocsFile(char *locs_file, int n)
 	else
 	{
 		//Allocate memory
-		locations		= (location *) malloc(sizeof(location*));
+		locations		= (location *) malloc(sizeof(location));
 		locations->x            = (double *) malloc(n * sizeof(double));
 		locations->y            = (double *) malloc(n * sizeof(double));
+		locations->z            = NULL;
 	}
 
-	while ((read = getline(&line, &len, fp)) != -1) {
+	/* One "x,y" pair per line; stop at n locations and ignore short lines */
+	while (i < n && (read = getline(&line, &len, fp)) != -1) {
 		pch = strtok(line, ",");
-		while (pch != NULL)
-		{
-			locations->x[i] = atof(pch);
-			pch = strtok (NULL, ",");
-			locations->y[i] = atof(pch);
-			pch = strtok (NULL, ",");
-		}
+		if (pch == NULL) continue;
+		locations->x[i] = atof(pch);
+		pch = strtok (NULL, ",");
+		if (pch == NULL) continue;
+		locations->y[i] = atof(pch);
 		i++;
 	}
 	fclose(fp);
+	if (i < n) {
+		fprintf(stderr, "%s: expected %d locations, read %d\n", locs_file, n, i);
+	}
 	if (line)
 		free(line);
 	//zsort_locations(n,locations);
@@ -182,87 +185,3 @@ location* readLocsFile3d(char* locs_file, int n)
 	//zsort_locations(n,locations);
 	return locations;
 }
-
-/* ============================================================================
- * Data file reading functions
- * ============================================================================ */
-
-/**
- * @brief Read observation file
- *
- * Reads a file containing observation data and returns an array of values.
- * The file is expected to contain one observation value per line. Memory
- * is dynamically allocated for the observation array.
- *
- * @param[in] obsfile Filename of the observation file
- * @param[in] n Number of observations to read
- * @return Pointer to array of observation values, or NULL on error
- * @note The caller is responsible for freeing the returned array
- * @warning The function assumes the file contains at least 'n' lines of valid data
- */
-double* readObsFile(char* obsfile, int n)
-{
-    FILE* fp;
-    char* line     = NULL;
-    size_t len      = 0;
-    ssize_t read;
-    int count       = 0;
-
-    double* z_vec = (double *) malloc(n * sizeof(double));
-
-	fp = fopen(obsfile, "r");
-	if (fp == NULL)
-	{
-		printf("readObsFile:cannot open observations file: %s\n", obsfile);
-		exit(EXIT_FAILURE);
-	}
-
-	while ((read = getline(&line, &len, fp)) != -1)
-		z_vec[count++]=atof(line);
-
-	fclose(fp);
-	free(line);
-
-	return z_vec;
-}
-
-/**
- * @brief Read time file
- *
- * Reads a file containing time data and returns an array of values.
- * The file is expected to contain one time value per line. Memory
- * is dynamically allocated for the time array. This function is
- * particularly useful for space-time modeling applications.
- *
- * @param[in] timefile Filename of the time file
- * @param[in] n Number of time points to read
- * @return Pointer to array of time values, or NULL on error
- * @note The caller is responsible for freeing the returned array
- * @warning The function assumes the file contains at least 'n' lines of valid data
- */
-double* readTimeFile(char* timefile, int n)
-{
-    FILE* fp;
-    char* line     = NULL;
-    size_t len      = 0;
-    ssize_t read;
-    int count       = 0;
-
-    double* time_vec = (double *) malloc(n * sizeof(double));
-
-    fp = fopen(timefile, "r");
-    if (fp == NULL)
-    {
-        printf("readTimeFile:cannot open time file: %s\n", timefile);
-        exit(EXIT_FAILURE);
-    }
-
-    while ((read = getline(&line, &len, fp)) != -1)
-        time_vec[count++]=atof(line);
-
-    fclose(fp);
-    free(line);
-
-    return time_vec;
-}
-
