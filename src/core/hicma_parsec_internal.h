@@ -861,6 +861,23 @@ static inline uint16_t hicma_tile_meta_precision(const void *meta)
     return (uint16_t)((const hicma_tile_meta_t *)meta)->precision;
 }
 
+/**
+ * Problem kinds whose STARS-H data already carries --adddiag on the diagonal:
+ * randtlr (0, `diag` is added), electrodynamics (1, 5, `diag` *is* the diagonal
+ * value) and the RBF mesh kernels (6, 7, `reg` with isreg = 1), see
+ * hicma_parsec_kernel_init. For those the generation and the check reference
+ * (matrix_compress.jdf, band_regenerate.jdf) must not add it again; for the
+ * spatial-statistics kinds the kernel takes `noise` instead and the shift is
+ * added by the tasks.
+ */
+static inline int hicma_parsec_kernel_adds_diag(int kind_of_problem)
+{
+    switch( kind_of_problem ) {
+        case 0: case 1: case 5: case 6: case 7: return 1;
+        default: return 0;
+    }
+}
+
 /** Linear index of tile (m, n) in the per-tile arrays (decisions, norm_tile, ...). */
 static inline size_t hicma_tile_idx(const hicma_parsec_params_t *params, int m, int n)
 {
