@@ -69,6 +69,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             build-essential gfortran cmake ninja-build git pkg-config ca-certificates \
+            python3 flex bison \
             libopenblas-dev libgsl-dev liblapacke-dev \
             libopenmpi-dev openmpi-bin
 
