@@ -87,6 +87,13 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   version updater script are gone.
 - `cmake_minimum_required(3.21)`; configure no longer runs
   `git submodule update --remote --force`.
+- One BLAS/LAPACKE stack: `hicma_parsec`, `hcore` and `starsh` link the
+  `LAPACKE::LAPACKE` target that DPLASMA finds. The previous build loaded a
+  second MKL interface and threading layer (`mkl_intel_lp64` +
+  `mkl_gnu_thread` next to DPLASMA's `mkl_gf_lp64` + `mkl_sequential`), and
+  `libhcore.so` recorded no dependency on LAPACKE at all, which made every
+  driver fail to link with `--as-needed` (Ubuntu). Select the stack with
+  `LAPACKE_ROOT` or `BLA_VENDOR`.
 - `HICMA_PARSEC_GENOMICS` option: the genomics drivers are built only when it
   is on (they need a GPU build); the default build no longer ships binaries that
   cannot run.

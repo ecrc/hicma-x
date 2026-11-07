@@ -60,6 +60,9 @@ before/after timing comparison.
 ### Upgrading from 0.1.0
 
 - `libhicma_parsec` has SOVERSION 0 (it was 2, from a stale fallback version).
+- BLAS/LAPACKE come from DPLASMA's `find_package(LAPACKE)` for the whole build
+  (`LAPACKE_ROOT`, `BLA_VENDOR`); the separate `BLAS_LIBRARIES` discovery and
+  the hard-coded MKL link line are gone.
 - Results change for problem kinds 0, 1, 5, 6 and 7 when `--adddiag` is non-zero
   (the shift is no longer applied twice), and for TLR kinds 2, 6, 7 only in
   runs that silently overflowed their rank cap before (they now abort with

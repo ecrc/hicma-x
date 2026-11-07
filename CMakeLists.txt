@@ -180,12 +180,34 @@ endif()
 add_subdirectory(stars-h)
 add_subdirectory(hcore)
 
+# HCORE's and STARS-H's own CMake files record no link dependency on the
+# LAPACKE, CBLAS and BLAS routines they call. Without it libhcore.so has no
+# DT_NEEDED entry for them, and an executable linked with --as-needed (the
+# default on Ubuntu) fails with undefined LAPACKE_* references coming from
+# libhcore.so. LAPACKE::LAPACKE (LAPACKE + CBLAS + BLAS) is the global imported
+# target that DPLASMA's FindLAPACKE defines (add_subdirectory(dplasma) above);
+# the installed dplasma-config.cmake finds it again for package consumers.
+target_link_libraries(hcore PUBLIC LAPACKE::LAPACKE)
+target_link_libraries(starsh PUBLIC LAPACKE::LAPACKE)
+
+# STARS-H links GSL as "libgsl + libgslcblas" (GSL_LIBRARIES). libgslcblas is
+# GSL's reference CBLAS: any CBLAS satisfies GSL, and when libgslcblas precedes
+# the real BLAS on a link line it captures every cblas_* call of the process
+# (DPLASMA's cblas_dgemm bound to it: 40x slower CPU GEMMs, different
+# rounding). Drop it from the starsh target; LAPACKE::LAPACKE provides CBLAS.
+foreach(_prop LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
+    get_target_property(_starsh_libs starsh ${_prop})
+    if(_starsh_libs)
+        list(FILTER _starsh_libs EXCLUDE REGEX "gslcblas")
+        set_target_properties(starsh PROPERTIES ${_prop} "${_starsh_libs}")
+    endif()
+endforeach()
+unset(_starsh_libs)
+
 # Configure HCORE from submodule
 # HCORE is now built as part of the project via submodule
 # The hcore library target is available after add_subdirectory(hcore)
 
-# Add HCORE library to our dependency list
-list(APPEND HCORE_STARSH_LIB hcore)
 message(STATUS "HCORE configured from submodule")
 
 # Configure STARSH from submodule
@@ -205,14 +227,11 @@ if(GSL)
         add_definitions(-DGSL)
         include_directories(${GSL_INCLUDE_DIRS})
         message(STATUS "GSL support enabled")
-        list(APPEND HCORE_STARSH_LIB ${GSL_LIBRARIES})
     else()
         message(STATUS "GSL not found: building without GSL support")
     endif()
 endif()
 
-# Add STARSH library to our dependency list
-list(APPEND HCORE_STARSH_LIB starsh)
 message(STATUS "STARSH configured from submodule")
 
 # Sanitizer configuration.
@@ -343,56 +362,14 @@ if(HICMA_PARSEC_HAVE_HIP)
     message(STATUS "HIP dependencies configured")
 endif(HICMA_PARSEC_HAVE_HIP)
 
-# Configure BLAS/LAPACK dependencies
-# First, try to find BLAS if not already found
-if(NOT BLAS_FOUND)
-    find_package(BLAS REQUIRED)
-endif()
-
-# Set up BLAS libraries - handle both cases where BLAS_LIBRARIES is set or not
-if(BLAS_LIBRARIES)
-    set(LD_LIB_HICMA_PARSEC
-        ${BLAS_LIBRARIES}
-        m
-    )
-    # Add CBLAS if available
-    if(CBLAS_cblas_LIBRARY)
-        list(APPEND LD_LIB_HICMA_PARSEC ${CBLAS_cblas_LIBRARY})
-    endif()
-else()
-    # Fallback: if BLAS_LIBRARIES is not set, try to construct it from found libraries
-    if(BLAS_openblas_LIBRARY)
-        set(LD_LIB_HICMA_PARSEC
-            ${BLAS_openblas_LIBRARY}
-            m
-        )
-        message(STATUS "Using OpenBLAS library: ${BLAS_openblas_LIBRARY}")
-    else()
-        # Last resort: use generic openblas
-        set(LD_LIB_HICMA_PARSEC
-            openblas
-            m
-        )
-        message(WARNING "BLAS_LIBRARIES not found, using generic openblas")
-    endif()
-endif()
-
-# Add CUDA targets if available
-if(HICMA_PARSEC_HAVE_CUDA)
-    list(APPEND LD_LIB_HICMA_PARSEC ${LD_LIB_CUDA_TARGETS})
-endif(HICMA_PARSEC_HAVE_CUDA)
-
-# MKL-specific configuration
-string(FIND "${CBLAS_DIR_FOUND}" "mkl" _match_mkl)
-if(NOT "-1" STREQUAL "${_match_mkl}")
-    set(LD_LIB_HICMA_PARSEC
-        mkl_intel_lp64
-        mkl_sequential
-        mkl_core
-        ${LD_LIB_HICMA_PARSEC}
-    )
-    message(STATUS "MKL configuration detected")
-endif(NOT "-1" STREQUAL "${_match_mkl}")
+# BLAS, CBLAS, LAPACK and LAPACKE come from one place: the LAPACKE::LAPACKE
+# target that DPLASMA's find_package(LAPACKE) defines (add_subdirectory(dplasma)
+# above). hicma_parsec, hcore and starsh link it, so one BLAS stack is loaded
+# into the process, the one the DPLASMA reference routines of --check use.
+# A separate discovery used to add a second MKL interface and threading layer
+# (mkl_intel_lp64 + mkl_gnu_thread next to DPLASMA's mkl_gf_lp64 +
+# mkl_sequential). Select the stack with LAPACKE_ROOT / LAPACKE_DIR or
+# BLA_VENDOR, see dplasma/cmake_modules/FindLAPACKE.cmake.
 
 # Print configuration summary
 message(STATUS "=== HICMA PARSEC Configuration Summary ===")
@@ -416,9 +393,6 @@ message(STATUS "Dependencies:")
 message(STATUS "  - HCORE: Built from submodule")
 message(STATUS "  - DPLASMA: Built from submodule")
 message(STATUS "  - STARS-H: Built from submodule")
-message(STATUS "HCORE_STARSH_LIB: ${HCORE_STARSH_LIB}")
-message(STATUS "BLAS_LIBRARIES: ${BLAS_LIBRARIES}")
-message(STATUS "LD_LIB_HICMA_PARSEC: ${LD_LIB_HICMA_PARSEC}")
 message(STATUS "==========================================")
 
 # Add subdirectories

@@ -233,12 +233,14 @@ else()
     set(_hicma_dep_scope PUBLIC)
 endif()
 set(_hicma_gpu_libs)
-if(HICMA_PARSEC_HAVE_HIP)
+if(HICMA_PARSEC_HAVE_CUDA)
+    set(_hicma_gpu_libs ${LD_LIB_CUDA_TARGETS})
+elseif(HICMA_PARSEC_HAVE_HIP)
     set(_hicma_gpu_libs ${LD_LIB_HIP})
 endif()
 target_link_libraries(hicma_parsec
-    PUBLIC parsec dplasma starsh hcore
-    ${_hicma_dep_scope} ${LD_LIB_HICMA_PARSEC} ${_hicma_gpu_libs} ${MPI_C_LIBRARIES} ${MPI_CXX_LIBRARIES} stdc++)
+    PUBLIC parsec dplasma hcore starsh
+    ${_hicma_dep_scope} LAPACKE::LAPACKE ${_hicma_gpu_libs} ${MPI_C_LIBRARIES} ${MPI_CXX_LIBRARIES} stdc++)
 
 # Add dependencies for HIP device headers
 if(HICMA_PARSEC_HAVE_HIP)

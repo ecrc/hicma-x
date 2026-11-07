@@ -185,7 +185,7 @@ git submodule update --init --recursive
 # Set environment variables for dependencies
 export HCORE_DIR=/path/to/hcore
 export STARSH_DIR=/path/to/starsh
-export BLAS_LIBRARIES=/path/to/blas
+export LAPACKE_ROOT=/path/to/lapacke   # BLAS/LAPACKE stack, found by DPLASMA's FindLAPACKE (or -DBLA_VENDOR=...)
 ```
 
 #### 3. CUDA Issues

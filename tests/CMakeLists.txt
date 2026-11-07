@@ -31,7 +31,7 @@ hicma_add_driver(testing_dist_read testing_dist_read.c)
 
 # CBLAS micro-benchmark (no HiCMA)
 add_executable(testing_dgemm_cpu testing_dgemm.c)
-target_link_libraries(testing_dgemm_cpu PRIVATE ${LD_LIB_HICMA_PARSEC})
+target_link_libraries(testing_dgemm_cpu PRIVATE LAPACKE::LAPACKE)
 
 # ---- Genomics (kernel ridge regression): GPU-only GEMM kernels, GENOMICS=1 ----
 if(HICMA_PARSEC_GENOMICS)
@@ -77,7 +77,7 @@ endif()
 
 if(ON_FUGAKU)
     add_executable(testing_hgemm_cpu testing_hgemm.c)
-    target_link_libraries(testing_hgemm_cpu PRIVATE ${LD_LIB_HICMA_PARSEC})
+    target_link_libraries(testing_hgemm_cpu PRIVATE LAPACKE::LAPACKE)
     set_target_properties(testing_hgemm_cpu PROPERTIES LINK_FLAGS "-SSL2")
 endif()
 
