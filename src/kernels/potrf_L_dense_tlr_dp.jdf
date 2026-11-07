@@ -135,6 +135,15 @@ END
  *               READ_Cr                          *
  * Read low-rank compressed tiles for off-band    *
  * regions (tiles beyond the dense band)          *
+ *                                                *
+ * The rank travels down the GEMM/TRSM chain as   *
+ * descAr's own buffer (every task of tile (m, n) *
+ * runs on its owner), so the final rank is in    *
+ * descAr without a write-back task. A write-back *
+ * task would be a sink with no successor, and a  *
+ * sink still queued when TERMINATE fires outlives *
+ * the taskpool (observed as a crash in the next  *
+ * taskpool's wait on 2 ranks).                    *
  **************************************************/
 READ_Cr(m, n)
 
@@ -158,30 +167,6 @@ BODY
 END
 
 
-/**************************************************
- *               WRITE_Cr                         *
- * Write updated low-rank compressed tiles back   *
- * to storage for off-band regions                *
- **************************************************/
-WRITE_Cr(m, k)
-
-// Execution space: only for off-band tiles
-m = params_tlr->band_size_dense .. descA->mt-1    /* Row index: from band_size_dense to end */
-k = 0 .. m-params_tlr->band_size_dense            /* Column index: up to m-band_size_dense */
-
-// Parallel partitioning: each off-band tile is processed independently
-:descAr(m, k)
-
-// Data flow: Read updated compressed tile from TRSM and write back to storage
-READ Cr <- Cr potrf_dtrsm(m, k)              [ type_remote = AR ]  /* Get updated tile from TRSM */
-        -> descAr(m, k)                                      /* Write back to storage */
-
-BODY
-{
-    /* Debug output for low-rank tile writing */
-    if(DEBUG_INFO) printf("WRITE_Cr(%d, %d)\n", m, k);
-}
-END
 
 
 /**************************************************
@@ -346,7 +331,6 @@ READ  Cr <- (k == 0 && m-k >= params_tlr->band_size_dense) ? Cr READ_Cr(m, k)   
          -> (m-k >= params_tlr->band_size_dense) ? Ar potrf_dsyrk(k, m)                        [ type_remote = AR ]   /* Off-band: to SYRK */
          -> (m-k >= params_tlr->band_size_dense) ? Ar potrf_dgemm(m, k+1..m-1, k)              [ type_remote = AR ]   /* Off-band: to GEMM */
          -> (m-k >= params_tlr->band_size_dense) ? Br potrf_dgemm(m+1..descA->mt-1, m, k)      [ type_remote = AR ]   /* Off-band: to GEMM */
-         -> (m-k >= params_tlr->band_size_dense) ? Cr WRITE_Cr(m, k)                           [ type_remote = AR ]   /* Off-band: write compressed tile */
 
 /* Lookahead control: enable parallel execution of dependent tasks */
 CTL ctl <- (params_tlr->lookahead == 1 && m > params_tlr->lookahead+k)? ctl potrf_dsyrk(k, k+1)  /* Single lookahead */
@@ -571,8 +555,6 @@ band_size_dense_local = params_tlr->band_size_dense    /* Band size for dense/co
 send_full_tile_local = params_tlr->send_full_tile      /* Flag for full tile communication */
 
 // Predecessor and successor k indices for data flow
-//k_pre = %{ return reorder_gemm_k_pre(descRG, m, n, k); %} 
-//k_next = %{ return reorder_gemm_k_next(descRG, m, n, k); %} 
 k_pre = k-1    /* Previous k iteration */
 k_next = k+1   /* Next k iteration */
 

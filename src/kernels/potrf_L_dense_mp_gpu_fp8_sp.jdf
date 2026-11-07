@@ -308,7 +308,7 @@ info = 0  /* For the info in the case of recursive calls - stores LAPACK info pa
 
 // Parameters - data flow and dependencies
 RW T <- (k == 0) ? A potrf_bind_A(k, k) : T potrf_dsyrk(k-1, k)   [ type_remote = FULL_SP ]  /* Input: original data for k=0, updated data for k>0 */
-     -> T0 potrf_dpotrf_send(k)                                   [ type_remote = FULL_SP ]  /* Output: send factorized data to TRSM tasks */
+     -> (k < descA->mt-1) ? T0 potrf_dpotrf_send(k)                                   [ type_remote = FULL_SP ]  /* Output: send factorized data to TRSM tasks */
      -> descA(k, k)                                               /* Output: store final result back to matrix */
 
 // Termination control - trigger termination after last diagonal block
@@ -420,7 +420,7 @@ END
 potrf_dpotrf_send(k) [high_priority = on]
 
 // Execution space - process all diagonal blocks
-k = 0 .. descA->mt-1
+k = 0 .. descA->mt-2  /* potrf_dpotrf_send(mt-1) would have no successor: a sink still queued when TERMINATE fires outlives the taskpool */
 
 // Parallel partitioning - each diagonal block is processed independently
 :descA(k, k)
@@ -548,13 +548,13 @@ RW    C <- (k == 0 && m-k < params_tlr->band_size_dense) ? A potrf_bind_A(m, k) 
         <- (k == 0 && m-k >= params_tlr->band_size_dense) ? descA(m, k)         
         <- C potrf_dgemm(m, k, k-1)                                             [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_potrf_L_dense_mp_gpu_fp8_sp(params_tlr->decisions, m, k, descA->lmt)]; %} ]
         -> A potrf_dsyrk(k, m)                                                  [ type_remote = BYTE layout_remote = MPI_BYTE count_remote = size ]
-        -> C0 potrf_dtrsm_send(m, k)                                            [ type_remote = BYTE layout_remote = MPI_BYTE count_remote = size ]  
+        -> (!(m == descA->mt-1 && k == descA->mt-2)) ? C0 potrf_dtrsm_send(m, k)                                            [ type_remote = BYTE layout_remote = MPI_BYTE count_remote = size ]  
         -> descA(m, k)                                                         
 
 READ  Cr <- (k == 0 && m-k >= params_tlr->band_size_dense) ? descAr(m, k)  
          <- (k != 0 && m-k >= params_tlr->band_size_dense) ? Cr potrf_dgemm(m, k, k-1): NULL   [ type_remote = AR ]
          -> (m-k >= params_tlr->band_size_dense) ? Ar potrf_dsyrk(k, m)                        [ type_remote = AR ]
-         -> (m-k >= params_tlr->band_size_dense) ? Cr potrf_dtrsm_send(m, k)                   [ type_remote = AR ]
+         -> (m-k >= params_tlr->band_size_dense && !(m == descA->mt-1 && k == descA->mt-2)) ? Cr potrf_dtrsm_send(m, k)                   [ type_remote = AR ]
          -> (m-k >= params_tlr->band_size_dense) ? Ar potrf_dgemm(m, k+1..m-1, k)              [ type_remote = AR ]
          -> (m-k >= params_tlr->band_size_dense) ? Br potrf_dgemm(m+1..descA->mt-1, m, k)      [ type_remote = AR ]
          -> (m-k >= params_tlr->band_size_dense) ? descAr(m, k)               
@@ -696,7 +696,7 @@ potrf_dtrsm_send(m, k) [high_priority = on]
 
 // Execution space
 m = 1 .. descA->mt-1
-k = 0 .. m-1
+k = 0 .. %{ return (m == descA->mt-1) ? m-2 : m-1; %}  /* potrf_dtrsm_send(mt-1, mt-2) would have no successor, see potrf_dpotrf_send */
 
 // Control message size to send, it's the new Cr
 size = 1
