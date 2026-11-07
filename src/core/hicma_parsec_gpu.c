@@ -798,30 +798,23 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t 
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].handle_cublas_tensor = handle_cublas_tensor;
             //printf("i %d j %d : %p\n", i, j, data->ws_gpu->gpu_workspace[i].stream_workspace[j].handle_cublas_tensor);
 
-            /* GPU buffer for A, B, C, mbr, and rr */
-            if( 1 || DENSE_MP_BAND == kind_of_cholesky
-                    || DENSE_SP_HP_BAND == kind_of_cholesky
-                    || DENSE_TLR_MP == kind_of_cholesky
-                    || DENSE_MP_GPU == kind_of_cholesky
-                    || DENSE_MP_GPU_FP8 == kind_of_cholesky
-                    || DENSE_MP_GPU_FP8_ADAPTIVE == kind_of_cholesky
-                    || DENSE_MP_GPU_FP8_SP == kind_of_cholesky ) {
-                data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_A = zone_malloc( cuda_device->super.memory, mb * nb * sizeof(double) );
+            /* GPU buffers for A, B and C: a full tile, or the U/V pair of a
+             * low-rank operand converted to another precision (mb x 2*rank
+             * with rank <= maxrank), whichever is larger */
+            {
+                size_t cols = (2 * maxrank > nb) ? (size_t)(2 * maxrank) : (size_t)nb;
+                size_t full_tile_bytes = (size_t)mb * cols * sizeof(double);
+                data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_A = zone_malloc( cuda_device->super.memory, full_tile_bytes );
                 HICMA_GPU_HANDLE_CHECK(NULL != data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_A, "GPU workspace allocation");
 
-                data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_B = zone_malloc( cuda_device->super.memory, mb * nb * sizeof(double) );
+                data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_B = zone_malloc( cuda_device->super.memory, full_tile_bytes );
                 HICMA_GPU_HANDLE_CHECK(NULL != data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_B, "GPU workspace allocation");
 
-                data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_C = zone_malloc( cuda_device->super.memory, mb * nb * sizeof(double) );
+                data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_C = zone_malloc( cuda_device->super.memory, full_tile_bytes );
                 HICMA_GPU_HANDLE_CHECK(NULL != data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_C, "GPU workspace allocation");
             }
 
-            if( 1 || DENSE_TLR_DP == kind_of_cholesky
-                    || DENSE_TLR_MP == kind_of_cholesky
-                    || DENSE_MP_GPU == kind_of_cholesky
-                    || DENSE_MP_GPU_FP8 == kind_of_cholesky
-                    || DENSE_MP_GPU_FP8_ADAPTIVE == kind_of_cholesky
-                    || DENSE_MP_GPU_FP8_SP == kind_of_cholesky ) {
+            {
                 if( maxrank > 0 ) {
                     data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_mbr =
                         zone_malloc( cuda_device->super.memory, mb * maxrank * sizeof(double) );

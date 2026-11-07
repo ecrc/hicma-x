@@ -1012,8 +1012,9 @@ void hicma_parsec_core_trsm_cpu( parsec_tiled_matrix_t* descA,
                                 C /*A(m, k)*/, ldam);
 
     } 
-    // Case 2: Dense single or half precision TRSM
-    else if( DENSE_SP == params_tlr->decisions[k*descA->lmt+m] || DENSE_HP == params_tlr->decisions[k*descA->lmt+m] ) {
+    // Case 2: Dense single, half or FP8 precision TRSM (all stored as FP32 on the CPU)
+    else if( DENSE_SP == params_tlr->decisions[k*descA->lmt+m] || DENSE_HP == params_tlr->decisions[k*descA->lmt+m]
+             || DENSE_FP8 == params_tlr->decisions[k*descA->lmt+m] ) {
 
         /* Convert triangular matrix T to single precision if needed */
         void *T_s = parsec_private_memory_pop( p_work_full_sp );
@@ -1060,9 +1061,10 @@ void hicma_parsec_core_trsm_cpu( parsec_tiled_matrix_t* descA,
         return;
 #endif
 
-        // Low-rank TRSM: solve T * Cv = Cv where T is triangular and Cv is rank x Crank
+        // Low-rank TRSM: V <- T^{-1} V, where V has as many rows as T (the
+        // columns of the tile), independently of the tile's row count tempmm
         CORE_dtrsm(PlasmaLeft, PlasmaLower, PlasmaNoTrans, PlasmaNonUnit,
-                tempmm, Crank,
+                descA->mb, Crank,
                 (double)1.0, T, ldak,
                             Cv, ldam);
 
@@ -1091,9 +1093,9 @@ void hicma_parsec_core_trsm_cpu( parsec_tiled_matrix_t* descA,
         hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
         LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, T, descA->mb, T_s, descA->mb );
 
-        // Low-rank single precision TRSM
+        // Low-rank single precision TRSM: V <- T^{-1} V (see the DP case)
         CORE_strsm(PlasmaLeft, PlasmaLower, PlasmaNoTrans, PlasmaNonUnit,
-                tempmm, Crank,
+                descA->mb, Crank,
                 (float)1.0, T_s, ldak,
                              Cv, ldam);
 
@@ -3844,6 +3846,12 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
 
                     break;
                 }
+            default:
+                /* 0x80 (FP16 C with FP32 accumulation) is implemented by the
+                 * TRMM only; falling through here used to leave C untouched */
+                fprintf(stderr, "Fatal: --tensor_gemm mask 0x%x is not supported by the dense FP16 "
+                        "Cholesky GEMM (supported: 0x8, 0x10, 0x20, 0x40)\n", tensor_gemm_type);
+                HICMA_GPU_GEMM_FATAL();
         }
 
     } else if( DENSE_FP8 == params_tlr->decisions[n*descA->lmt+m] ) {
@@ -4153,7 +4161,12 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
         // Reallocate memory on CPU if adaptive_memory is enabled
         // Copy back data from C_use to C
         if( DENSE_DP != Cprecision ) {
-            if( params_tlr->adaptive_memory || params_tlr->adaptive_decision ) {
+            /* Always go through the device-side resize: after the k == 0
+             * downcast above the tile's span is the FP32 size whatever the
+             * adaptive_* flags are, and PaRSEC sizes every later copy and
+             * device allocation from span. hicma_reallocate_tile_on_gpu is a
+             * no-op when span already covers the FP64 tile. */
+            {
                 size_t target_bytes = (size_t)descA->mb * (size_t)descA->nb * sizeof(double);
                 parsec_data_copy_t *c_copy = this_task->data._f_C.data_out;
                 parsec_data_copy_t *c_dev_copy = NULL;

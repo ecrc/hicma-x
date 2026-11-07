@@ -2049,6 +2049,16 @@ int hicma_parsec_params_check( hicma_parsec_params_t *params )
         exit(1);
     }
 
+    /* Workspaces (pools, GPU scratch) are sized by compmaxrank while HCORE
+     * caps the ranks at maxrank: keep compmaxrank >= maxrank */
+    if( params->compmaxrank < params->maxrank ) {
+        if( params->rank == 0 ) {
+            fprintf(stderr, RED "compmaxrank= %d is smaller than maxrank= %d: setting compmaxrank= %d\n" RESET,
+                    params->compmaxrank, params->maxrank, params->maxrank);
+        }
+        params->compmaxrank = params->maxrank;
+    }
+
     /* If maxrank > NB / 2, it's better to enable band_size_dense auto tuning */ 
     if( params->maxrank > params->NB / 2 ) {
         if( params->rank == 0 )
