@@ -96,64 +96,7 @@ char* str_problem[NB_PROBLEM]={
 DATATYPE_ANALYSIS *dist_array;
 
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
-/**
- * @brief Cleanup function for CUDA handles
- * 
- * This function is called during cleanup to properly destroy CUDA library handles.
- * It releases cuBLAS and cuSOLVER handles and frees the associated memory.
- * This is essential for preventing resource leaks in GPU-accelerated computations.
- * 
- * @param _h Pointer to dplasma_cuda_handles_t structure containing CUDA handles
- * @param _n Unused parameter (for compatibility with callback signature)
- * 
- * @note This function should not be called if DPLASMA GPU support is disabled
- * @note Proper cleanup is critical for avoiding CUDA context leaks
- */
-static void destroy_cuda_handles(void *_h, void *_n)
-{
-    // Note: This function should not be called if DPLASMA GPU support is disabled
-    dplasma_cuda_handles_t *handles = (dplasma_cuda_handles_t*)_h;
-    (void)_n;  // Suppress unused parameter warning
-    
-    // Destroy cuBLAS handle - releases GPU memory and context resources
-    cublasDestroy_v2(handles->cublas_handle);
-    
-    // Destroy cuSOLVER handle - releases solver-specific GPU resources
-    cusolverDnDestroy(handles->cusolverDn_handle);
-    
-    // Free the handles structure - releases host memory
-    free(handles);
-}
 #endif
-
-/**
- * @brief Macro for conditional matrix allocation in PaRSEC
- * 
- * This macro generates code to allocate a matrix descriptor if the condition is true.
- * It creates a matrix descriptor of the specified type, initializes it with the given
- * parameters, allocates memory for the matrix data, and sets a collection key.
- * 
- * The macro is used to conditionally allocate matrix descriptors based on runtime
- * conditions, which is useful for memory optimization and avoiding unnecessary
- * allocations when certain matrices are not needed.
- * 
- * @param DC Matrix descriptor variable name (will be declared as TYPE##_t)
- * @param COND Condition for allocation (evaluated at runtime)
- * @param TYPE Matrix type (e.g., parsec_matrix_sym_block_cyclic)
- * @param INIT_PARAMS Initialization parameters for the matrix descriptor
- * 
- * @note The macro calculates memory size based on local tiles, block size, and data type
- * @note A collection key is set using the variable name for debugging and tracking
- */
-#define PASTE_CODE_ALLOCATE_MATRIX(DC, COND, TYPE, INIT_PARAMS)      \
-    TYPE##_t DC;                                                     \
-    if(COND) {                                                          \
-        TYPE##_init INIT_PARAMS;                                        \
-        DC.mat = parsec_data_allocate((size_t)DC.super.nb_local_tiles * \
-                                        (size_t)DC.super.bsiz *      \
-                                        (size_t)parsec_datadist_getsizeoftype(DC.super.mtype)); \
-        parsec_data_collection_set_key((parsec_data_collection_t*)&DC, #DC);          \
-    }
 
 /**
  * @brief Configuration option structure for improved argument management
@@ -411,6 +354,9 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         printf("  --help               Show this help message\n");
         printf("  --check [0|1]        Enable correctness check (--check alone means 1)\n");
         printf("  --verbose            Set verbosity level\n");
+        fflush(stdout);
+        /* Leave MPI cleanly: exit() before MPI_Finalize makes Open MPI report an abort and can drop the output */
+        if( params->mpi_initialized_by_hicma ) MPI_Finalize();
         exit(0);
     }
     
@@ -520,6 +466,58 @@ static void hicma_parsec_counters_allocate(hicma_parsec_params_t *params)
     params->nb_datatype_conversions = (uint64_t *)calloc(params->counter_stride, sizeof(uint64_t));
 }
 
+/*
+ * Allocate every per-core / per-GPU statistics array once, after
+ * hicma_parsec_setup_parsec knows the real core count and the number of GPUs
+ * PaRSEC actually enabled. hicma_parsec_free_memory frees them unconditionally
+ * (free(NULL) is fine), so this must run exactly once per init.
+ */
+static void hicma_parsec_stats_allocate(hicma_parsec_params_t *params)
+{
+    int cores = params->cores;
+
+    params->op_band = (unsigned long *)calloc(cores, sizeof(unsigned long));
+    params->op_offband = (unsigned long *)calloc(cores, sizeof(unsigned long));
+    params->op_path = (unsigned long *)calloc(cores, sizeof(unsigned long));
+    params->op_offpath = (unsigned long *)calloc(cores, sizeof(unsigned long));
+
+    params->gather_time = (double *)calloc(cores, sizeof(double));
+    params->gather_time_tmp = (double *)calloc(cores, sizeof(double));
+    params->kernel_time_cpu_count = cores;
+    params->kernel_time_cpu = (double *)calloc(cores, sizeof(double));
+    params->kernel_time_cpu_intervals = (hicma_kernel_time_interval_t **)calloc(cores, sizeof(hicma_kernel_time_interval_t *));
+    /* Indexed by PaRSEC device_index: 0 = CPU, 1 = recursive, GPUs start at 2. */
+    params->kernel_time_gpu_count = (params->gpus > 0) ? params->gpus + 2 : 0;
+    params->kernel_time_gpu_event_count = params->kernel_time_gpu_count;
+    if( params->kernel_time_gpu_count > 0 ) {
+        params->kernel_time_gpu = (double *)calloc(params->kernel_time_gpu_count, sizeof(double));
+        params->kernel_time_gpu_event = (double *)calloc(params->kernel_time_gpu_event_count, sizeof(double));
+        params->kernel_time_gpu_intervals = (hicma_kernel_time_interval_t **)calloc(params->kernel_time_gpu_count, sizeof(hicma_kernel_time_interval_t *));
+    }
+
+    hicma_parsec_counters_allocate(params);
+
+    /* POTRF info of every diagonal tile, written by the GPU kernels with an
+     * asynchronous copy, so pinned when GPUs are used */
+    params->info_gpu_pinned = 0;
+    if( params->gpus > 0 ) {
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+        if( cudaSuccess == cudaMallocHost((void**)&params->info_gpu, params->NT * sizeof(int)) ) {
+            params->info_gpu_pinned = 1;
+            memset(params->info_gpu, 0, params->NT * sizeof(int));
+        }
+#elif defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+        if( hipSuccess == hipHostMalloc((void **)&params->info_gpu, params->NT * sizeof(int), hipHostMallocDefault) ) {
+            params->info_gpu_pinned = 1;
+            memset(params->info_gpu, 0, params->NT * sizeof(int));
+        }
+#endif
+    }
+    if( !params->info_gpu_pinned ) {
+        params->info_gpu = (int *)calloc( params->NT, sizeof(int) );
+    }
+}
+
 static void hicma_parsec_free_kernel_time_intervals(hicma_kernel_time_interval_t **intervals, int count)
 {
     int i;
@@ -563,6 +561,13 @@ static void hicma_parsec_free_kernel_time_intervals(hicma_kernel_time_interval_t
  */
 void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
 {
+    /* Every driver declares the parameter struct on the stack. Start from all
+     * zeros so that fields without an explicit default below (file names,
+     * statistics, timers) are not read or freed uninitialized. Callers must not
+     * set fields before hicma_parsec_init(); climate_emulator_init sets its
+     * overrides after it. */
+    memset(params, 0, sizeof(*params));
+
     // Default: assume we did not initialize MPI
     params->mpi_initialized_by_hicma = 0;
     // Initialize MPI with thread support if available
@@ -1040,38 +1045,6 @@ parsec_context_t* hicma_parsec_setup_parsec(int argc, char **argv, hicma_parsec_
 			nb_total_comp_threads += ctx->virtual_processes[p]->nb_cores;
 		}
 		params->cores = nb_total_comp_threads;
-
-        /* Performance Monitoring Arrays - track operations per core */
-        // Band operations (operations within the dense diagonal band)
-        params->op_band = (unsigned long *)calloc(params->cores, sizeof(unsigned long));
-        // Off-band operations (operations outside the dense diagonal band)
-        params->op_offband = (unsigned long *)calloc(params->cores, sizeof(unsigned long));
-        // Path operations (operations along the critical path)
-        params->op_path = (unsigned long *)calloc(params->cores, sizeof(unsigned long));
-        // Off-path operations (operations not on the critical path)
-        params->op_offpath = (unsigned long *)calloc(params->cores, sizeof(unsigned long));
-
-        /* Timing Arrays - track execution time per core */
-        // Gather time in JDF (Job Data Flow) execution
-        params->gather_time = (double *)calloc(params->cores, sizeof(double));
-        params->gather_time_tmp = (double *)calloc(params->cores, sizeof(double));
-        params->kernel_time_cpu_count = params->cores;
-        params->kernel_time_cpu = (double *)calloc(params->kernel_time_cpu_count, sizeof(double));
-        params->kernel_time_cpu_intervals = (hicma_kernel_time_interval_t **)calloc(params->kernel_time_cpu_count, sizeof(hicma_kernel_time_interval_t *));
-        /* Indexed by PaRSEC device_index: 0 = CPU, 1 = recursive, GPUs start at 2. */
-        params->kernel_time_gpu_count = (params->gpus > 0) ? params->gpus + 2 : 0;
-        params->kernel_time_gpu_event_count = params->kernel_time_gpu_count;
-        if(params->kernel_time_gpu_count > 0) {
-            params->kernel_time_gpu = (double *)calloc(params->kernel_time_gpu_count, sizeof(double));
-            params->kernel_time_gpu_event = (double *)calloc(params->kernel_time_gpu_event_count, sizeof(double));
-            params->kernel_time_gpu_intervals = (hicma_kernel_time_interval_t **)calloc(params->kernel_time_gpu_count, sizeof(hicma_kernel_time_interval_t *));
-        } else {
-            params->kernel_time_gpu = NULL;
-            params->kernel_time_gpu_event = NULL;
-            params->kernel_time_gpu_intervals = NULL;
-        }
-
-        hicma_parsec_counters_allocate(params);
     }
 
     // Print parameter summary for verification
@@ -1106,7 +1079,7 @@ parsec_context_t* hicma_parsec_setup_parsec(int argc, char **argv, hicma_parsec_
         cublasStatus_t status = CUBLAS_STATUS_SUCCESS;
         // Register CUDA handles for proper cleanup
         parsec_info_register(&parsec_per_stream_infos, "DPLASMA::CUDA::HANDLES",
-                             destroy_cuda_handles, NULL,
+                             dplasma_destroy_cuda_handles, NULL,
                              dplasma_create_cuda_handles, NULL,
                              NULL);
 #endif
@@ -1120,6 +1093,22 @@ parsec_context_t* hicma_parsec_setup_parsec(int argc, char **argv, hicma_parsec_
         fprintf(stderr, RED "Rank %d: Update nb_gpus from input %d to real %d\n" RESET, params->rank, params->gpus, hicma_parsec_min(nb_gpus_check, params->gpus));
     }
     params->gpus = hicma_parsec_min(nb_gpus_check, params->gpus);
+    /* The precision decisions and the collectives in hicma_parsec_potrf depend
+     * on gpus > 0, and every rank must take the same branches: use the
+     * smallest count found on any rank (a rank with no visible device makes
+     * the whole run CPU-only). */
+    {
+        int gpus_min = params->gpus;
+        MPI_Allreduce(MPI_IN_PLACE, &gpus_min, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+        if( gpus_min != params->gpus && params->verbose ) {
+            fprintf(stderr, RED "Rank %d: another rank has only %d usable GPUs, using %d instead of %d\n" RESET,
+                    params->rank, gpus_min, gpus_min, params->gpus);
+        }
+        params->gpus = gpus_min;
+    }
+
+    /* cores and gpus are final: allocate the per-worker statistics once */
+    hicma_parsec_stats_allocate(params);
 
     /* FP8 GEMMs go through cuBLASLt E4M3, which needs compute capability
      * >= 8.9 (Ada/Hopper and newer). On V100/A100 the matmul fails with
@@ -1355,13 +1344,14 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
     
     // Copy full executable path
     // Find the executable name within the path and truncate to get directory
-    sprintf(params->exe_file_path, "%s", argv[0]); 
+    snprintf(params->exe_file_path, sizeof(params->exe_file_path), "%s", argv[0]);
 
     char *slash = strrchr(params->exe_file_path, '/');
-    if (!slash) {
+    if (NULL != slash) {
+        slash[1] = '\0';                          // keep the directory part
+    } else {
         params->exe_file_path[0] = '\0';          // no '/', nothing before it
     }
-    *(slash + 1) = '\0';
     
     /* ===========================================
      * Initialize decision counters
@@ -1375,9 +1365,9 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
     params->nb_low_rank_dp = 0.0;     // Number of double precision low-rank tiles
     params->nb_low_rank_sp = 0.0;     // Number of single precision low-rank tiles
 
-    if( params->cores > 0 ) {
-        hicma_parsec_counters_allocate(params);
-    }
+    /* Per-core and per-GPU statistics arrays are allocated once in
+     * hicma_parsec_setup_parsec, after the core count and the number of
+     * usable GPUs are known (hicma_parsec_stats_allocate). */
 
     /* ===========================================
      * Initialize performance tracking
@@ -1489,37 +1479,11 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
     params->favgrk = 0.0;
 
     /* flops */
-    if( params->cores > 0 ) {
-        params->op_band = (unsigned long *)calloc(params->cores, sizeof(unsigned long));
-        params->op_offband = (unsigned long *)calloc(params->cores, sizeof(unsigned long));
-        params->op_path = (unsigned long *)calloc(params->cores, sizeof(unsigned long));
-        params->op_offpath = (unsigned long *)calloc(params->cores, sizeof(unsigned long));
-    }
     HICMA_PASTE_CODE_FLOPS(FLOPS_DPOTRF, ((double)params->N), params->flops);
 
     /* check results accuracy */
-    double result_accuracy = 0.0;
+    params->result_accuracy = 0.0;
 
-    /* Gather time in JDF */
-    if( params->cores > 0 ) {
-        params->gather_time = (double *)calloc(params->cores, sizeof(double));
-        params->gather_time_tmp = (double *)calloc(params->cores, sizeof(double));
-        params->kernel_time_cpu_count = params->cores;
-        params->kernel_time_cpu = (double *)calloc(params->kernel_time_cpu_count, sizeof(double));
-        params->kernel_time_cpu_intervals = (hicma_kernel_time_interval_t **)calloc(params->kernel_time_cpu_count, sizeof(hicma_kernel_time_interval_t *));
-        /* Indexed by PaRSEC device_index: 0 = CPU, 1 = recursive, GPUs start at 2. */
-        params->kernel_time_gpu_count = (params->gpus > 0) ? params->gpus + 2 : 0;
-        params->kernel_time_gpu_event_count = params->kernel_time_gpu_count;
-        if(params->kernel_time_gpu_count > 0) {
-            params->kernel_time_gpu = (double *)calloc(params->kernel_time_gpu_count, sizeof(double));
-            params->kernel_time_gpu_event = (double *)calloc(params->kernel_time_gpu_event_count, sizeof(double));
-            params->kernel_time_gpu_intervals = (hicma_kernel_time_interval_t **)calloc(params->kernel_time_gpu_count, sizeof(hicma_kernel_time_interval_t *));
-        } else {
-            params->kernel_time_gpu = NULL;
-            params->kernel_time_gpu_event = NULL;
-            params->kernel_time_gpu_intervals = NULL;
-        }
-    }
     params->critical_path_time = 0.0;
     params->potrf_time = 0.0;
     params->trsm_time = 0.0;
@@ -1540,17 +1504,10 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
     params->uplo = PlasmaLower;            /* Only support lower right now */ 
     params->band_size_dist_provided = 1;   /* band_size_dist is provided */
     params->info = 0;
-    if(params->gpus > 0) {
-#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
-        cudaMallocHost((void**)&params->info_gpu, params->NT * sizeof(int));
-#elif defined(PARSEC_HAVE_DEV_HIP_SUPPORT) 
-        hipHostMalloc((void **)&params->info_gpu, params->NT * sizeof(int), hipHostMallocDefault);
-#else
-        fprintf(stderr, RED"Devices is not supported!!!");
-#endif
-    } else {
-        params->info_gpu = (int *)calloc( params->NT, sizeof(int) );
-    }
+    /* info_gpu is allocated in hicma_parsec_stats_allocate once the number of
+     * usable GPUs is known */
+    params->info_gpu = NULL;
+    params->info_gpu_pinned = 0;
 
 #if PREDICTION 
     params->NP= (params->N * 0.8);
@@ -2376,9 +2333,14 @@ int hicma_parsec_data_init( hicma_parsec_data_t *data, hicma_parsec_params_t *pa
         data->dcAd.mat = parsec_data_allocate(allocate_size);
         // Register memory in advance
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
-        data->dcAd.super.super.register_memory = NULL;
-        data->dcAd.super.super.unregister_memory = NULL;
-        cudaHostRegister(data->dcAd.mat, allocate_size, cudaHostRegisterDefault); 
+        /* Pin the whole matrix once for the GPU transfers; if that fails (or
+         * no GPU is used) PaRSEC keeps its own lazy per-tile registration */
+        params->dcAd_host_registered = 0;
+        if( params->gpus > 0 && cudaSuccess == cudaHostRegister(data->dcAd.mat, allocate_size, cudaHostRegisterDefault) ) {
+            data->dcAd.super.super.register_memory = NULL;
+            data->dcAd.super.super.unregister_memory = NULL;
+            params->dcAd_host_registered = 1;
+        }
 #endif
         
 #endif
@@ -3028,17 +2990,16 @@ void hicma_parsec_free_memory( parsec_context_t *parsec,
     free( params->norm_tileB );
 
     /* Others */
-    if (params->gpus > 0) {
+    if( params->info_gpu_pinned ) {
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
         cudaFreeHost( params->info_gpu );
 #elif defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
         hipHostFree( params->info_gpu );
-#else
-        free( params->info_gpu );
 #endif
     } else {
         free( params->info_gpu );
     }
+    params->info_gpu = NULL;
 
     /* GPU workspace */
 #if (defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)) && GPU_BUFFER_ONCE 
@@ -3056,7 +3017,8 @@ void hicma_parsec_memory_flush_choleksy( parsec_context_t *parsec,
         parsec_memory_free_tile(parsec, (parsec_tiled_matrix_t*)&data->dcAd, params, 1);
 #else
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
-        cudaHostUnregister(data->dcAd.mat);
+        if( params->dcAd_host_registered ) cudaHostUnregister(data->dcAd.mat);
+        params->dcAd_host_registered = 0;
 #endif
         /*
          * This branch allocated one contiguous dcAd.mat slab. Tile pointers are

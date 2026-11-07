@@ -821,6 +821,8 @@ typedef struct hicma_parsec_params_s {
     int band_size_dist_provided; /**< Whether band size distribution was provided */
     int info;                    /**< Return status information */
     int *info_gpu;               /**< GPU return status information */
+    int info_gpu_pinned;         /**< info_gpu was allocated with cudaMallocHost/hipHostMalloc */
+    int dcAd_host_registered;    /**< dcAd.mat was pinned with cudaHostRegister */
 
     /* ========================================================================
      * GPU configuration
