@@ -223,14 +223,22 @@ if(HICMA_PARSEC_HAVE_HIP)
     message(STATUS "HIP separable compilation enabled")
 endif(HICMA_PARSEC_HAVE_HIP)
 
-# Link libraries
-target_link_libraries(hicma_parsec ${LD_LIB_BASIC} starsh)
-
-# Add MPI C++ libraries if available
-if(MPI_CXX_FOUND)
-    target_link_libraries(hicma_parsec ${MPI_CXX_LIBRARIES})
-    message(STATUS "Added MPI C++ libraries to hicma_parsec: ${MPI_CXX_LIBRARIES}")
+# Link libraries. The runtimes and the matrix libraries that hicma_parsec is
+# built on are part of its interface; BLAS/LAPACKE, MPI and the GPU libraries
+# are implementation details of a shared library (NEEDED entries) but must be
+# propagated when the library is static.
+if(BUILD_SHARED_LIBS)
+    set(_hicma_dep_scope PRIVATE)
+else()
+    set(_hicma_dep_scope PUBLIC)
 endif()
+set(_hicma_gpu_libs)
+if(HICMA_PARSEC_HAVE_HIP)
+    set(_hicma_gpu_libs ${LD_LIB_HIP})
+endif()
+target_link_libraries(hicma_parsec
+    PUBLIC parsec dplasma starsh hcore
+    ${_hicma_dep_scope} ${LD_LIB_HICMA_PARSEC} ${_hicma_gpu_libs} ${MPI_C_LIBRARIES} ${MPI_CXX_LIBRARIES} stdc++)
 
 # Add dependencies for HIP device headers
 if(HICMA_PARSEC_HAVE_HIP)
@@ -241,19 +249,20 @@ endif(HICMA_PARSEC_HAVE_HIP)
 target_include_directories(hicma_parsec PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/hicma_parsec_compat>
 )
 
-# Add compile definitions
-target_compile_definitions(hicma_parsec PRIVATE
+# Add compile definitions. HICMA_PARSEC_BUILDING lets the public headers
+# include the DPLASMA/PaRSEC internals that are not installed; GENOMICS=1
+# selects the genomics (kernel ridge regression) mode of the library.
+target_compile_definitions(hicma_parsec
+    PRIVATE
+    HICMA_PARSEC_BUILDING
     $<$<BOOL:${HICMA_PARSEC_HAVE_CUDA}>:HICMA_PARSEC_HAVE_CUDA>
     $<$<BOOL:${HICMA_PARSEC_HAVE_HIP}>:HICMA_PARSEC_HAVE_HIP>
     $<$<BOOL:${ON_FUGAKU}>:ON_FUGAKU>
     $<$<BOOL:${ENABLE_SANITIZER}>:ENABLE_SANITIZER>
+    PUBLIC
+    $<$<BOOL:${HICMA_PARSEC_GENOMICS}>:GENOMICS=1>
 )
 
-# Print build information
-message(STATUS "=== HICMA PARSEC Source Configuration ===")
-message(STATUS "Source files: ${SRC}")
-message(STATUS "JDF files: ${JDF}")
-message(STATUS "Library type: $<IF:$<BOOL:${BUILD_SHARED_LIBS}>,shared,static>")
-message(STATUS "=========================================")

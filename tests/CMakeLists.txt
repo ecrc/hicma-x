@@ -5,185 +5,149 @@
 # @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
 #                              All rights reserved.
 
-# Executable 
-if( HICMA_PARSEC_HAVE_CUDA )
-    add_executable(testing_dgemv_gpu testing_dgemv.cu)
-    target_link_libraries(testing_dgemv_gpu ${LD_LIB_CUDA_TARGETS})
-
-    add_executable(testing_dgemm_gpu testing_dgemm.cu)
-    target_link_libraries(testing_dgemm_gpu ${LD_LIB_CUDA_TARGETS})
-
-    add_executable(testing_gemm_gpu testing_gemm_gpu.cu)
-    target_link_libraries(testing_gemm_gpu ${LD_LIB_CUDA_TARGETS})
-   
-    # Executable testing_gpu_bandwidth
-    add_executable(testing_gpu_bandwidth testing_gpu_bandwidth.cpp)
-    target_link_libraries(testing_gpu_bandwidth ${LD_LIB_CUDA_TARGETS})
-endif( HICMA_PARSEC_HAVE_CUDA )
-
-# Executable 
-if( HICMA_PARSEC_HAVE_HIP )
-    set_source_files_properties( testing_dgemm_hip.cu PROPERTIES LANGUAGE HIP)
-    set_source_files_properties( testing_dgemm_hip.cu PROPERTIES COMPILE_FLAGS "-x hip")
-    add_executable(testing_dgemm_gpu_hip testing_dgemm_hip.cu)
-    target_link_libraries(testing_dgemm_gpu_hip ${LD_LIB_HIP})
-    add_dependencies(testing_dgemm_gpu_hip parsec)
-
-    set_source_files_properties( testing_gemm_gpu_hip.cu PROPERTIES LANGUAGE HIP)
-    set_source_files_properties( testing_gemm_gpu_hip.cu PROPERTIES COMPILE_FLAGS "-x hip")
-    add_executable(testing_gemm_gpu_hip testing_gemm_gpu_hip.cu)
-    target_link_libraries(testing_gemm_gpu_hip ${LD_LIB_HIP})
-    add_dependencies(testing_gemm_gpu_hip parsec)
-    
-    # Executable testing_gemm_gpu_hip_dp
-    set_source_files_properties( testing_gemm_gpu_hip_dp.cu PROPERTIES LANGUAGE HIP)
-    set_source_files_properties( testing_gemm_gpu_hip_dp.cu PROPERTIES COMPILE_FLAGS "-x hip")
-    add_executable(testing_gemm_gpu_hip_dp testing_gemm_gpu_hip_dp.cu)
-    target_link_libraries(testing_gemm_gpu_hip_dp ${LD_LIB_HIP})
-    add_dependencies(testing_gemm_gpu_hip_dp parsec)
-endif( HICMA_PARSEC_HAVE_HIP )
-
-add_executable(testing_potrf_tlr testing_potrf.c)
-target_link_libraries(testing_potrf_tlr PRIVATE ${LD_LIB_HICMA_PARSEC} hicma_parsec ${HCORE_STARSH_LIB})
-
-if( CMAKE_Fortran_COMPILER_WORKS )
-    set_target_properties(testing_potrf_tlr PROPERTIES
-                          LINKER_LANGUAGE Fortran)
-endif()
-
-add_executable(testing_syrk testing_syrk.c)
-target_link_libraries(testing_syrk PRIVATE ${LD_LIB_HICMA_PARSEC} hicma_parsec ${HCORE_STARSH_LIB})
-
-if( CMAKE_Fortran_COMPILER_WORKS )
-    set_target_properties(testing_syrk PROPERTIES
-                          LINKER_LANGUAGE Fortran)
-endif()
-
-add_executable(testing_Kmatrix testing_Kmatrix.c)
-target_link_libraries(testing_Kmatrix PRIVATE ${LD_LIB_HICMA_PARSEC} hicma_parsec ${HCORE_STARSH_LIB})
-
-if( CMAKE_Fortran_COMPILER_WORKS )
-    set_target_properties(testing_Kmatrix PROPERTIES
-                          LINKER_LANGUAGE Fortran)
-endif()
-
-if( HICMA_PARSEC_HAVE_CUDA OR HICMA_PARSEC_HAVE_HIP )
-    add_executable(testing_hamming testing_hamming.c)
-    set_property(TARGET testing_hamming PROPERTY LINKER_LANGUAGE CXX)
-    if(ENABLE_CUTLASS)
-        # Use target_link_directories instead of hardcoded -L flag
-        target_link_directories(testing_hamming PRIVATE ${CUTLASS_ROOT}/lib64)
-        target_link_libraries(testing_hamming PRIVATE ${LD_LIB_HICMA_PARSEC} hicma_parsec ${HCORE_STARSH_LIB} cutlass)
-    else(ENABLE_CUTLASS)
-        target_link_libraries(testing_hamming PRIVATE ${LD_LIB_HICMA_PARSEC} hicma_parsec ${HCORE_STARSH_LIB} ${LD_LIB_CUDA_TARGETS})
-    endif(ENABLE_CUTLASS)
-
-    if( CMAKE_Fortran_COMPILER_WORKS )
-        set_target_properties(testing_hamming PROPERTIES
-            LINKER_LANGUAGE Fortran)
+# A driver linked against the library (which carries BLAS/LAPACKE, MPI and the
+# GPU libraries). HICMA_PARSEC_BUILDING gives the in-tree drivers the same view
+# of the headers as the library; installed consumers see the public subset only.
+function(hicma_add_driver name)
+    add_executable(${name} ${ARGN})
+    target_link_libraries(${name} PRIVATE hicma_parsec)
+    target_compile_definitions(${name} PRIVATE HICMA_PARSEC_BUILDING)
+    if(CMAKE_Fortran_COMPILER_WORKS)
+        set_target_properties(${name} PROPERTIES LINKER_LANGUAGE Fortran)
     endif()
-endif()
+endfunction()
 
-add_executable(testing_igemm_summa testing_igemm_summa.c)
-target_link_libraries(testing_igemm_summa PRIVATE ${LD_LIB_HICMA_PARSEC} hicma_parsec ${HCORE_STARSH_LIB})
+set(HICMA_GPU HICMA_PARSEC_HAVE_CUDA OR HICMA_PARSEC_HAVE_HIP)
 
-if( CMAKE_Fortran_COMPILER_WORKS )
-    set_target_properties(testing_igemm_summa PROPERTIES
-                          LINKER_LANGUAGE Fortran)
-endif()
+# ---- Cholesky and TRMM drivers ----
+hicma_add_driver(testing_potrf_tlr testing_potrf.c)
+hicma_add_driver(testing_trmm_mp testing_trmm.c $<TARGET_OBJECTS:dplasma_tests_common>)
+hicma_add_driver(testing_trmm_performance testing_trmm_performance.c $<TARGET_OBJECTS:dplasma_tests_common>)
+hicma_add_driver(testing_trmm_performance_static testing_trmm_performance_static.c $<TARGET_OBJECTS:dplasma_tests_common>)
+hicma_add_driver(testing_dgemm_tlr testing_dgemm_tlr.c)
+target_compile_definitions(testing_dgemm_tlr PRIVATE HICMA_PARSEC_HAVE_TLR=1)
+hicma_add_driver(testing_climate_emulator testing_climate_emulator.c)
+hicma_add_driver(testing_dist_read testing_dist_read.c)
 
-
-add_executable(testing_dist_read testing_dist_read.c)
-target_link_libraries(testing_dist_read PRIVATE ${LD_LIB_HICMA_PARSEC} hicma_parsec ${HCORE_STARSH_LIB})
-
-if( CMAKE_Fortran_COMPILER_WORKS )
-    set_target_properties(testing_dist_read PROPERTIES
-                          LINKER_LANGUAGE Fortran)
-endif()
-
-
-# Executable testing_dgemm_cpu 
+# CBLAS micro-benchmark (no HiCMA)
 add_executable(testing_dgemm_cpu testing_dgemm.c)
 target_link_libraries(testing_dgemm_cpu PRIVATE ${LD_LIB_HICMA_PARSEC})
 
-# Executable testing_dgemm_tlr (TLR version) - Protected with HCORE availability
-if( HCORE_STARSH_LIB )
-    add_executable(testing_dgemm_tlr testing_dgemm_tlr.c)
-    target_link_libraries(testing_dgemm_tlr PRIVATE ${LD_LIB_HICMA_PARSEC} hicma_parsec ${HCORE_STARSH_LIB})
-    
-    if( CMAKE_Fortran_COMPILER_WORKS )
-        set_target_properties(testing_dgemm_tlr PROPERTIES
-                              LINKER_LANGUAGE Fortran)
+# ---- Genomics (kernel ridge regression): GPU-only GEMM kernels, GENOMICS=1 ----
+if(HICMA_PARSEC_GENOMICS)
+    hicma_add_driver(testing_syrk testing_syrk.c)
+    hicma_add_driver(testing_Kmatrix testing_Kmatrix.c)
+    hicma_add_driver(testing_KRR testing_KRR.c)
+    hicma_add_driver(testing_KRR_file testing_KRR_file.c)
+    hicma_add_driver(testing_igemm_summa testing_igemm_summa.c)
+endif()
+
+# ---- GPU-only drivers and micro-benchmarks ----
+if(HICMA_PARSEC_HAVE_CUDA OR HICMA_PARSEC_HAVE_HIP)
+    hicma_add_driver(testing_hamming testing_hamming.c)
+    if(ENABLE_CUTLASS)
+        target_link_directories(testing_hamming PRIVATE ${CUTLASS_ROOT}/lib64)
+        target_link_libraries(testing_hamming PRIVATE cutlass)
     endif()
-    
-    # Add TLR-specific compile definitions
-    target_compile_definitions(testing_dgemm_tlr PRIVATE HICMA_PARSEC_HAVE_TLR=1)
-    
-    message(STATUS "HCORE support enabled - Building TLR DGEMM executable")
-else( HCORE_STARSH_LIB )
-    message(STATUS "HCORE support disabled - Skipping TLR DGEMM executable")
-endif( HCORE_STARSH_LIB )
-
-add_executable(testing_KRR testing_KRR.c)
-target_link_libraries(testing_KRR PRIVATE ${LD_LIB_HICMA_PARSEC} hicma_parsec ${HCORE_STARSH_LIB})
-
-if( CMAKE_Fortran_COMPILER_WORKS )
-    set_target_properties(testing_KRR PROPERTIES
-                          LINKER_LANGUAGE Fortran)
 endif()
 
-add_executable(testing_KRR_file testing_KRR_file.c)
-target_link_libraries(testing_KRR_file PRIVATE ${LD_LIB_HICMA_PARSEC} hicma_parsec ${HCORE_STARSH_LIB})
-
-if( CMAKE_Fortran_COMPILER_WORKS )
-    set_target_properties(testing_KRR_file PROPERTIES
-                          LINKER_LANGUAGE Fortran)
+if(HICMA_PARSEC_HAVE_CUDA)
+    foreach(t testing_dgemv_gpu:testing_dgemv.cu testing_dgemm_gpu:testing_dgemm.cu
+              testing_gemm_gpu:testing_gemm_gpu.cu testing_gpu_bandwidth:testing_gpu_bandwidth.cpp)
+        string(REPLACE ":" ";" t ${t})
+        list(GET t 0 name)
+        list(GET t 1 src)
+        add_executable(${name} ${src})
+        target_link_libraries(${name} ${LD_LIB_CUDA_TARGETS})
+    endforeach()
 endif()
 
-# Executable testing_hgemm_cpu 
-if( ON_FUGAKU )
+if(HICMA_PARSEC_HAVE_HIP)
+    foreach(t testing_dgemm_gpu_hip:testing_dgemm_hip.cu testing_gemm_gpu_hip:testing_gemm_gpu_hip.cu
+              testing_gemm_gpu_hip_dp:testing_gemm_gpu_hip_dp.cu)
+        string(REPLACE ":" ";" t ${t})
+        list(GET t 0 name)
+        list(GET t 1 src)
+        set_source_files_properties(${src} PROPERTIES LANGUAGE HIP COMPILE_FLAGS "-x hip")
+        add_executable(${name} ${src})
+        target_link_libraries(${name} ${LD_LIB_HIP})
+        add_dependencies(${name} parsec)
+    endforeach()
+endif()
+
+if(ON_FUGAKU)
     add_executable(testing_hgemm_cpu testing_hgemm.c)
     target_link_libraries(testing_hgemm_cpu PRIVATE ${LD_LIB_HICMA_PARSEC})
-    set_target_properties( testing_hgemm_cpu PROPERTIES LINK_FLAGS "-SSL2" )
+    set_target_properties(testing_hgemm_cpu PROPERTIES LINK_FLAGS "-SSL2")
 endif()
 
+# ---- CTest: every case runs with its correctness check and exits non-zero on
+# a wrong result. Labels: hicma (all), mpi (needs MPIEXEC_EXECUTABLE), gpu.
+# scripts/test_CI.sh runs the same cases outside CTest. ----
+set(HICMA_TEST_LABELS hicma)
+function(hicma_add_test name nproc)
+    set(labels hicma)
+    set(launch)
+    if(nproc GREATER 1)
+        if(NOT MPIEXEC_EXECUTABLE)
+            return()
+        endif()
+        set(launch ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${nproc} ${MPIEXEC_PREFLAGS})
+        list(APPEND labels mpi)
+    endif()
+    if(HICMA_TEST_GPU)
+        list(APPEND labels gpu)
+    endif()
+    add_test(NAME ${name} COMMAND ${launch} ${ARGN})
+    set_tests_properties(${name} PROPERTIES TIMEOUT 900 LABELS "${labels}")
+endfunction()
 
-# climate_emulator
-add_executable(testing_climate_emulator testing_climate_emulator.c)
-target_link_libraries(testing_climate_emulator PRIVATE ${LD_LIB_HICMA_PARSEC} hicma_parsec ${HCORE_STARSH_LIB})
+set(P $<TARGET_FILE:testing_potrf_tlr>)
+set(T $<TARGET_FILE:testing_trmm_mp>)
+set(COMMON --kind_of_problem 2 --N 2700 --NB 270 --fixedacc 1e-8 --maxrank 130 --check 1)
 
-if( CMAKE_Fortran_COMPILER_WORKS )
-    set_target_properties(testing_climate_emulator PROPERTIES
-                          LINKER_LANGUAGE Fortran)
+hicma_add_test(potrf_dense_fp64        1 ${P} ${COMMON})
+hicma_add_test(potrf_tlr_dp_band1      1 ${P} ${COMMON} --kind_of_cholesky 2 --band_dense 1)
+hicma_add_test(potrf_tlr_dp_band2      1 ${P} ${COMMON} --kind_of_cholesky 2 --band_dense 2)
+hicma_add_test(potrf_tlr_mp_band1      1 ${P} ${COMMON} --kind_of_cholesky 1 --band_dense 1 --adaptive_decision 0)
+hicma_add_test(potrf_tlr_mp_adaptive   1 ${P} ${COMMON} --kind_of_cholesky 1 --band_dense 1 --adaptive_decision 1 --check_tol 1e-7)
+hicma_add_test(potrf_mp_dense_adaptive 1 ${P} ${COMMON} --kind_of_cholesky 1 --band_dense 1000 --adaptive_decision 1)
+hicma_add_test(potrf_mp_dense_admem    1 ${P} ${COMMON} --kind_of_cholesky 1 --band_dense 1000 --adaptive_decision 1 --adaptive_memory 1)
+hicma_add_test(potrf_band_dp_sp        1 ${P} ${COMMON} --kind_of_cholesky 3 --band_dense_dp 2 --band_dense_sp 4 --check_tol 1e-6)
+hicma_add_test(potrf_runtime_decision  1 ${P} ${COMMON} --adaptive_decision_runtime 1 --check_tol 1e-7)
+hicma_add_test(potrf_sparse_general    1 ${P} ${COMMON} --sparse 1)
+hicma_add_test(potrf_sparse_balance    1 ${P} ${COMMON} --sparse 2)
+hicma_add_test(trmm_fp64               1 ${T} --N 2000 --K 1500 --NB 256 --check 1 --adaptive_decision 0)
+hicma_add_test(trmm_adaptive           1 ${T} --N 2000 --K 1500 --NB 256 --check 1 --adaptive_decision 1 --fixedacc 1e-4)
+hicma_add_test(trmm_adaptive_sr        1 ${T} --N 2000 --K 1500 --NB 256 --check 1 --adaptive_decision 1 --fixedacc 1e-4 --enable_stochastic_rounding 1)
+# two ranks
+hicma_add_test(potrf_dense_fp64_np2    2 ${P} ${COMMON})
+hicma_add_test(potrf_tlr_dp_band2_np2  2 ${P} ${COMMON} --kind_of_cholesky 2 --band_dense 2)
+hicma_add_test(potrf_runtime_np2       2 ${P} ${COMMON} --adaptive_decision_runtime 1 --check_tol 1e-7)
+hicma_add_test(potrf_sparse_np2        2 ${P} ${COMMON} --sparse 1)
+hicma_add_test(trmm_adaptive_np2       2 ${T} --N 2000 --K 1500 --NB 256 --check 1 --adaptive_decision 1 --fixedacc 1e-4)
+# the virus mesh shipped with stars-h
+set(HICMA_MESH ${PROJECT_SOURCE_DIR}/stars-h/SARS-CoV-2-meshes/singleviursdata/SortVirus10370.txt)
+if(EXISTS ${HICMA_MESH})
+    hicma_add_test(potrf_mesh_sparse   1 ${P} --N 10370 --NB 1037 --fixedacc 1e-4 --maxrank 50 --adddiag 0.1 --kind_of_problem 6
+        --band_dense 1 --send_full_tile 0 --lookahead 1 --auto_band 0 --mesh_file ${HICMA_MESH} --numobj 1 --rbf_kernel 0
+        --radius 4.63e-04 --order 2 --density -1 --sparse 1 --check 1)
 endif()
-
-
-# TRMM
-add_executable(testing_trmm_mp testing_trmm.c)
-target_link_libraries(testing_trmm_mp PRIVATE ${LD_LIB_HICMA_PARSEC} hicma_parsec ${HCORE_STARSH_LIB})
-target_sources(testing_trmm_mp PRIVATE $<TARGET_OBJECTS:dplasma_tests_common>)
-
-if( CMAKE_Fortran_COMPILER_WORKS )
-    set_target_properties(testing_trmm_mp PROPERTIES
-                          LINKER_LANGUAGE Fortran)
+# GPU (one device)
+if(HICMA_PARSEC_HAVE_CUDA OR HICMA_PARSEC_HAVE_HIP)
+    set(HICMA_TEST_GPU ON)
+    set(G --kind_of_problem 2 --N 8192 --NB 1024 --gpus 1 --check 1)
+    hicma_add_test(gpu_dense_fp64        1 ${P} ${G})
+    hicma_add_test(gpu_dense_adaptive    1 ${P} ${G} --adaptive_decision 1)
+    hicma_add_test(gpu_dense_band2       1 ${P} ${G} --band_dense 2 --maxrank 512)
+    hicma_add_test(gpu_fp8_static        1 ${P} ${G} --kind_of_cholesky 8 --adaptive_decision 1)
+    hicma_add_test(gpu_fp8_sp            1 ${P} ${G} --kind_of_cholesky 9 --adaptive_decision 1 --check_tol 1e-6)
+    hicma_add_test(gpu_runtime_decision  1 ${P} ${G} --adaptive_decision_runtime 1 --check_tol 1e-7)
+    hicma_add_test(gpu_runtime_admem     1 ${P} ${G} --adaptive_decision_runtime 1 --adaptive_memory 1 --check_tol 1e-7)
+    hicma_add_test(gpu_trmm_adaptive     1 ${T} --N 2000 --K 1500 --NB 256 --gpus 1 --check 1 --adaptive_decision 1 --fixedacc 1e-4)
+    if(HICMA_PARSEC_HAVE_CUDA)
+        # kinds 1 and 2 have CUDA bodies only
+        hicma_add_test(gpu_tlr_mp        1 ${P} ${COMMON} --gpus 1 --kind_of_cholesky 1 --band_dense 1000 --adaptive_decision 1)
+        hicma_add_test(gpu_tlr_dp_band2  1 ${P} ${COMMON} --gpus 1 --kind_of_cholesky 2 --band_dense 2)
+    endif()
 endif()
-
-add_executable(testing_trmm_performance testing_trmm_performance.c)
-target_link_libraries(testing_trmm_performance PRIVATE ${LD_LIB_HICMA_PARSEC} hicma_parsec ${HCORE_STARSH_LIB})
-target_sources(testing_trmm_performance PRIVATE $<TARGET_OBJECTS:dplasma_tests_common>)
-
-if( CMAKE_Fortran_COMPILER_WORKS )
-    set_target_properties(testing_trmm_performance PROPERTIES
-                          LINKER_LANGUAGE Fortran)
-endif()
-
-add_executable(testing_trmm_performance_static testing_trmm_performance_static.c)
-target_link_libraries(testing_trmm_performance_static PRIVATE ${LD_LIB_HICMA_PARSEC} hicma_parsec ${HCORE_STARSH_LIB})
-target_sources(testing_trmm_performance_static PRIVATE $<TARGET_OBJECTS:dplasma_tests_common>)
-
-if( CMAKE_Fortran_COMPILER_WORKS )
-    set_target_properties(testing_trmm_performance_static PROPERTIES
-                          LINKER_LANGUAGE Fortran)
-endif()
-
-# Header and library installation is handled by the top-level CMakeLists.txt

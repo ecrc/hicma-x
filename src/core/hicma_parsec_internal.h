@@ -69,19 +69,25 @@ typedef unsigned int uint;  /**< Unsigned integer type for compatibility */
 #endif
 
 /* ============================================================================
- * PaRSEC includes
+ * PaRSEC and DPLASMA includes: the headers both projects install, so that this
+ * header compiles from an installed prefix as well as in the source tree
  * ============================================================================ */
-#include "dplasma/parsec/parsec/data_dist/matrix/sym_two_dim_rectangle_cyclic_band.h"  /**< Symmetric band matrix distribution */
-#include "dplasma/parsec/parsec/utils/mca_param.h"  /**< Parameter management utilities */
-#include "dplasma/parsec/parsec/runtime.h"  /**< PaRSEC runtime system */
-#include "dplasma/parsec/parsec/include/parsec/execution_stream.h"  /**< Execution stream management */
-#include "dplasma/tests/common_timing.h"  /**< Common timing utilities for testing */
-#include "dplasma/parsec/parsec/data_dist/matrix/matrix_internal.h"  /**< Internal matrix data structures */
+#include <parsec/runtime.h>
+#include <parsec/execution_stream.h>
+#include <parsec/utils/mca_param.h>
+#include <parsec/private_mempool.h>
+#include <parsec/data_dist/matrix/sym_two_dim_rectangle_cyclic_band.h>
+#include <dplasma.h>
+#include "hicma_parsec_timing.h"
 
-/* ============================================================================
- * DPLASMA includes
- * ============================================================================ */
-#include "dplasma/src/dplasmajdf.h"  /**< DPLASMA Job Data Flow definitions */
+#if defined(HICMA_PARSEC_BUILDING)
+/* Internal DPLASMA and PaRSEC headers that the kernels, JDFs and in-tree
+ * drivers use (CORE_* kernels, dplasma_aux_*, FLOPS macros, the matrix
+ * internals). They are not installed, so they are only seen while building
+ * HiCMA-X itself (HICMA_PARSEC_BUILDING is set by src/CMakeLists.txt). */
+#include "dplasma/src/dplasmajdf.h"
+#include "dplasma/parsec/parsec/data_dist/matrix/matrix_internal.h"
+#endif
 
 /* ============================================================================
  * Starsh includes
@@ -110,9 +116,16 @@ typedef unsigned int uint;  /**< Unsigned integer type for compatibility */
 
 /* CUDA support - NVIDIA GPU acceleration */
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
-#include "parsec/mca/device/cuda/device_cuda.h"  /**< CUDA device management */
+#include <parsec/mca/device/device_gpu.h>  /**< parsec_gpu_task_t and the generic GPU device */
+#include <parsec/utils/zone_malloc.h>      /**< Zone-based memory allocation */
+#if defined(HICMA_PARSEC_BUILDING)
+#include "parsec/mca/device/cuda/device_cuda.h"  /**< CUDA device management (not installed by PaRSEC) */
 #include "parsec/mca/device/cuda/device_cuda_internal.h"  /**< Internal CUDA device functions */
-#include "parsec/utils/zone_malloc.h"  /**< Zone-based memory allocation */
+#else
+/* The installed headers only use these through pointers */
+typedef struct parsec_device_cuda_module_s parsec_device_cuda_module_t;
+typedef struct parsec_cuda_exec_stream_s parsec_cuda_exec_stream_t;
+#endif
 #include <cuda_runtime.h>  /**< CUDA runtime API */
 #include <cuda_fp16.h>     /**< Half precision floating point support */
 #include <cublasLt.h>      /**< cuBLASLt library for tensor operations */
@@ -126,9 +139,9 @@ typedef unsigned int uint;  /**< Unsigned integer type for compatibility */
 
 /* HIP support - AMD GPU acceleration */
 #if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
-#include "parsec/utils/zone_malloc.h"  /**< Zone-based memory allocation */
-#include "hicma_parsec_hip_cuda.h"     /**< HIP-CUDA compatibility layer */
-#include "../dplasma/parsec/parsec/mca/device/hip/device_hip.h"  /**< HIP device management */
+#include <parsec/mca/device/device_gpu.h>  /**< parsec_gpu_task_t and the generic GPU device */
+#include <parsec/utils/zone_malloc.h>      /**< Zone-based memory allocation */
+#include "hicma_parsec_hip_cuda.h"         /**< HIP-CUDA compatibility layer (brings the HIP device types) */
 #endif
 
 /* ============================================================================
@@ -178,7 +191,9 @@ extern "C" {  /**< Enable C linkage for C++ compatibility */
 
 /* Application-specific flags - control specialized computation modes */
 #define FOR_CLIMATE_EMULATOR    0  /**< Enable climate emulator mode for atmospheric modeling */
-#define GENOMICS                    0  /**< Enable genomics mode for genetic analysis */
+#ifndef GENOMICS
+#define GENOMICS                    0  /**< Genomics mode (kernel ridge regression); set by -DHICMA_PARSEC_GENOMICS=ON */
+#endif
 #define GENOMICS_ALLOCATE_SP    0  /**< Allocate in single precision for genomics (memory optimization) */
 #define GENOMICS_ALLOCATE_INT   0  /**< Use integer allocation for genomics (genotype data) */
 #define CHOLESKY_CPU_ONLY       0  /**< Force CPU-only Cholesky decomposition (disable GPU) */

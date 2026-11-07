@@ -4,7 +4,7 @@
 # @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
 #                              All rights reserved.
 
-cmake_minimum_required (VERSION 3.16)
+cmake_minimum_required (VERSION 3.21)  # PaRSEC needs 3.21; so do enable_language(HIP) and the presets
 
 # Fix for CMake regeneration issues with Ninja
 # This prevents system includes from being treated as dependencies
@@ -14,11 +14,8 @@ if (CMAKE_GENERATOR MATCHES "Ninja")
         CACHE FILEPATH "Ninja dependency-file flags" FORCE)
 endif()
 
-project (HICMA_PARSEC LANGUAGES C CXX Fortran)
+project (HICMA_PARSEC VERSION 0.2.0 LANGUAGES C CXX Fortran)
 
-# Set CMake policies early
-cmake_policy(SET CMP0074 NEW)
-cmake_policy(SET CMP0094 NEW)
 set(CMAKE_NO_SYSTEM_FROM_IMPORTED True)
 
 # Include required CMake modules
@@ -29,29 +26,11 @@ include(CheckCSourceCompiles)
 include(CheckIncludeFiles)
 include(GNUInstallDirs)
 
-# Version management - read from VERSION.txt if it exists
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION.txt")
-    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION.txt" VERSION_CONTENT)
-    string(STRIP "${VERSION_CONTENT}" VERSION_CONTENT)
-    if(VERSION_CONTENT MATCHES "^([0-9]+)\\.([0-9]+)\\.([0-9]+)")
-        set(HICMA_PARSEC_VERSION_MAJOR ${CMAKE_MATCH_1})
-        set(HICMA_PARSEC_VERSION_MINOR ${CMAKE_MATCH_2})
-        set(HICMA_PARSEC_VERSION_PATCH ${CMAKE_MATCH_3})
-        set(HICMA_PARSEC_VERSION "${HICMA_PARSEC_VERSION_MAJOR}.${HICMA_PARSEC_VERSION_MINOR}.${HICMA_PARSEC_VERSION_PATCH}")
-    else()
-        message(WARNING "Invalid version format in VERSION.txt: ${VERSION_CONTENT}")
-        set(HICMA_PARSEC_VERSION_MAJOR 2)
-        set(HICMA_PARSEC_VERSION_MINOR 0)
-        set(HICMA_PARSEC_VERSION_PATCH 0)
-        set(HICMA_PARSEC_VERSION "${HICMA_PARSEC_VERSION_MAJOR}.${HICMA_PARSEC_VERSION_MINOR}.${HICMA_PARSEC_VERSION_PATCH}")
-    endif()
-else()
-    # Fallback version
-    set(HICMA_PARSEC_VERSION_MAJOR 2)
-    set(HICMA_PARSEC_VERSION_MINOR 0)
-    set(HICMA_PARSEC_VERSION_PATCH 0)
-    set(HICMA_PARSEC_VERSION "${HICMA_PARSEC_VERSION_MAJOR}.${HICMA_PARSEC_VERSION_MINOR}.${HICMA_PARSEC_VERSION_PATCH}")
-endif()
+# Version: the single source is project(VERSION) above
+set(HICMA_PARSEC_VERSION_MAJOR ${PROJECT_VERSION_MAJOR})
+set(HICMA_PARSEC_VERSION_MINOR ${PROJECT_VERSION_MINOR})
+set(HICMA_PARSEC_VERSION_PATCH ${PROJECT_VERSION_PATCH})
+set(HICMA_PARSEC_VERSION ${PROJECT_VERSION})
 
 # Set default build type if not specified
 if(NOT CMAKE_BUILD_TYPE)
@@ -67,6 +46,7 @@ option(ON_FUGAKU "Running on Fugaku Supercomputer (default OFF)" OFF)
 option(ENABLE_SANITIZER "Enable AddressSanitizer (default OFF)" OFF)
 option(ENABLE_CUTLASS "Enable CUTLASS (default OFF)" OFF)
 option(GIT_SUBMODULE "Check submodules during build (default ON)" ON)
+option(HICMA_PARSEC_GENOMICS "Build the genomics drivers (kernel ridge regression) and compile the library with GENOMICS=1; needs CUDA or HIP (default OFF)" OFF)
 
 # C standard configuration
 if(SUPPORT_C11)
@@ -124,6 +104,10 @@ if(HICMA_PARSEC_HAVE_HIP)
     message(STATUS "HIP support enabled")
 endif(HICMA_PARSEC_HAVE_HIP)
 
+if(HICMA_PARSEC_GENOMICS AND NOT (HICMA_PARSEC_HAVE_CUDA OR HICMA_PARSEC_HAVE_HIP))
+    message(FATAL_ERROR "HICMA_PARSEC_GENOMICS needs HICMA_PARSEC_HAVE_CUDA or HICMA_PARSEC_HAVE_HIP: the genomics GEMM kernels have GPU bodies only")
+endif()
+
 # Fugaku-specific configuration
 if(ON_FUGAKU)
     add_definitions(-DON_FUGAKU)
@@ -155,8 +139,8 @@ if(NOT EXISTS "${PROJECT_SOURCE_DIR}/dplasma/CMakeLists.txt" OR NOT EXISTS "${PR
     find_package(Git QUIET)
     if(GIT_FOUND AND EXISTS "${PROJECT_SOURCE_DIR}/.git")
         if(GIT_SUBMODULE)
-            message(STATUS "Updating submodules (including nested submodules)...")
-            execute_process(COMMAND ${GIT_EXECUTABLE} submodule update --force --init --recursive --remote
+            message(STATUS "Checking out the submodules at their recorded commits...")
+            execute_process(COMMAND ${GIT_EXECUTABLE} submodule update --init --recursive
                 WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                 RESULT_VARIABLE GIT_SUBMOD_RESULT)
             if(NOT GIT_SUBMOD_RESULT EQUAL "0")
@@ -195,9 +179,6 @@ endif()
 
 add_subdirectory(stars-h)
 add_subdirectory(hcore)
-
-# Include package configuration generation
-include(GenPkgConfig)
 
 # Configure HCORE from submodule
 # HCORE is now built as part of the project via submodule
@@ -455,6 +436,8 @@ endif()
 install(FILES
     src/core/hicma_parsec.h
     src/core/hicma_parsec_internal.h
+    src/core/hicma_parsec_timing.h
+    src/core/hicma_parsec_hip_cuda.h
     src/core/hicma_parsec_flat_file.h
     src/core/hicma_parsec_datatype_convert.h
     src/core/hicma_parsec_decision.h
@@ -468,6 +451,20 @@ install(FILES
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 
+# hcore.h includes <cblas.h> and <lapacke.h>; DPLASMA ships generic versions
+# of both (dplasma/src/include) that the in-tree build uses but does not
+# install. Install them in a private directory that is on the exported include
+# path, so that an installed hicma_parsec.h compiles without a system CBLAS
+# header (MKL, for one, has none).
+install(FILES
+    dplasma/src/include/cblas.h
+    dplasma/src/include/lapacke.h
+    dplasma/src/include/lapacke_mangling.h
+    ${PROJECT_BINARY_DIR}/dplasma/src/include/dplasma_f2c.h
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hicma_parsec_compat
+    OPTIONAL
+)
+
 install(TARGETS hicma_parsec
     EXPORT HICMAParsecTargets
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -475,18 +472,20 @@ install(TARGETS hicma_parsec
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
-# Generate and install CMake config files
+# CMake package: find_package(HICMAParsec) gives the HICMAParsec::hicma_parsec
+# target with its dependencies (PaRSEC, DPLASMA, MPI, and CUDA or HIP)
 include(CMakePackageConfigHelpers)
 write_basic_package_version_file(
     "${CMAKE_CURRENT_BINARY_DIR}/HICMAParsecConfigVersion.cmake"
     VERSION ${HICMA_PARSEC_VERSION}
-    COMPATIBILITY SameMajorVersion
+    COMPATIBILITY SameMinorVersion
 )
 
-configure_file(
+configure_package_config_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake_modules/HICMAParsecConfig.cmake.in"
     "${CMAKE_CURRENT_BINARY_DIR}/HICMAParsecConfig.cmake"
-    @ONLY
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/HICMAParsec
+    PATH_VARS CMAKE_INSTALL_INCLUDEDIR CMAKE_INSTALL_LIBDIR
 )
 
 install(FILES
