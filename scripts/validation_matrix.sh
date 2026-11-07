@@ -40,8 +40,8 @@ S=./tests/testing_syrk
 run tlr_dp_k2_p2            1 $P --N 2700 --NB 270 --fixedacc 1e-8 --maxrank 130 --kind_of_problem 2 --check 1 --verbose 2
 run tlr_mp_k1_band1_adapt   1 $P --N 2700 --NB 270 --fixedacc 1e-8 --maxrank 130 --kind_of_problem 2 --check 1 --check_tol 1e-7 --verbose 2 --band_dense 1 --adaptive_decision 1 --kind_of_cholesky 1
 run tlr_mp_k1_band1_noadapt 1 $P --N 2700 --NB 270 --fixedacc 1e-8 --maxrank 130 --kind_of_problem 2 --check 1 --verbose 2 --band_dense 1 --adaptive_decision 0 --kind_of_cholesky 1
-run tlr_mp_k1_dense_adapt   1 $P --N 2700 --NB 270 --fixedacc 1e-8 --maxrank 130 --kind_of_problem 2 --check 1 --verbose 2 --band_dense 1000 --adaptive_decision 1 --kind_of_cholesky 1
-run tlr_mp_k1_dense_admem   1 $P --N 2700 --NB 270 --fixedacc 1e-8 --maxrank 130 --kind_of_problem 2 --check 1 --verbose 2 --band_dense 1000 --adaptive_decision 1 --adaptive_memory 1 --kind_of_cholesky 1
+run tlr_mp_k1_dense_adapt   1 $P --N 2700 --NB 270 --fixedacc 1e-8 --maxrank 130 --kind_of_problem 2 --check 1 --verbose 2 --band_dense 1000 --adaptive_decision 1 --kind_of_cholesky 1 --check_tol 1e-7
+run tlr_mp_k1_dense_admem   1 $P --N 2700 --NB 270 --fixedacc 1e-8 --maxrank 130 --kind_of_problem 2 --check 1 --verbose 2 --band_dense 1000 --adaptive_decision 1 --adaptive_memory 1 --kind_of_cholesky 1 --check_tol 1e-7
 run tlr_kind2_band1         1 $P --N 2700 --NB 270 --fixedacc 1e-8 --maxrank 130 --kind_of_problem 2 --kind_of_cholesky 2 --band_dense 1 --check 1 --verbose 2
 run tlr_kind2_band2         1 $P --N 2700 --NB 270 --fixedacc 1e-8 --maxrank 130 --kind_of_problem 2 --kind_of_cholesky 2 --band_dense 2 --check 1 --verbose 2
 run tlr_kind2_band2_np2     2 $P --N 2700 --NB 270 --fixedacc 1e-8 --maxrank 130 --kind_of_problem 2 --kind_of_cholesky 2 --band_dense 2 --check 1 --verbose 2
@@ -80,7 +80,7 @@ run gpu_runtime_k10         1 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1
 run gpu_runtime_k10_admem   1 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --adaptive_decision_runtime 1 --check_tol 1e-7 --adaptive_memory 1 --check 1 --verbose 2
 run gpu_tlr_kind2_band2     1 $P --N 2700 --NB 270 --fixedacc 1e-8 --maxrank 130 --kind_of_problem 2 --kind_of_cholesky 2 --band_dense 2 --gpus 1 --check 1 --verbose 2
 run gpu_tlr_kind1_band2     1 $P --N 2700 --NB 270 --fixedacc 1e-8 --maxrank 130 --kind_of_problem 2 --kind_of_cholesky 1 --band_dense 2 --adaptive_decision 1 --gpus 1 --check 1 --check_tol 1e-7 --verbose 2
-run gpu_tlr_mp_k1           1 $P --N 2700 --NB 270 --fixedacc 1e-8 --maxrank 130 --kind_of_problem 2 --gpus 1 --check 1 --verbose 2 --band_dense 1000 --adaptive_decision 1 --kind_of_cholesky 1
+run gpu_tlr_mp_k1           1 $P --N 2700 --NB 270 --fixedacc 1e-8 --maxrank 130 --kind_of_problem 2 --gpus 1 --check 1 --verbose 2 --band_dense 1000 --adaptive_decision 1 --kind_of_cholesky 1 --check_tol 1e-7
 run gpu_dense_k5_dtconv2    1 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --adaptive_decision 1 --datatype_convert 2 --check 1 --verbose 2
 run gpu_trmm_adapt          1 $T --N 2000 --K 1500 --NB 256 --gpus 1 --check 1 --adaptive_decision 1 --fixedacc 1e-4
 run gpu_dense_k5_fp64_np2   2 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --check 1 --verbose 2 -- --mca device_cuda_memory_use 30

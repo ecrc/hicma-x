@@ -219,6 +219,8 @@ int check_dpotrf2( parsec_context_t *parsec, int verbose,
          (result > threshold) )
     {
         if( verbose ) printf(RED "-- Factorization is suspicious ! \n" RESET);
+        if( 0 == A0->super.myrank )
+            fprintf(stderr, RED "Check FAILED: ||LL^T-A||_F/||A||_F = %e, accepted bound %e (--check_tol)\n" RESET, result, threshold);
         info_factorization = 1;
     }
     else
@@ -289,6 +291,8 @@ int check_diff( parsec_context_t *parsec, int verbose,
          (result > threshold) )
     {
         if( verbose ) printf("-- DIFFERENT matrices ! \n");
+        if( 0 == A->super.myrank )
+            fprintf(stderr, RED "Check FAILED: ||L-L0||_F/||L||_F = %e, accepted bound %e (--check_tol)\n" RESET, result, threshold);
         info_factorization = 1;
     }
     else

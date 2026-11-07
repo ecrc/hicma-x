@@ -15,7 +15,9 @@ Configurations that compute whole bands in single or half precision (kinds 3,
 4, 9, and `--adaptive_decision` runs at a tolerance of 1e-8 or tighter) reach
 the accuracy of that precision, not an FP64-level `fixedacc`; pass the bound
 you expect them to meet, for example `--check_tol 1e-6` for a single-precision
-band. `--check 1` roughly doubles the run time (dense reference factorization)
+band. The registered CTest cases use 1e-7 for the `--adaptive_decision` runs
+(their residual is 6e-9 to 1.1e-8 depending on the BLAS library) and 1e-6 for
+the single/half-precision band kinds. `--check 1` roughly doubles the run time (dense reference factorization)
 and uses two extra copies of the matrix.
 
 The mixed-precision TRMM driver `testing_trmm_mp --check 1` compares against

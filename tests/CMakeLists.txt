@@ -111,8 +111,11 @@ hicma_add_test(potrf_tlr_dp_band1      1 ${P} ${COMMON} --kind_of_cholesky 2 --b
 hicma_add_test(potrf_tlr_dp_band2      1 ${P} ${COMMON} --kind_of_cholesky 2 --band_dense 2)
 hicma_add_test(potrf_tlr_mp_band1      1 ${P} ${COMMON} --kind_of_cholesky 1 --band_dense 1 --adaptive_decision 0)
 hicma_add_test(potrf_tlr_mp_adaptive   1 ${P} ${COMMON} --kind_of_cholesky 1 --band_dense 1 --adaptive_decision 1 --check_tol 1e-7)
-hicma_add_test(potrf_mp_dense_adaptive 1 ${P} ${COMMON} --kind_of_cholesky 1 --band_dense 1000 --adaptive_decision 1)
-hicma_add_test(potrf_mp_dense_admem    1 ${P} ${COMMON} --kind_of_cholesky 1 --band_dense 1000 --adaptive_decision 1 --adaptive_memory 1)
+# Mixed precision (about half of the GEMMs in FP32): the residual is bounded by
+# FP32 arithmetic, 7e-9 to 1.1e-8 depending on the BLAS library, not by the
+# 1e-8 compression accuracy; the bound is the one of potrf_tlr_mp_adaptive.
+hicma_add_test(potrf_mp_dense_adaptive 1 ${P} ${COMMON} --kind_of_cholesky 1 --band_dense 1000 --adaptive_decision 1 --check_tol 1e-7)
+hicma_add_test(potrf_mp_dense_admem    1 ${P} ${COMMON} --kind_of_cholesky 1 --band_dense 1000 --adaptive_decision 1 --adaptive_memory 1 --check_tol 1e-7)
 hicma_add_test(potrf_band_dp_sp        1 ${P} ${COMMON} --kind_of_cholesky 3 --band_dense_dp 2 --band_dense_sp 4 --check_tol 1e-6)
 hicma_add_test(potrf_runtime_decision  1 ${P} ${COMMON} --adaptive_decision_runtime 1 --check_tol 1e-7)
 hicma_add_test(potrf_sparse_general    1 ${P} ${COMMON} --sparse 1)
@@ -147,7 +150,7 @@ if(HICMA_PARSEC_HAVE_CUDA OR HICMA_PARSEC_HAVE_HIP)
     hicma_add_test(gpu_trmm_adaptive     1 ${T} --N 2000 --K 1500 --NB 256 --gpus 1 --check 1 --adaptive_decision 1 --fixedacc 1e-4)
     if(HICMA_PARSEC_HAVE_CUDA)
         # kinds 1 and 2 have CUDA bodies only
-        hicma_add_test(gpu_tlr_mp        1 ${P} ${COMMON} --gpus 1 --kind_of_cholesky 1 --band_dense 1000 --adaptive_decision 1)
+        hicma_add_test(gpu_tlr_mp        1 ${P} ${COMMON} --gpus 1 --kind_of_cholesky 1 --band_dense 1000 --adaptive_decision 1 --check_tol 1e-7)
         hicma_add_test(gpu_tlr_dp_band2  1 ${P} ${COMMON} --gpus 1 --kind_of_cholesky 2 --band_dense 2)
     endif()
 endif()

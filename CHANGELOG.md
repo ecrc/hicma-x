@@ -25,7 +25,8 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   0 whatever they measured, so `--check 1` could not fail. They now return their
   verdict, the reference dense Cholesky's `info` is inspected, and every driver
   exits non-zero on a failed check or a failed factorization.
-- `--check_tol` sets the residual bound of `--check` (default: `--fixedacc`).
+- `--check_tol` sets the residual bound of `--check` (default: `--fixedacc`);
+  a failed check prints the measured residual and the accepted bound.
 - `--adddiag` was applied twice for problem kinds 0, 1, 5, 6 and 7 (by the
   STARS-H kernel and again by the generation task) while the reference matrix
   of the check had it once. The shift is now applied exactly once and the

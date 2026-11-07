@@ -68,8 +68,8 @@ run potrf_tlr_dp_band1      1 $P $COMMON --kind_of_cholesky 2 --band_dense 1
 run potrf_tlr_dp_band2      1 $P $COMMON --kind_of_cholesky 2 --band_dense 2
 run potrf_tlr_mp_band1      1 $P $COMMON --kind_of_cholesky 1 --band_dense 1 --adaptive_decision 0
 run potrf_tlr_mp_adaptive   1 $P $COMMON --kind_of_cholesky 1 --band_dense 1 --adaptive_decision 1 --check_tol 1e-7
-run potrf_mp_dense_adaptive 1 $P $COMMON --kind_of_cholesky 1 --band_dense 1000 --adaptive_decision 1
-run potrf_mp_dense_admem    1 $P $COMMON --kind_of_cholesky 1 --band_dense 1000 --adaptive_decision 1 --adaptive_memory 1
+run potrf_mp_dense_adaptive 1 $P $COMMON --kind_of_cholesky 1 --band_dense 1000 --adaptive_decision 1 --check_tol 1e-7
+run potrf_mp_dense_admem    1 $P $COMMON --kind_of_cholesky 1 --band_dense 1000 --adaptive_decision 1 --adaptive_memory 1 --check_tol 1e-7
 run potrf_band_dp_sp        1 $P $COMMON --kind_of_cholesky 3 --band_dense_dp 2 --band_dense_sp 4 --check_tol 1e-6
 run potrf_runtime_decision  1 $P $COMMON --adaptive_decision_runtime 1 --check_tol 1e-7
 run potrf_sparse_general    1 $P $COMMON --sparse 1
@@ -105,7 +105,7 @@ if [ "$GPUS" -gt 0 ]; then
     run gpu_fp8_sp              1 $P $G --kind_of_cholesky 9 --adaptive_decision 1 --check_tol 1e-6
     run gpu_runtime_decision    1 $P $G --adaptive_decision_runtime 1 --check_tol 1e-7
     run gpu_runtime_admem       1 $P $G --adaptive_decision_runtime 1 --adaptive_memory 1 --check_tol 1e-7
-    run gpu_tlr_mp              1 $P $COMMON --gpus $GPUS --kind_of_cholesky 1 --band_dense 1000 --adaptive_decision 1
+    run gpu_tlr_mp              1 $P $COMMON --gpus $GPUS --kind_of_cholesky 1 --band_dense 1000 --adaptive_decision 1 --check_tol 1e-7
     run gpu_tlr_dp_band2        1 $P $COMMON --gpus $GPUS --kind_of_cholesky 2 --band_dense 2
     run gpu_trmm_adaptive       1 $T --N 2000 --K 1500 --NB 256 --gpus $GPUS --check 1 --adaptive_decision 1 --fixedacc 1e-4
 else
