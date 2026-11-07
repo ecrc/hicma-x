@@ -28,7 +28,7 @@ n = 0 .. m
 
 : descA(m, n)
 
-// Every tile: refresh nb_elts for its current format, and convert the tiles
+// Every tile: refresh span for its current format, and convert the tiles
 // whose decision is SP/HP/FP8 (dense) or LOW_RANK_SP to single precision
 RW A <- descA(m, n)
      -> descA(m, n)              
@@ -46,17 +46,17 @@ BODY
 {
     int size = descA->nb;
     if(IS_DENSE(m, n)) {
-        this_task->data._f_A.data_out->original->nb_elts = descA->mb * size * sizeof(double);
+        this_task->data._f_A.data_out->original->span = descA->mb * size * sizeof(double);
     } else {
         // Calculate size based on rank (U*V format: rank * 2); used by the LOW_RANK_SP conversion below
         int rank_tile = ((int *)Ar)[0];
         size = rank_tile * 2;
         /* Keep the element count matrix_compress set for the allocated U*V
          * buffer: with send_full_tile it holds maxrank columns, and shrinking
-         * nb_elts to the current rank would truncate later stage-ins/sends. */
+         * span to the current rank would truncate later stage-ins/sends. */
         int alloc_cols = (1 == params_tlr->send_full_tile) ? params_tlr->maxrank * 2
                                                            : parsec_imin(params_tlr->maxrank, rank_tile) * 2;
-        this_task->data._f_A.data_out->original->nb_elts = descA->mb * alloc_cols * sizeof(double);
+        this_task->data._f_A.data_out->original->span = descA->mb * alloc_cols * sizeof(double);
     }
 
     // Handle dense matrix tiles that need conversion to single precision
@@ -69,14 +69,14 @@ BODY
             if(0) printf("(%d %d) needs D2S\n", m, n);
         } else {
             // Already in single precision, just update element count
-            this_task->data._f_A.data_out->original->nb_elts = descA->mb * size * sizeof(float);
+            this_task->data._f_A.data_out->original->span = descA->mb * size * sizeof(float);
             return PARSEC_HOOK_RETURN_DONE; 
         }
 
         // Perform conversion based on memory management strategy
         if( params_tlr->check || !params_tlr->adaptive_memory ) {
             if( params_tlr->enable_stochastic_rounding ) {
-                convert_datatype_adaptive_unary_CPU(A, descA->mb, descA->nb, descA->mb, DENSE_SP, 0, params_tlr->enable_stochastic_rounding, hicma_parsec_sr_seed(m, n), &this_task->data._f_A.data_out->original->nb_elts);
+                convert_datatype_adaptive_unary_CPU(A, descA->mb, descA->nb, descA->mb, DENSE_SP, 0, params_tlr->enable_stochastic_rounding, hicma_parsec_sr_seed(m, n), &this_task->data._f_A.data_out->original->span);
             } else {
                 // In-place conversion (unary operation)
                 convert_d2s_unary_CPU(A, descA->mb, size);
@@ -120,7 +120,7 @@ BODY
             params_tlr->tile_host_bytes[hicma_tile_idx(params_tlr, m, n)] = (size_t)descA->mb * size * sizeof(float);
         }
         // Update element count for single precision
-        this_task->data._f_A.data_out->original->nb_elts = descA->mb * size * sizeof(float);
+        this_task->data._f_A.data_out->original->span = descA->mb * size * sizeof(float);
     }
 
     // Handle low-rank matrix tiles that need conversion to single precision
@@ -133,7 +133,7 @@ BODY
 
             // Free previous memory and re-attach new memory
             free( this_task->data._f_A.data_out->device_private );
-            this_task->data._f_A.data_out->original->nb_elts = descA->mb * size * sizeof(float);
+            this_task->data._f_A.data_out->original->span = descA->mb * size * sizeof(float);
             this_task->data._f_A.data_out->device_private = new_memory;
         }
     }

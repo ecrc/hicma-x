@@ -762,6 +762,19 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
 #endif
     free(value);
 
+#if defined(PARSEC_MPI_IS_GPU_AWARE)
+    /* With a GPU-aware MPI, PaRSEC receives remote data straight into GPU
+     * memory when the successor's task class has a GPU body. The GPU bodies
+     * here return PARSEC_HOOK_RETURN_NEXT for low-rank tiles and run the CPU
+     * body instead, which would then read a copy that exists only on the GPU
+     * (garbage in the low-rank GEMMs and crashes with band_size_dense > 1 on
+     * several ranks). Keep sending from GPU memory (2) but receive in host
+     * memory, unless the user chose a value. */
+    if( NULL == getenv("PARSEC_MCA_mpi_gpu_aware") ) {
+        parsec_setenv_mca_param( "mpi_gpu_aware", "2", &environ );
+    }
+#endif
+
     // Enable GPU debugging output if verbose mode is enabled
     if(params->gpus > 0 && params->verbose > 5) {
         parsec_setenv_mca_param( "device_show_capabilities", "1", &environ );
@@ -2835,6 +2848,14 @@ void hicma_parsec_free_memory( parsec_context_t *parsec,
     parsec_tiled_matrix_destroy( (parsec_tiled_matrix_t*)&data->dcA );
     parsec_tiled_matrix_destroy( &data->dcA.band.super );
     parsec_tiled_matrix_destroy( &data->dcA.off_band.super );
+
+    // Destroy dcAd: hicma_parsec_data_init always initializes it, and its tile
+    // memory was freed by hicma_parsec_memory_flush_choleksy above. When a GPU
+    // evicts a tile that a task still references, PaRSEC keeps the emptied
+    // device copy attached to the tile's parsec_data_t, outside the LRU lists it
+    // flushes at shutdown. Only destroying the collection releases those copies;
+    // otherwise parsec_fini aborts with "data copies ... still in use".
+    parsec_tiled_matrix_destroy( (parsec_tiled_matrix_t*)&data->dcAd );
 
     /* ===========================================
      * Destroy rank matrix descriptor (dcAr)

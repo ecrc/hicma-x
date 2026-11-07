@@ -30,7 +30,7 @@ READ A <- descA(m, n)
 BODY
 {
     (void)A;
-    this_task->data._f_A.data_out->original->nb_elts =
+    this_task->data._f_A.data_out->original->span =
         descA->mb * descA->nb * element_size;
 }
 END

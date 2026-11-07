@@ -107,16 +107,16 @@ BODY
         abort();
     }
 
-    copy->original->nb_elts =
+    copy->original->span =
         tile_elements * get_datatype_size(allocation_type);
     if (copy->device_private == NULL) {
         if (use_pinned_memory) {
             hicma_parsec_core_memory_allocation(&copy->device_private,
                                                 tile_elements,
                                                 (char *)allocation_type,
-                                                &copy->original->nb_elts);
+                                                &copy->original->span);
         } else {
-            copy->device_private = malloc(copy->original->nb_elts);
+            copy->device_private = malloc(copy->original->span);
         }
     }
     if (copy->device_private == NULL) {
@@ -147,7 +147,7 @@ BODY
                                      matrix_is_symmetric, seed);
 
         /* The A allocation has SP capacity, but its active payload is FP16. */
-        copy->original->nb_elts = tile_elements * get_datatype_size("half");
+        copy->original->span = tile_elements * get_datatype_size("half");
     }
 }
 END

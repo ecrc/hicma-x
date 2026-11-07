@@ -57,7 +57,7 @@ BODY
     hicma_parsec_core_memory_allocation(&this_task->data._f_A.data_out->device_private, 
                                        (size_t)descA->mb*descA->nb, 
                                        allocate_type, 
-                                       &this_task->data._f_A.data_out->original->nb_elts);
+                                       &this_task->data._f_A.data_out->original->span);
 }
 END
 

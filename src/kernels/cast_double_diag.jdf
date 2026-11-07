@@ -72,7 +72,7 @@ BODY
     this_task->data._f_A.data_out->device_private = new_memory;
 
     // Update element count to reflect double precision storage (8 bytes per element)
-    this_task->data._f_A.data_out->original->nb_elts = descA->mb * descA->mb * sizeof(double);
+    this_task->data._f_A.data_out->original->span = descA->mb * descA->mb * sizeof(double);
 }
 END
 

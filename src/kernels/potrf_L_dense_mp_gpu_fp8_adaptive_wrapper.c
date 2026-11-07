@@ -368,7 +368,7 @@ static int wrap_gemm_complete(parsec_execution_stream_t * es,
  * allocate on the GPU, twice the bytes of an SP tile. The tile's
  * {norm, precision} record arrives with it, so trim the received copy's
  * element count to SP before PaRSEC sizes the transfer (the GPU hook reads
- * original->nb_elts after this evaluate runs). Tiles owned by a data
+ * original->span after this evaluate runs). Tiles owned by a data
  * collection (local TRSM output) are skipped: TRSM already sets their count.
  */
 static void hicma_trim_remote_operand(parsec_data_copy_t *tile,
@@ -380,8 +380,8 @@ static void hicma_trim_remote_operand(parsec_data_copy_t *tile,
     if( NULL == original || NULL != original->dc ) return;
     const void *tile_meta = PARSEC_DATA_COPY_GET_PTR(meta);
     if( NULL == tile_meta ) return;
-    if( DENSE_SP == hicma_tile_meta_precision(tile_meta) && original->nb_elts > sp_bytes ) {
-        original->nb_elts = sp_bytes;
+    if( DENSE_SP == hicma_tile_meta_precision(tile_meta) && original->span > sp_bytes ) {
+        original->span = sp_bytes;
     }
 }
 

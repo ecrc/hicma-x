@@ -324,14 +324,14 @@ static void hicma_update_tile_nb_elts(parsec_data_copy_t *active_copy,
     int nflows = 0;
 
     if( NULL != active_copy && NULL != active_copy->original ) {
-        active_copy->original->nb_elts = target_bytes;
+        active_copy->original->span = target_bytes;
     }
     if( NULL == gpu_task || NULL == gpu_task->ec || NULL == gpu_task->ec->task_class ) {
         return;
     }
 
     task = gpu_task->ec;
-    nflows = task->task_class->nb_flows;
+    nflows = (int)gpu_task->nb_flows;
     for( int i = 0; i < nflows; i++ ) {
         parsec_data_copy_t *in = task->data[i].data_in;
         parsec_data_copy_t *out = task->data[i].data_out;
@@ -341,7 +341,7 @@ static void hicma_update_tile_nb_elts(parsec_data_copy_t *active_copy,
                  || (NULL != in && in->original == active_copy->original);
         }
         if( match ) {
-            gpu_task->flow_nb_elts[i] = target_bytes;
+            gpu_task->flow_info[i].flow_span = target_bytes;
         }
     }
 }
@@ -373,7 +373,7 @@ static int hicma_reallocate_tile_on_gpu(parsec_device_cuda_module_t *cuda_device
     }
 
     if( NULL != active_copy->original
-            && active_copy->original->nb_elts >= target_bytes
+            && active_copy->original->span >= target_bytes
             && NULL != active_copy->device_private ) {
         hicma_update_tile_nb_elts(active_copy, gpu_task, target_bytes);
         *new_ptr_out = active_copy->device_private;
@@ -4040,7 +4040,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
      * GEMM, which must come from ||A||*||B|| (the size of the update) and is
      * also what decisions_gemm_first records. When this GEMM runs in DP, the DP
      * path below stores C back in DP, so a downcast here would only add two
-     * conversions and leave nb_elts at the SP size; skip it in that case. */
+     * conversions and leave span at the SP size; skip it in that case. */
     if( 0 == k && 0 == params_tlr->adaptive_decision
             && DENSE_DP == params_tlr->decisions[idx_C]
             && DENSE_DP != new_decision ) {
@@ -4057,7 +4057,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
             double2float_GPU(descA->mb, descA->nb, C, descA->mb, C_s, descA->mb,
                              cuda_stream->cuda_stream);
             memcpy_float_GPU(descA->mb, descA->nb, C_s, C, cuda_stream->cuda_stream);
-            this_task->data._f_C.data_out->original->nb_elts =
+            this_task->data._f_C.data_out->original->span =
                 (size_t)descA->mb * (size_t)descA->nb * sizeof(float);
             params_tlr->decisions[idx_C] = DENSE_SP;
             Cprecision = DENSE_SP;
@@ -4411,7 +4411,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
             double2float_GPU(descA->mb, descA->nb, C, descA->mb, C_s, descA->mb,
                              cuda_stream->cuda_stream);
             memcpy_float_GPU(descA->mb, descA->nb, C_s, C, cuda_stream->cuda_stream);
-            this_task->data._f_C.data_out->original->nb_elts =
+            this_task->data._f_C.data_out->original->span =
                 (size_t)tempmm * (size_t)tempnn * sizeof(float);
             params_tlr->decisions[idx_C] = DENSE_SP;
         }

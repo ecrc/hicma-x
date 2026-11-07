@@ -46,15 +46,15 @@ BODY
     if( intype == 8 ){
         // Convert to 8-bit integer (int8_t)
         convert_d2i8_unary_CPU(A, tempmm, tempnn, ldam); 
-        this_task->data._f_A.data_out->original->nb_elts = descA->mb * descA->nb * sizeof(int8_t);
+        this_task->data._f_A.data_out->original->span = descA->mb * descA->nb * sizeof(int8_t);
     }else if( intype == 16 ){
         // Convert to 16-bit integer (int16_t)
         convert_d2i16_unary_CPU(A, tempmm, tempnn, ldam);
-        this_task->data._f_A.data_out->original->nb_elts = descA->mb * descA->nb * sizeof(int16_t);
+        this_task->data._f_A.data_out->original->span = descA->mb * descA->nb * sizeof(int16_t);
     }else if( intype == 32 ){
         // Convert to 32-bit integer (int)
         convert_d2i_unary_CPU(A, tempmm, tempnn, ldam);
-        this_task->data._f_A.data_out->original->nb_elts = descA->mb * descA->nb * sizeof(int);
+        this_task->data._f_A.data_out->original->span = descA->mb * descA->nb * sizeof(int);
    }
 }
 END

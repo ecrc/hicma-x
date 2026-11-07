@@ -1285,7 +1285,7 @@ BODY
             
             // Allocate new memory for increased rank
             this_task->data._f_C.data_out->device_private = calloc( descA->mb * new_UVrk * 2, sizeof(double) );
-            this_task->data._f_C.data_out->original->nb_elts = descA->mb * new_UVrk * 2 * sizeof(double);
+            this_task->data._f_C.data_out->original->span = descA->mb * new_UVrk * 2 * sizeof(double);
         }
 
         /* ====================================================================
@@ -1508,7 +1508,7 @@ BODY
             
             // Allocate new memory for increased rank
             this_task->data._f_C.data_out->device_private = calloc( descA->mb * new_UVrk * 2, sizeof(double) );
-            this_task->data._f_C.data_out->original->nb_elts = descA->mb * new_UVrk * 2 * sizeof(double);
+            this_task->data._f_C.data_out->original->span = descA->mb * new_UVrk * 2 * sizeof(double);
         }
 
         /* ====================================================================
