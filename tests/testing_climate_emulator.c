@@ -107,25 +107,30 @@ static void performMatrixOperations(parsec_context_t *parsec, climate_emulator_s
  * @param params_kernel StarSH kernel parameters
  * @param analysis Matrix analysis structure
  */
-static void performCholeskyFactorization(parsec_context_t *parsec, hicma_parsec_data_t *data,
+static int performCholeskyFactorization(parsec_context_t *parsec, hicma_parsec_data_t *data,
                                  hicma_parsec_params_t *params, starsh_params_t *params_kernel,
                                  hicma_parsec_matrix_analysis_t *analysis) {
+    int failed = 0;
+
     // Analyze matrix structure before Cholesky factorization
     hicma_parsec_matrix_pre_analysis(parsec, data, params, params_kernel, analysis);
     
     // Perform HiCMA Cholesky factorization with multiple runs if specified
     for (int i = 0; i < params->nruns; i++) {
         hicma_parsec_potrf(parsec, data, params, analysis);
-    }
-    
-    // Check factorization success for single runs
-    if (0 == params->rank && params->info != 0 && 1 == params->nruns) {
-        fprintf(stderr, "-- Factorization is suspicious (info = %d) ! \n", params->info);
-        // Note: Not exiting to allow cleanup to proceed
+        if (params->info != 0) {
+            failed = 1;
+            if (0 == params->rank) {
+                fprintf(stderr, "-- Factorization failed (info = %d): leading minor not positive definite\n",
+                        params->info);
+            }
+        }
     }
     
     // Analyze matrix after Cholesky factorization
     hicma_parsec_matrix_post_analysis(parsec, data, params, params_kernel, analysis);
+
+    return failed;
 }
 
 /**
@@ -217,7 +222,7 @@ int main(int argc, char **argv)
     performMatrixOperations(parsec, &gb, &data, &params);
     
     // Perform Cholesky factorization with analysis
-    performCholeskyFactorization(parsec, &data, &params, &params_kernel, &analysis);
+    int failed = performCholeskyFactorization(parsec, &data, &params, &params_kernel, &analysis);
     
     // TODO: Future implementation for final output
     // Matrix size: L^2 * 1828
@@ -232,5 +237,5 @@ int main(int argc, char **argv)
     climate_emulator_fini(parsec, &gb, &params);
     hicma_parsec_fini(parsec, argc, argv, &params, &params_kernel, &data, &analysis);
     
-    return EXIT_SUCCESS;
+    return failed ? EXIT_FAILURE : EXIT_SUCCESS;
 }

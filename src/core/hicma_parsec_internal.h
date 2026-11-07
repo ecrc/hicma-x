@@ -613,6 +613,7 @@ typedef struct hicma_parsec_params_s {
     double radius;            /**< Radius in RBF kernel */
     double density;           /**< Density of sphere packing for RBF application */
     double fixedacc;          /**< Fixed accuracy threshold */
+    double check_tol;         /**< --check_tol: residual bound of --check; <= 0 means fixedacc */
     double add_diag;          /**< Value added to diagonal elements in some problems */
     double band_size_auto_tuning_termination; /**< Termination threshold for band size auto-tuning on GPU */
 

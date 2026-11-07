@@ -192,10 +192,11 @@ int main(int argc, char **argv)
         }
     }
     
-    // Check factorization success for single runs
-    if (0 == params.rank && params.info != 0 && 1 == params.nruns) {
-        fprintf(stderr, "-- Factorization is suspicious (info = %d)!\n", params.info);
-        // Note: Not exiting to allow cleanup to proceed
+    // A failed factorization (info != 0 on every rank after the reduction in
+    // hicma_parsec_potrf) makes the program exit non-zero after the cleanup
+    int failed = (params.info != 0);
+    if (0 == params.rank && failed) {
+        fprintf(stderr, "-- Factorization failed (info = %d): leading minor not positive definite\n", params.info);
     }
     
     // Conditional execution based on compilation flags
@@ -260,6 +261,6 @@ int main(int argc, char **argv)
     
     printf("=== HiCMA KRR Testing Program Completed ===\n");
     
-    return EXIT_SUCCESS;
+    return failed ? EXIT_FAILURE : EXIT_SUCCESS;
 }
 

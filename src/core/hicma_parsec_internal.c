@@ -304,6 +304,7 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         {"NB", "Tile size (required)", 0, &params->NB},
         {"KB", "Tile size along K; must equal NB (default: NB)", 0, &params->KB},
         {"check", "Verify the results (--check, or --check 0|1)", 3, &params->check},
+        {"check_tol", "Residual bound ||LL^T-A||_F/||A||_F accepted by --check (default: fixedacc)", 1, &params->check_tol},
         {"verbose", "Extra verbose output: 1=normal, >1=more verbose about decisions", 0, &params->verbose},
         {"help", "Show this help message", 3, NULL},
         
@@ -638,6 +639,7 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     params->cores = -1;         // Number of cores per node (-1 = auto-detect from system)
     params->gpus  = 0;          // Number of GPUs to use (0 = CPU only, >0 enables GPU acceleration)
     params->fp8 = 1;                 // Use FP8 GEMMs where the GPUs support them (0=never)
+    params->check_tol = -1.0;        // --check accepts residuals up to fixedacc unless set
     params->fp8_enabled = 0;         // Set in setup_parsec() from --fp8, the kind and the GPUs' compute capability
     params->kernel_time_cpu = NULL;
     params->kernel_time_gpu = NULL;

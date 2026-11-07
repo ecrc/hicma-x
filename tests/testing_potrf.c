@@ -78,6 +78,7 @@ int main(int argc, char **argv)
                 "time them with care (or use --nruns 1 per launch)\n", params.nruns);
     }
 
+    int ret = EXIT_SUCCESS;
     for (int i = 0; i < params.nruns; i++) {
         if (params.rank == 0 && params.nruns > 1) {
             printf("Run %d/%d...\n", i + 1, params.nruns);
@@ -101,11 +102,13 @@ int main(int argc, char **argv)
         /* Print final parameters for this run */
         if(!params.check) hicma_parsec_params_print_final(argc, argv, &params, &analysis);
 
-        /* Check factorization status */
-        if (params.info != 0 && params.rank == 0) {
-            fprintf(stderr, "Warning: Factorization may be suspicious (info = %d)\n", params.info);
-            if (params.nruns == 1) {
-                fprintf(stderr, "Consider checking matrix properties or adjusting parameters\n");
+        /* Check factorization status: info is the same on every rank after
+         * the reduction in hicma_parsec_potrf */
+        if (params.info != 0) {
+            ret = EXIT_FAILURE;
+            if (params.rank == 0) {
+                fprintf(stderr, "Factorization failed (info = %d): the leading minor of order %d "
+                        "is not positive definite\n", params.info, params.info);
             }
         }
     }
@@ -117,11 +120,12 @@ int main(int argc, char **argv)
     hicma_parsec_matrix_post_analysis(parsec, &data, &params, &params_kernel, &analysis);
 
     if (params.rank == 0) {
-        printf("Cholesky decomposition testing completed successfully.\n");
+        printf("Cholesky decomposition testing completed %s.\n",
+               EXIT_SUCCESS == ret ? "successfully" : "with a failed factorization");
     }
 
     /* Finalize HiCMA and PaRSEC */
     hicma_parsec_fini(parsec, argc, argv, &params, &params_kernel, &data, &analysis);
 
-    return 0;
+    return ret;
 }
