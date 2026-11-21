@@ -56,40 +56,54 @@ OmniCast's own tests also ran on a Radeon VII (gfx906, HIP), an EPYC 7302
 | kind 3, FP16 band, FP16 accumulation (`--tensor_gemm 0x10`) | 60.7 ms in 1267 launches (7.6 % of GPU time) | 44.6 ms in 1135 launches (5.6 %) | −26.5 % |
 | kind 5, adaptive decisions, stochastic rounding | 64.8 ms in 709 launches (6.0 %) | 47.9 ms (4.5 %) | −26.0 % |
 
-## End to end (interleaved A/B, 3 runs each, factorization time)
+## End to end (interleaved A/B, factorization time)
 
-| A100, N=32768, NB=2048 | baseline (s) | OmniCast (s) | change |
-|---|---|---|---|
-| `k3_hp_band` | 0.802 | 0.799 | -0.3 % |
-| `k3_fp16acc` | 0.774 | 0.766 | -1.1 % |
-| `k5_adapt` | 1.144 | 1.133 | -0.9 % |
-| `k5_adapt_sr` | 1.168 | 1.166 | -0.2 % |
-| `k5_dtconv2` | 1.162 | 1.145 | -1.5 % |
-| `k10_runtime` | 1.160 | 1.157 | -0.3 % |
+Baseline and OmniCast runs alternate, so slow phases of the machine hit both.
+The GPU cases ran 3 times each; the CPU cases 10 times each, because a run
+varies by up to 40 % on the 36-core node (fastest to slowest run of one binary). `ab_stats.py` gives the medians, the
+median of the paired ratios with a bootstrap 95 % interval, and how often
+OmniCast was faster.
 
-| A100, N=32768, NB=1024 | baseline (s) | OmniCast (s) | change |
-|---|---|---|---|
-| `k3_fp16acc` | 0.650 | 0.640 | -1.6 % |
-| `k5_adapt_sr` | 1.163 | 1.156 | -0.6 % |
-| `k5_dtconv2` | 1.151 | 1.135 | -1.4 % |
+| A100, N=32768, NB=2048 | baseline (s) | OmniCast (s) | change (mean) | OmniCast faster |
+|---|---|---|---|---|
+| `k3_hp_band` | 0.802 | 0.799 | -0.3 % | 2/3 |
+| `k3_fp16acc` | 0.774 | 0.766 | -1.1 % | 3/3 |
+| `k5_adapt` | 1.144 | 1.133 | -0.9 % | 3/3 |
+| `k5_adapt_sr` | 1.168 | 1.166 | -0.2 % | 2/3 |
+| `k5_dtconv2` | 1.162 | 1.145 | -1.5 % | 3/3 |
+| `k10_runtime` | 1.160 | 1.157 | -0.3 % | 2/3 |
 
-| CPU (36-core Xeon Gold 6140), N=16384, NB=512 | baseline (s) | OmniCast (s) | change |
-|---|---|---|---|
-| `cpu_k3_band` | 1.486 | 1.444 | -2.8 % |
-| `cpu_k5_adapt` | 1.302 | 1.228 | -5.7 % |
-| `cpu_k5_adapt_sr` | 1.559 | 1.361 | -12.7 % |
-| `cpu_k10_runtime` | 2.003 | 1.730 | -13.6 % |
+| A100, N=32768, NB=1024 | baseline (s) | OmniCast (s) | change (mean) | OmniCast faster |
+|---|---|---|---|---|
+| `k3_fp16acc` | 0.650 | 0.640 | -1.6 % | 2/3 |
+| `k5_adapt_sr` | 1.163 | 1.156 | -0.6 % | 1/3 |
+| `k5_dtconv2` | 1.151 | 1.135 | -1.4 % | 3/3 |
 
-On the GPU the conversions are 5–8 % of the kernel time and overlap with GEMMs
-on other streams, so cutting them by a quarter gives 1–2 %. On the CPU,
-OmniCast replaces MKL's `dlag2s`/`slag2d` and the scalar stochastic rounding;
-runs with many conversions gain the most (runtime decisions −14 %,
-stochastic rounding −13 %). Earlier, smaller CPU runs (N=8192) are in
-`ab_cpu_skylake_N8192_NB512.txt`; they are noisy at 0.3 s.
+| CPU (36-core Xeon Gold 6140), NB=512, 10 runs | N | baseline median (s) | OmniCast median (s) | paired change [95 % CI] | OmniCast faster |
+|---|---|---|---|---|---|
+| `cpu_k3_band` | 16384 | 1.467 | 1.487 | -0.2 % [-8.3, +13.3] | 5/10 |
+| `cpu_k5_adapt` | 16384 | 1.265 | 1.371 | -2.0 % [-7.0, +14.5] | 6/10 |
+| `cpu_k5_adapt_sr` | 16384 | 1.571 | 1.235 | **-18.8 %** [-25.7, -15.8] | 9/10 |
+| `cpu_k10_runtime` | 16384 | 1.965 | 1.821 | -5.8 % [-19.6, +3.1] | 7/10 |
+| `cpu_k3_band` | 8192 | 0.314 | 0.309 | -0.6 % [-7.4, +5.6] | 6/10 |
+| `cpu_k5_adapt` | 8192 | 0.300 | 0.299 | -1.1 % [-3.8, +2.1] | 6/10 |
+| `cpu_k5_adapt_sr` | 8192 | 0.377 | 0.306 | **-18.0 %** [-20.3, -12.2] | 10/10 |
+| `cpu_k10_runtime` | 8192 | 0.380 | 0.371 | -3.3 % [-11.2, +4.2] | 6/10 |
+
+- **GPU**: conversions are 5–8 % of the kernel time and overlap with GEMMs on
+  other streams, so cutting them by a quarter gives 0–1.6 %. That is about the
+  run-to-run spread (1–3 %). Four of the nine cases were faster in every run,
+  and none was slower by more than the spread.
+- **CPU**: stochastic rounding is 18–19 % faster at both sizes; OmniCast's
+  stochastic rounding is 3–9 times faster than the scalar loop it replaces. The
+  other kinds show no measurable difference: their confidence intervals contain
+  zero. A first 3-run comparison reported −13.6 % for runtime decisions; one
+  outlier run caused it. Those runs are kept in `ab_cpu_skylake_N*_NB512.txt`.
 
 ## Files
 
-- `ab_run.sh`, `ab_cpu.sh`: the A/B scripts; `ab_*.txt`: their outputs.
+- `ab_run.sh`, `ab_cpu.sh`: the A/B scripts; `ab_*.txt`: their outputs (`*_r10.txt`: the
+  10-run CPU comparison); `ab_stats.py`: medians and paired intervals.
 - `leconte_run.sh`, `leconte_hicma.sh`, `hexane_run.sh`: the V100 / H100 runs.
 - The verbose CTest logs (baseline and OmniCast, A100/V100/H100) are outside the
   repository, in `/home/qcao3/hicma-x-omnicast-logs/`.

@@ -44,8 +44,9 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   3-6x faster (coalesced stores); FP32 -> FP16 and the other 2- and 4-byte
   sources up to 2x; GPU stochastic rounding 1.2-1.45x; CPU stochastic rounding
   3-9x; CPU FP64 <-> FP32 tiles 1.1-8x faster than MKL's `dlag2s`/`slag2d`.
-  Conversion kernels take 26 % less GPU time in a mixed-precision Cholesky;
-  CPU mixed-precision factorizations are 3-14 % faster. Details in
+  Conversion kernels take 26 % less GPU time in a mixed-precision Cholesky
+  (the factorization is 0-1.6 % faster); CPU factorizations with stochastic
+  rounding are 18-19 % faster, the other CPU kinds unchanged. Details in
   `docs/omnicast/README.md`.
 - FP16 conversions are available on every CPU (they were Fugaku-only), and
   float -> integer conversions saturate (NaN -> 0) instead of being undefined
