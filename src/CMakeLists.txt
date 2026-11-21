@@ -40,7 +40,6 @@ set(SRC
     core/hicma_parsec_distribution.c
     core/hicma_parsec_decision.c
     core/hicma_parsec_flat_file.c
-    core/hicma_parsec_stochastic_rounding.c
     core/hicma_parsec_datatype_convert.c
     core/hicma_parsec_io.c
     
@@ -159,14 +158,12 @@ if(HICMA_PARSEC_HAVE_CUDA)
     if(ENABLE_CUTLASS)
         list(APPEND SRC 
             core/hicma_parsec.cu 
-            core/hicma_parsec_stochastic_rounding.cu
             core/hamming_distance.cu
         )
         message(STATUS "Adding CUDA files with CUTLASS support")
     else(ENABLE_CUTLASS)
         list(APPEND SRC
             core/hicma_parsec.cu
-            core/hicma_parsec_stochastic_rounding.cu
         )
         message(STATUS "Adding CUDA files")
     endif(ENABLE_CUTLASS)
@@ -176,11 +173,8 @@ endif(HICMA_PARSEC_HAVE_CUDA)
 if(HICMA_PARSEC_HAVE_HIP)
     set_source_files_properties(core/hicma_parsec_hip.cu PROPERTIES LANGUAGE HIP)
     set_source_files_properties(core/hicma_parsec_hip.cu PROPERTIES COMPILE_FLAGS "-x hip")
-    set_source_files_properties(core/hicma_parsec_stochastic_rounding_hip.cu PROPERTIES LANGUAGE HIP)
-    set_source_files_properties(core/hicma_parsec_stochastic_rounding_hip.cu PROPERTIES COMPILE_FLAGS "-x hip")
     list(APPEND SRC
         core/hicma_parsec_hip.cu
-        core/hicma_parsec_stochastic_rounding_hip.cu
     )
     message(STATUS "Adding HIP files")
 endif(HICMA_PARSEC_HAVE_HIP)
@@ -235,7 +229,7 @@ elseif(HICMA_PARSEC_HAVE_HIP)
 endif()
 target_link_libraries(hicma_parsec
     PUBLIC parsec dplasma hcore starsh
-    ${_hicma_dep_scope} LAPACKE::LAPACKE ${_hicma_gpu_libs} ${MPI_C_LIBRARIES} ${MPI_CXX_LIBRARIES} stdc++)
+    ${_hicma_dep_scope} omnicast LAPACKE::LAPACKE ${_hicma_gpu_libs} ${MPI_C_LIBRARIES} ${MPI_CXX_LIBRARIES} stdc++)
 
 # Calls inside the library bind to its own functions. The library exports
 # generic names (parse_arguments, and from STARS-H diff, cube, Gaussian, ...);
@@ -266,6 +260,7 @@ endif(HICMA_PARSEC_HAVE_HIP)
 # Set include directories for the target
 target_include_directories(hicma_parsec PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/omnicast/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/hicma_parsec_compat>
 )

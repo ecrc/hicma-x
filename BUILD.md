@@ -36,6 +36,9 @@ The following dependencies are automatically built as part of the project:
 - **HCORE** - Hierarchical matrix core library
   - Low-rank matrix operations and BLAS kernels for hierarchical matrices
   - **ECRC CMake Modules** - CMake modules for ECRC projects (nested submodule)
+- **OmniCast** - Data-type conversion on CPUs and GPUs (FP64, FP32, FP16, BF16,
+  FP8, integers): every element conversion of HiCMA-X; built with the CUDA or
+  HIP backend that HiCMA-X is configured with
 
 These are managed as Git submodules and will be automatically built when you configure the project.
 

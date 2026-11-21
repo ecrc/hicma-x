@@ -89,6 +89,7 @@ init_submodules() {
         echo "    - ecrc: $(cd stars-h/cmake_modules/ecrc && git rev-parse --short HEAD) ($(cd stars-h/cmake_modules/ecrc && git branch --show-current))"
         echo "  - hcore: $(cd hcore && git rev-parse --short HEAD) ($(cd hcore && git branch --show-current))"
         echo "    - ecrc: $(cd hcore/cmake_modules/ecrc && git rev-parse --short HEAD) ($(cd hcore/cmake_modules/ecrc && git branch --show-current))"
+        echo "  - omnicast: $(cd omnicast && git rev-parse --short HEAD) ($(cd omnicast && git branch --show-current))"
     else
         print_error "Failed to initialize submodules"
         exit 1
@@ -108,6 +109,7 @@ update_submodules() {
         echo "    - ecrc: $(cd stars-h/cmake_modules/ecrc && git rev-parse --short HEAD) ($(cd stars-h/cmake_modules/ecrc && git branch --show-current))"
         echo "  - hcore: $(cd hcore && git rev-parse --short HEAD) ($(cd hcore && git branch --show-current))"
         echo "    - ecrc: $(cd hcore/cmake_modules/ecrc && git rev-parse --short HEAD) ($(cd hcore/cmake_modules/ecrc && git branch --show-current))"
+        echo "  - omnicast: $(cd omnicast && git rev-parse --short HEAD) ($(cd omnicast && git branch --show-current))"
     else
         print_error "Failed to update submodules"
         exit 1

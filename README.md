@@ -46,7 +46,8 @@ HiCMA-X, formerly HiCMA-PaRSEC, i.e., Hierarchical Computations on Manycore Arch
 MPI and a BLAS/LAPACKE that is safe to call from several threads (MKL
 sequential, or a threaded OpenBLAS with `OPENBLAS_NUM_THREADS=1`; a sequential
 OpenBLAS needs `USE_LOCKING=1`) come from the system;
-PaRSEC, DPLASMA, STARS-H and HCORE are built from the submodules.
+PaRSEC, DPLASMA, STARS-H, HCORE and OmniCast (data-type conversions) are
+built from the submodules.
 
 ```bash
 git clone --recursive https://github.com/ecrc/hicma-x.git

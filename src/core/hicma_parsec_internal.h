@@ -922,7 +922,7 @@ static inline int hicma_tile_trsm_bytes(const hicma_parsec_params_t *params, int
  * Layout of an FP8 (E4M3) tile that potrf_dtrsm_send sends to FP8 GEMMs: the
  * operand cublasLtMatmul takes (transposed, zero padded to a square of side
  * hicma_fp8_ld(mb)), followed by the HICMA_FP8_SCALE_FLOATS floats
- * {amax, s, 1/s, 0} of its per-tile scale (see hicma_fp8_scaled_convert_GPU),
+ * {amax, s, 1/s, 0} of its per-tile scale (see hicma_parsec_fp8_operand_GPU),
  * so the scale travels with the tile.
  */
 #define HICMA_FP8_SCALE_FLOATS 4
@@ -1012,7 +1012,7 @@ typedef struct parsec_potrf_stream_workspace_s {
     size_t workspaceSize;                   /**< FP8 workspace size */
     cublasLtMatmulHeuristicResult_t heuristicResultsArray; /**< Heuristic results */
     cublasLtMatmulPreference_t pref;        /**< Matrix multiplication preferences */
-    /* FP8 GEMMs: operands scaled per tile by hicma_fp8_scaled_convert_GPU
+    /* FP8 GEMMs: operands scaled per tile by hicma_parsec_fp8_operand_GPU
      * (or sent so by potrf_dtrsm_send); matmulDesc_scaled reads 1/s_A and
      * 1/s_B from fp8_scale[2] and fp8_scale[6] */
     cublasLtMatmulDesc_t matmulDesc_scaled; /**< matmulDesc with A/B scale pointers */

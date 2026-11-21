@@ -92,12 +92,16 @@ static float hicma_fp16_operand_scale(double fnorm)
     e = !(e < 60.0) ? 60.0 : (e < -60.0 ? -60.0 : e);
     return ldexpf(1.0f, (int)e);
 }
-#define HICMA_D2H_SCALED(m, n, F, ldf, H, ldh, s, st) double2half_scaled_GPU(m, n, F, ldf, H, ldh, s, st)
-#define HICMA_S2H_SCALED(m, n, F, ldf, H, ldh, s, st) float2half_scaled_GPU(m, n, F, ldf, H, ldh, s, st)
+#define HICMA_D2H_SCALED(m, n, F, ldf, H, ldh, s, st) \
+    HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, F, ldf, OMC_FP16, H, ldh, m, n, HICMA_OMC_SCALED(s), st) )
+#define HICMA_S2H_SCALED(m, n, F, ldf, H, ldh, s, st) \
+    HICMA_OMC( omc_gpu_convert_2d(OMC_FP32, F, ldf, OMC_FP16, H, ldh, m, n, HICMA_OMC_SCALED(s), st) )
 #else
 #define hicma_fp16_operand_scale(fnorm) 1.0f
-#define HICMA_D2H_SCALED(m, n, F, ldf, H, ldh, s, st) double2half_GPU(m, n, F, ldf, H, ldh, st)
-#define HICMA_S2H_SCALED(m, n, F, ldf, H, ldh, s, st) float2half_GPU(m, n, F, ldf, H, ldh, st)
+#define HICMA_D2H_SCALED(m, n, F, ldf, H, ldh, s, st) \
+    HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, F, ldf, OMC_FP16, H, ldh, m, n, NULL, st) )
+#define HICMA_S2H_SCALED(m, n, F, ldf, H, ldh, s, st) \
+    HICMA_OMC( omc_gpu_convert_2d(OMC_FP32, F, ldf, OMC_FP16, H, ldh, m, n, NULL, st) )
 #endif
 #endif
 
@@ -1061,11 +1065,8 @@ void hicma_parsec_core_trsm_cpu( parsec_tiled_matrix_t* descA,
         if( DENSE_DP == params_tlr->decisions_send[k*params_tlr->NT+k] ) {
             // Convert double precision T to single precision for computation
 			hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-			if( params_tlr->enable_stochastic_rounding ) {
-				double2float_round_CPU( descA->mb, descA->nb, T, descA->mb, T_s, descA->mb, hicma_parsec_sr_seed(k, k) );
-			} else {
-				LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, T, descA->mb, T_s, descA->mb );
-			}
+			HICMA_OMC( omc_convert_2d(OMC_FP64, T, descA->mb, OMC_FP32, T_s, descA->mb, descA->mb, descA->nb,
+			        HICMA_OMC_SR(params_tlr->enable_stochastic_rounding, hicma_parsec_sr_seed(k, k))) );
 			T_use = T_s;
 		}
 
@@ -1130,7 +1131,7 @@ void hicma_parsec_core_trsm_cpu( parsec_tiled_matrix_t* descA,
         /* Convert triangular matrix T to single precision */
         void *T_s = parsec_private_memory_pop( p_work_full_sp );
         hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-        LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, T, descA->mb, T_s, descA->mb );
+        HICMA_OMC( omc_convert_2d(OMC_FP64, T, descA->mb, OMC_FP32, T_s, descA->mb, descA->mb, descA->nb, NULL) );
 
         // Low-rank single precision TRSM: V <- T^{-1} V (see the DP case)
         CORE_strsm(PlasmaLeft, PlasmaLower, PlasmaNoTrans, PlasmaNonUnit,
@@ -1193,7 +1194,7 @@ void hicma_parsec_core_syrk_cpu( parsec_tiled_matrix_t* descA,
             if( DENSE_DP != params_tlr->decisions[k*descA->lmt+m] ) {
                 A_d = parsec_private_memory_pop( p_work_full_dp );
                 hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-                LAPACKE_slag2d( LAPACK_COL_MAJOR, descA->mb, descA->nb, A, descA->mb, A_d, descA->mb );
+                HICMA_OMC( omc_convert_2d(OMC_FP32, A, descA->mb, OMC_FP64, A_d, descA->mb, descA->mb, descA->nb, NULL) );
             }
 
             CORE_dsyrk(PlasmaLower, PlasmaNoTrans,
@@ -1228,7 +1229,7 @@ void hicma_parsec_core_syrk_cpu( parsec_tiled_matrix_t* descA,
         } else {
             A_d = parsec_private_memory_pop( p_work_uv_dp );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            LAPACKE_slag2d( LAPACK_COL_MAJOR, descA->mb, rank * 2, A, descA->mb, A_d, descA->mb );
+            HICMA_OMC( omc_convert_2d(OMC_FP32, A, descA->mb, OMC_FP64, A_d, descA->mb, descA->mb, rank * 2, NULL) );
             Au = (void *)A_d;
             Av = (void *)A_d + descA->mb * rank * sizeof(double);
         }
@@ -1335,7 +1336,7 @@ void hicma_parsec_core_syrk_runtime_decision_cpu( parsec_tiled_matrix_t* descA,
             if( DENSE_DP != Aprecision ) {
                 A_d = parsec_private_memory_pop( p_work_full_dp );
                 hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-                LAPACKE_slag2d( LAPACK_COL_MAJOR, descA->mb, descA->nb, A, descA->mb, A_d, descA->mb );
+                HICMA_OMC( omc_convert_2d(OMC_FP32, A, descA->mb, OMC_FP64, A_d, descA->mb, descA->mb, descA->nb, NULL) );
             }
 
             CORE_dsyrk(PlasmaLower, PlasmaNoTrans,
@@ -1372,7 +1373,7 @@ void hicma_parsec_core_syrk_runtime_decision_cpu( parsec_tiled_matrix_t* descA,
         } else {
             A_d = parsec_private_memory_pop( p_work_uv_dp );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            LAPACKE_slag2d( LAPACK_COL_MAJOR, descA->mb, rank * 2, A, descA->mb, A_d, descA->mb );
+            HICMA_OMC( omc_convert_2d(OMC_FP32, A, descA->mb, OMC_FP64, A_d, descA->mb, descA->mb, rank * 2, NULL) );
             Au = (void *)A_d;
             Av = (void *)A_d + descA->mb * rank * sizeof(double);
         }
@@ -1521,7 +1522,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_cpu( parsec_tiled_matrix_t* des
         if( DENSE_DP != params_tlr->decisions[k*descA->lmt+m] ) {
             A_d = parsec_private_memory_pop( p_work_full_dp );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            LAPACKE_slag2d( LAPACK_COL_MAJOR, descA->mb, descA->nb, A, descA->mb, A_d, descA->mb );
+            HICMA_OMC( omc_convert_2d(OMC_FP32, A, descA->mb, OMC_FP64, A_d, descA->mb, descA->mb, descA->nb, NULL) );
             A_use = A_d;
         }
 
@@ -1529,7 +1530,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_cpu( parsec_tiled_matrix_t* des
         if( DENSE_DP != params_tlr->decisions[k*descA->lmt+n] ) {
             B_d = parsec_private_memory_pop( p_work_full_dp );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            LAPACKE_slag2d( LAPACK_COL_MAJOR, descA->mb, descA->nb, B, descA->mb, B_d, descA->mb );
+            HICMA_OMC( omc_convert_2d(OMC_FP32, B, descA->mb, OMC_FP64, B_d, descA->mb, descA->mb, descA->nb, NULL) );
             B_use = B_d;
         }
 
@@ -1552,11 +1553,8 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_cpu( parsec_tiled_matrix_t* des
         if( DENSE_DP == params_tlr->decisions[k*descA->lmt+m] ) {
             A_s = parsec_private_memory_pop( p_work_full_sp );
 			hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-			if( params_tlr->enable_stochastic_rounding ) {
-				double2float_round_CPU( descA->mb, descA->nb, A, descA->mb, A_s, descA->mb, hicma_parsec_sr_seed(m, k) );
-			} else {
-				LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, A, descA->mb, A_s, descA->mb );
-			}
+			HICMA_OMC( omc_convert_2d(OMC_FP64, A, descA->mb, OMC_FP32, A_s, descA->mb, descA->mb, descA->nb,
+			        HICMA_OMC_SR(params_tlr->enable_stochastic_rounding, hicma_parsec_sr_seed(m, k))) );
 			A_use = A_s;
 		}
 
@@ -1564,11 +1562,8 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_cpu( parsec_tiled_matrix_t* des
 		if( DENSE_DP == params_tlr->decisions[k*descA->lmt+n] ) {
 			B_s = parsec_private_memory_pop( p_work_full_sp );
 			hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-			if( params_tlr->enable_stochastic_rounding ) {
-				double2float_round_CPU( descA->mb, descA->nb, B, descA->mb, B_s, descA->mb, hicma_parsec_sr_seed(n, k) );
-			} else {
-				LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, B, descA->mb, B_s, descA->mb );
-			}
+			HICMA_OMC( omc_convert_2d(OMC_FP64, B, descA->mb, OMC_FP32, B_s, descA->mb, descA->mb, descA->nb,
+			        HICMA_OMC_SR(params_tlr->enable_stochastic_rounding, hicma_parsec_sr_seed(n, k))) );
 			B_use = B_s;
 		}
 
@@ -1630,12 +1625,12 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_cpu( parsec_tiled_matrix_t* des
             //hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
             //LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, A, descA->mb, A_s, descA->mb );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            convert_d2h_binary_CPU( A_h, A, descA->mb, descA->nb);
+            HICMA_OMC( omc_convert(OMC_FP64, A, OMC_FP16, A_h, (size_t)(descA->mb) * (descA->nb), NULL) );
             A_use = A_h;
         } else {
             //A_h = parsec_private_memory_pop( p_work_full_hp );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            convert_s2h_binary_CPU( A_h, A, descA->mb, descA->nb);
+            HICMA_OMC( omc_convert(OMC_FP32, A, OMC_FP16, A_h, (size_t)(descA->mb) * (descA->nb), NULL) );
             A_use = A_h;
         }
 
@@ -1646,19 +1641,19 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_cpu( parsec_tiled_matrix_t* des
             //hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
             //LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, B, descA->mb, B_s, descA->mb );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            convert_d2h_binary_CPU( B_h, B, descA->mb, descA->nb);
+            HICMA_OMC( omc_convert(OMC_FP64, B, OMC_FP16, B_h, (size_t)(descA->mb) * (descA->nb), NULL) );
             B_use = B_h;
         } else {
             //B_h = parsec_private_memory_pop( p_work_full_hp );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            convert_s2h_binary_CPU( B_h, B, descA->mb, descA->nb);
+            HICMA_OMC( omc_convert(OMC_FP32, B, OMC_FP16, B_h, (size_t)(descA->mb) * (descA->nb), NULL) );
             B_use = B_h;
         }
 
         /* First local GEMM convert C from single to half */
         if( 0 == k ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            convert_s2h_unary_CPU( C, descA->mb, descA->nb );
+            HICMA_OMC( omc_convert_inplace(OMC_FP32, OMC_FP16, C, (size_t)(descA->mb) * (descA->nb), NULL) );
         }
 
         /* Call hgemm */
@@ -1671,7 +1666,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_cpu( parsec_tiled_matrix_t* des
         /* After last local GEMM convert C from half to single */
         if( n-1 == k ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            convert_h2s_unary_CPU( C, descA->mb, descA->nb );
+            HICMA_OMC( omc_convert_inplace(OMC_FP16, OMC_FP32, C, (size_t)(descA->mb) * (descA->nb), NULL) );
         }
 
         parsec_private_memory_push(p_work_full_hp, A_h);
@@ -1789,7 +1784,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
         if( DENSE_DP != Aprecision ) {
             A_d = parsec_private_memory_pop( p_work_full_dp );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            LAPACKE_slag2d( LAPACK_COL_MAJOR, descA->mb, descA->nb, A, descA->mb, A_d, descA->mb );
+            HICMA_OMC( omc_convert_2d(OMC_FP32, A, descA->mb, OMC_FP64, A_d, descA->mb, descA->mb, descA->nb, NULL) );
             A_use = A_d;
         }
 
@@ -1798,14 +1793,14 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
         if( DENSE_DP != Bprecision ) {
             B_d = parsec_private_memory_pop( p_work_full_dp );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            LAPACKE_slag2d( LAPACK_COL_MAJOR, descA->mb, descA->nb, B, descA->mb, B_d, descA->mb );
+            HICMA_OMC( omc_convert_2d(OMC_FP32, B, descA->mb, OMC_FP64, B_d, descA->mb, descA->mb, descA->nb, NULL) );
             B_use = B_d;
         }
 
         /* Convert datatype, C, in place */
         if( DENSE_DP != params_tlr->decisions[n*descA->lmt+m] ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            convert_s2d_unary_CPU(C, descA->mb, descA->nb);
+            HICMA_OMC( omc_convert_inplace(OMC_FP32, OMC_FP64, C, (size_t)(descA->mb) * (descA->nb), NULL) );
         }
 
         CORE_dgemm(PlasmaNoTrans, PlasmaTrans,
@@ -1832,7 +1827,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
             params_tlr->decisions[n*descA->lmt+m] = DENSE_DP;
         } else {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            convert_d2s_unary_CPU(C, descA->mb, descA->nb);
+            HICMA_OMC( omc_convert_inplace(OMC_FP64, OMC_FP32, C, (size_t)(descA->mb) * (descA->nb), NULL) );
             params_tlr->decisions[n*descA->lmt+m] = DENSE_SP;
         }
 #endif
@@ -1843,7 +1838,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
         if( DENSE_DP == Aprecision ) {
             A_s = parsec_private_memory_pop( p_work_full_sp );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, A, descA->mb, A_s, descA->mb );
+            HICMA_OMC( omc_convert_2d(OMC_FP64, A, descA->mb, OMC_FP32, A_s, descA->mb, descA->mb, descA->nb, NULL) );
             A_use = A_s;
         }
 
@@ -1851,7 +1846,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
         if( DENSE_DP == Bprecision ) {
             B_s = parsec_private_memory_pop( p_work_full_sp );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, B, descA->mb, B_s, descA->mb );
+            HICMA_OMC( omc_convert_2d(OMC_FP64, B, descA->mb, OMC_FP32, B_s, descA->mb, descA->mb, descA->nb, NULL) );
             B_use = B_s;
         }
 
@@ -1867,7 +1862,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
         /* For the first GEMM */
         //if( DENSE_DP != params_tlr->decisions[n*descA->lmt+m] ) {
         //    hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-        //    convert_s2d_unary_CPU(C, descA->mb, descA->nb);
+        //    HICMA_OMC( omc_convert_inplace(OMC_FP32, OMC_FP64, C, (size_t)(descA->mb) * (descA->nb), NULL) );
         //}
 
         if( DENSE_DP == params_tlr->decisions[n*descA->lmt+m] ) {
@@ -1920,7 +1915,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
                 params_tlr->decisions[n*descA->lmt+m] = DENSE_DP;
             } else {
                 hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-                convert_d2s_unary_CPU(C, descA->mb, descA->nb);
+                HICMA_OMC( omc_convert_inplace(OMC_FP64, OMC_FP32, C, (size_t)(descA->mb) * (descA->nb), NULL) );
                 params_tlr->decisions[n*descA->lmt+m] = DENSE_SP;
             }
 
@@ -1938,7 +1933,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
             hicma_parsec_get_precision_tile(params_tlr, &updated_decision, Cnorm, m, n);
             if(DENSE_DP == updated_decision) {
                 hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-                convert_s2d_unary_CPU(C, descA->mb, descA->nb);
+                HICMA_OMC( omc_convert_inplace(OMC_FP32, OMC_FP64, C, (size_t)(descA->mb) * (descA->nb), NULL) );
                 params_tlr->decisions[n*descA->lmt+m] = DENSE_DP;
             } else {
                 params_tlr->decisions[n*descA->lmt+m] = DENSE_SP;
@@ -1979,7 +1974,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
         /* For the first GEMM */
         if( DENSE_DP != params_tlr->decisions[n*descA->lmt+m] ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            convert_s2d_unary_CPU(C, descA->mb, descA->nb);
+            HICMA_OMC( omc_convert_inplace(OMC_FP32, OMC_FP64, C, (size_t)(descA->mb) * (descA->nb), NULL) );
         }
 
         for(int j = 0; j < descA->nb; j++) {
@@ -2015,7 +2010,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
                 params_tlr->decisions[n*descA->lmt+m] = DENSE_DP;
             } else {
                 hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-                convert_d2s_unary_CPU(C, descA->mb, descA->nb);
+                HICMA_OMC( omc_convert_inplace(OMC_FP64, OMC_FP32, C, (size_t)(descA->mb) * (descA->nb), NULL) );
                 params_tlr->decisions[n*descA->lmt+m] = DENSE_SP;
             }
         } else {
@@ -2031,7 +2026,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
             hicma_parsec_get_precision_tile(params_tlr, &updated_decision, Cnorm, m, n);
             if(DENSE_DP == updated_decision) {
                 hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-                convert_s2d_unary_CPU(C, descA->mb, descA->nb);
+                HICMA_OMC( omc_convert_inplace(OMC_FP32, OMC_FP64, C, (size_t)(descA->mb) * (descA->nb), NULL) );
                 params_tlr->decisions[n*descA->lmt+m] = DENSE_DP;
             } else {
                 params_tlr->decisions[n*descA->lmt+m] = DENSE_SP;
@@ -2053,22 +2048,22 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
         /* Convert datatype, A */
         if( DENSE_DP == Aprecision ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            convert_d2h_binary_CPU( A_h, A, descA->mb, descA->nb);
+            HICMA_OMC( omc_convert(OMC_FP64, A, OMC_FP16, A_h, (size_t)(descA->mb) * (descA->nb), NULL) );
             A_use = A_h;
         } else {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            convert_s2h_binary_CPU( A_h, A, descA->mb, descA->nb);
+            HICMA_OMC( omc_convert(OMC_FP32, A, OMC_FP16, A_h, (size_t)(descA->mb) * (descA->nb), NULL) );
             A_use = A_h;
         }
 
         /* Convert datatype, B */
         if( DENSE_DP == Bprecision ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            convert_d2h_binary_CPU( B_h, B, descA->mb, descA->nb);
+            HICMA_OMC( omc_convert(OMC_FP64, B, OMC_FP16, B_h, (size_t)(descA->mb) * (descA->nb), NULL) );
             B_use = B_h;
         } else {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            convert_s2h_binary_CPU( B_h, B, descA->mb, descA->nb);
+            HICMA_OMC( omc_convert(OMC_FP32, B, OMC_FP16, B_h, (size_t)(descA->mb) * (descA->nb), NULL) );
             B_use = B_h;
         }
 
@@ -2162,7 +2157,7 @@ void hicma_parsec_core_gemm_denseC_lrA_denseB_cpu( parsec_tiled_matrix_t* descA,
         if( LOW_RANK_SP == params_tlr->decisions[k*descA->lmt+m] ) {
             A_d = parsec_private_memory_pop( p_work_uv_dp );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            LAPACKE_slag2d( LAPACK_COL_MAJOR, descA->mb, Arank * 2, A, descA->mb, A_d, descA->mb );
+            HICMA_OMC( omc_convert_2d(OMC_FP32, A, descA->mb, OMC_FP64, A_d, descA->mb, descA->mb, Arank * 2, NULL) );
             A_use = A_d;
         }
 
@@ -2170,7 +2165,7 @@ void hicma_parsec_core_gemm_denseC_lrA_denseB_cpu( parsec_tiled_matrix_t* descA,
         if( DENSE_SP == params_tlr->decisions[k*descA->lmt+n] || DENSE_HP == params_tlr->decisions[k*descA->lmt+n] || DENSE_FP8 == params_tlr->decisions[k*descA->lmt+n] ) {
             B_d = parsec_private_memory_pop( p_work_full_dp );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            LAPACKE_slag2d( LAPACK_COL_MAJOR, descA->mb, descA->nb, B, descA->mb, B_d, descA->mb );
+            HICMA_OMC( omc_convert_2d(OMC_FP32, B, descA->mb, OMC_FP64, B_d, descA->mb, descA->mb, descA->nb, NULL) );
             B_use = B_d;
         }
 
@@ -2204,7 +2199,7 @@ void hicma_parsec_core_gemm_denseC_lrA_denseB_cpu( parsec_tiled_matrix_t* descA,
         if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+m] ) {
             A_s = parsec_private_memory_pop( p_work_uv_sp );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, Arank * 2, A, descA->mb, A_s, descA->mb );
+            HICMA_OMC( omc_convert_2d(OMC_FP64, A, descA->mb, OMC_FP32, A_s, descA->mb, descA->mb, Arank * 2, NULL) );
             A_use = A_s;
         }
 
@@ -2212,7 +2207,7 @@ void hicma_parsec_core_gemm_denseC_lrA_denseB_cpu( parsec_tiled_matrix_t* descA,
         if( DENSE_DP == params_tlr->decisions[k*descA->lmt+n] ) {
             B_s = parsec_private_memory_pop( p_work_full_sp );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, B, descA->mb, B_s, descA->mb );
+            HICMA_OMC( omc_convert_2d(OMC_FP64, B, descA->mb, OMC_FP32, B_s, descA->mb, descA->mb, descA->nb, NULL) );
             B_use = B_s;
         }
 
@@ -2284,14 +2279,14 @@ void hicma_parsec_core_gemm_denseC_lrA_denseB_cpu( parsec_tiled_matrix_t* descA,
             A_s = parsec_private_memory_pop( p_work_full_sp );
             A_h = parsec_private_memory_pop( p_work_full_hp );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, Arank * 2, A, descA->mb, A_s, descA->mb );
+            HICMA_OMC( omc_convert_2d(OMC_FP64, A, descA->mb, OMC_FP32, A_s, descA->mb, descA->mb, Arank * 2, NULL) );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            convert_s2h_binary_CPU( A_h, A_s, descA->mb, Arank * 2);
+            HICMA_OMC( omc_convert(OMC_FP32, A_s, OMC_FP16, A_h, (size_t)(descA->mb) * (Arank * 2), NULL) );
             A_use = A_h;
         } else {
             A_h = parsec_private_memory_pop( p_work_full_hp );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            convert_s2h_binary_CPU( A_h, A, descA->mb, Arank * 2);
+            HICMA_OMC( omc_convert(OMC_FP32, A, OMC_FP16, A_h, (size_t)(descA->mb) * (Arank * 2), NULL) );
             A_use = A_h;
         }
 
@@ -2300,14 +2295,14 @@ void hicma_parsec_core_gemm_denseC_lrA_denseB_cpu( parsec_tiled_matrix_t* descA,
             B_s = parsec_private_memory_pop( p_work_full_sp );
             B_h = parsec_private_memory_pop( p_work_full_hp );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, B, descA->mb, B_s, descA->mb );
+            HICMA_OMC( omc_convert_2d(OMC_FP64, B, descA->mb, OMC_FP32, B_s, descA->mb, descA->mb, descA->nb, NULL) );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            convert_s2h_binary_CPU( B_h, B_s, descA->mb, descA->nb);
+            HICMA_OMC( omc_convert(OMC_FP32, B_s, OMC_FP16, B_h, (size_t)(descA->mb) * (descA->nb), NULL) );
             B_use = B_h;
         } else {
             B_h = parsec_private_memory_pop( p_work_full_hp );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            convert_s2h_binary_CPU( B_h, B, descA->mb, descA->nb);
+            HICMA_OMC( omc_convert(OMC_FP32, B, OMC_FP16, B_h, (size_t)(descA->mb) * (descA->nb), NULL) );
             B_use = B_h;
         }
 
@@ -2318,7 +2313,7 @@ void hicma_parsec_core_gemm_denseC_lrA_denseB_cpu( parsec_tiled_matrix_t* descA,
         /* First local GEMM convert C from single to half */
         if( 0 == k ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            convert_s2h_unary_CPU( C, descA->mb, descA->nb );
+            HICMA_OMC( omc_convert_inplace(OMC_FP32, OMC_FP16, C, (size_t)(descA->mb) * (descA->nb), NULL) );
         }
 
         /* tmp_mbr = trans(Av) * trans(B) */
@@ -2338,7 +2333,7 @@ void hicma_parsec_core_gemm_denseC_lrA_denseB_cpu( parsec_tiled_matrix_t* descA,
         /* After last local GEMM convert C from half to single */
         if( n-1 == k ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            convert_h2s_unary_CPU( C, descA->mb, descA->nb );
+            HICMA_OMC( omc_convert_inplace(OMC_FP16, OMC_FP32, C, (size_t)(descA->mb) * (descA->nb), NULL) );
         }
 
         /* Push back to mempool */
@@ -2438,7 +2433,7 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_cpu( parsec_tiled_matrix_t* descA,
         if( LOW_RANK_SP == params_tlr->decisions[k*descA->lmt+m] ) {
             A_d = parsec_private_memory_pop( p_work_uv_dp );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            LAPACKE_slag2d( LAPACK_COL_MAJOR, descA->mb, Arank * 2, A, descA->mb, A_d, descA->mb );
+            HICMA_OMC( omc_convert_2d(OMC_FP32, A, descA->mb, OMC_FP64, A_d, descA->mb, descA->mb, Arank * 2, NULL) );
             A_use = A_d;
         }
 
@@ -2446,7 +2441,7 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_cpu( parsec_tiled_matrix_t* descA,
         if( LOW_RANK_SP == params_tlr->decisions[k*descA->lmt+n] ) {
             B_d = parsec_private_memory_pop( p_work_uv_dp );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            LAPACKE_slag2d( LAPACK_COL_MAJOR, descA->mb, Brank * 2, B, descA->mb, B_d, descA->mb );
+            HICMA_OMC( omc_convert_2d(OMC_FP32, B, descA->mb, OMC_FP64, B_d, descA->mb, descA->mb, Brank * 2, NULL) );
             B_use = B_d;
         }
 
@@ -2506,7 +2501,7 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_cpu( parsec_tiled_matrix_t* descA,
         if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+m] ) {
             A_s = parsec_private_memory_pop( p_work_uv_sp );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, Arank * 2, A, descA->mb, A_s, descA->mb );
+            HICMA_OMC( omc_convert_2d(OMC_FP64, A, descA->mb, OMC_FP32, A_s, descA->mb, descA->mb, Arank * 2, NULL) );
             A_use = A_s;
         }
 
@@ -2514,7 +2509,7 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_cpu( parsec_tiled_matrix_t* descA,
         if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+n] ) {
             B_s = parsec_private_memory_pop( p_work_uv_sp );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, Brank * 2, B, descA->mb, B_s, descA->mb );
+            HICMA_OMC( omc_convert_2d(OMC_FP64, B, descA->mb, OMC_FP32, B_s, descA->mb, descA->mb, Brank * 2, NULL) );
             B_use = B_s;
         }
 
@@ -2635,14 +2630,14 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_cpu( parsec_tiled_matrix_t* descA,
             A_s = parsec_private_memory_pop( p_work_full_sp );
             A_h = parsec_private_memory_pop( p_work_full_hp );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, Arank * 2, A, descA->mb, A_s, descA->mb );
+            HICMA_OMC( omc_convert_2d(OMC_FP64, A, descA->mb, OMC_FP32, A_s, descA->mb, descA->mb, Arank * 2, NULL) );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            convert_s2h_binary_CPU( A_h, A_s, descA->mb, Arank * 2);
+            HICMA_OMC( omc_convert(OMC_FP32, A_s, OMC_FP16, A_h, (size_t)(descA->mb) * (Arank * 2), NULL) );
             A_use = A_h;
         } else {
             A_h = parsec_private_memory_pop( p_work_full_hp );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            convert_s2h_binary_CPU( A_h, A, descA->mb, Arank * 2);
+            HICMA_OMC( omc_convert(OMC_FP32, A, OMC_FP16, A_h, (size_t)(descA->mb) * (Arank * 2), NULL) );
             A_use = A_h;
         }
 
@@ -2651,14 +2646,14 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_cpu( parsec_tiled_matrix_t* descA,
             B_s = parsec_private_memory_pop( p_work_full_sp );
             B_h = parsec_private_memory_pop( p_work_full_hp );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, Brank * 2, B, descA->mb, B_s, descA->mb );
+            HICMA_OMC( omc_convert_2d(OMC_FP64, B, descA->mb, OMC_FP32, B_s, descA->mb, descA->mb, Brank * 2, NULL) );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            convert_s2h_binary_CPU( B_h, B_s, descA->mb, Brank * 2);
+            HICMA_OMC( omc_convert(OMC_FP32, B_s, OMC_FP16, B_h, (size_t)(descA->mb) * (Brank * 2), NULL) );
             B_use = B_h;
         } else {
             B_h = parsec_private_memory_pop( p_work_full_hp );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            convert_s2h_binary_CPU( B_h, B, descA->mb, Brank * 2);
+            HICMA_OMC( omc_convert(OMC_FP32, B, OMC_FP16, B_h, (size_t)(descA->mb) * (Brank * 2), NULL) );
             B_use = B_h;
         }
 
@@ -2671,7 +2666,7 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_cpu( parsec_tiled_matrix_t* descA,
         /* First local GEMM convert C from single to half */
         if( 0 == k ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            convert_s2h_unary_CPU( C, descA->mb, descA->nb );
+            HICMA_OMC( omc_convert_inplace(OMC_FP32, OMC_FP16, C, (size_t)(descA->mb) * (descA->nb), NULL) );
         }
 
         /* tmp_rr = trans(Av) * Bv */
@@ -2714,7 +2709,7 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_cpu( parsec_tiled_matrix_t* descA,
         /* After last local GEMM convert C from half to single */
         if( n-1 == k ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            convert_h2s_unary_CPU( C, descA->mb, descA->nb );
+            HICMA_OMC( omc_convert_inplace(OMC_FP16, OMC_FP32, C, (size_t)(descA->mb) * (descA->nb), NULL) );
         }
 
         /* Push back to mempool */
@@ -2798,7 +2793,7 @@ int hicma_parsec_core_gemm_lrC_lrA_denseB_cpu( parsec_tiled_matrix_t* descA,
         if( LOW_RANK_SP == params_tlr->decisions[k*descA->lmt+m] ) {
             A_d = parsec_private_memory_pop( p_work_uv_dp );
             hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
-            LAPACKE_slag2d( LAPACK_COL_MAJOR, descA->mb, Arank * 2, A, descA->mb, A_d, descA->mb );
+            HICMA_OMC( omc_convert_2d(OMC_FP32, A, descA->mb, OMC_FP64, A_d, descA->mb, descA->mb, Arank * 2, NULL) );
             A_use = A_d;
         }
 
@@ -2806,7 +2801,7 @@ int hicma_parsec_core_gemm_lrC_lrA_denseB_cpu( parsec_tiled_matrix_t* descA,
         if( DENSE_SP == params_tlr->decisions[k*descA->lmt+n] || DENSE_HP == params_tlr->decisions[k*descA->lmt+n] || DENSE_FP8 == params_tlr->decisions[k*descA->lmt+n] ) {
             B_d = parsec_private_memory_pop( p_work_full_dp );
             hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
-            LAPACKE_slag2d( LAPACK_COL_MAJOR, descA->mb, descA->nb, B, descA->mb, B_d, descA->mb );
+            HICMA_OMC( omc_convert_2d(OMC_FP32, B, descA->mb, OMC_FP64, B_d, descA->mb, descA->mb, descA->nb, NULL) );
             B_use = B_d;
         }
 
@@ -2933,7 +2928,7 @@ int hicma_parsec_core_gemm_lrC_lrA_denseB_cpu( parsec_tiled_matrix_t* descA,
         if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+m] ) {
             A_s = parsec_private_memory_pop( p_work_uv_sp );
             hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
-            LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, Arank * 2, A, descA->mb, A_s, descA->mb );
+            HICMA_OMC( omc_convert_2d(OMC_FP64, A, descA->mb, OMC_FP32, A_s, descA->mb, descA->mb, Arank * 2, NULL) );
             A_use = A_s;
         }
 
@@ -2941,7 +2936,7 @@ int hicma_parsec_core_gemm_lrC_lrA_denseB_cpu( parsec_tiled_matrix_t* descA,
         if( DENSE_DP == params_tlr->decisions[k*descA->lmt+n] ) {
             B_s = parsec_private_memory_pop( p_work_full_sp );
             hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
-            LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, B, descA->mb, B_s, descA->mb );
+            HICMA_OMC( omc_convert_2d(OMC_FP64, B, descA->mb, OMC_FP32, B_s, descA->mb, descA->mb, descA->nb, NULL) );
             B_use = B_s;
         }
 
@@ -3140,7 +3135,7 @@ int hicma_parsec_core_gemm_lrC_lrA_lrB_cpu( parsec_tiled_matrix_t* descA,
         if( LOW_RANK_SP == params_tlr->decisions[k*descA->lmt+m] ) {
             A_d = parsec_private_memory_pop( p_work_uv_dp );
             hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
-            LAPACKE_slag2d( LAPACK_COL_MAJOR, descA->mb, Arank * 2, A, descA->mb, A_d, descA->mb );
+            HICMA_OMC( omc_convert_2d(OMC_FP32, A, descA->mb, OMC_FP64, A_d, descA->mb, descA->mb, Arank * 2, NULL) );
             A_use = A_d;
         }
 
@@ -3148,7 +3143,7 @@ int hicma_parsec_core_gemm_lrC_lrA_lrB_cpu( parsec_tiled_matrix_t* descA,
         if( LOW_RANK_SP == params_tlr->decisions[k*descA->lmt+n] ) {
             B_d = parsec_private_memory_pop( p_work_uv_dp );
             hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
-            LAPACKE_slag2d( LAPACK_COL_MAJOR, descA->mb, Brank * 2, B, descA->mb, B_d, descA->mb );
+            HICMA_OMC( omc_convert_2d(OMC_FP32, B, descA->mb, OMC_FP64, B_d, descA->mb, descA->mb, Brank * 2, NULL) );
             B_use = B_d;
         }
 
@@ -3279,7 +3274,7 @@ int hicma_parsec_core_gemm_lrC_lrA_lrB_cpu( parsec_tiled_matrix_t* descA,
         if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+m] ) {
             A_s = parsec_private_memory_pop( p_work_uv_sp );
             hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
-            LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, Arank * 2, A, descA->mb, A_s, descA->mb );
+            HICMA_OMC( omc_convert_2d(OMC_FP64, A, descA->mb, OMC_FP32, A_s, descA->mb, descA->mb, Arank * 2, NULL) );
             A_use = A_s;
         }
 
@@ -3287,7 +3282,7 @@ int hicma_parsec_core_gemm_lrC_lrA_lrB_cpu( parsec_tiled_matrix_t* descA,
         if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+n] ) {
             B_s = parsec_private_memory_pop( p_work_uv_sp );
             hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
-            LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, Brank * 2, B, descA->mb, B_s, descA->mb );
+            HICMA_OMC( omc_convert_2d(OMC_FP64, B, descA->mb, OMC_FP32, B_s, descA->mb, descA->mb, Brank * 2, NULL) );
             B_use = B_s;
         }
 
@@ -3700,11 +3695,8 @@ void hicma_parsec_core_trsm_gpu( parsec_tiled_matrix_t* descA,
 
             /* Convert datatype */
 			hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-			if( params_tlr->enable_stochastic_rounding ) {
-				double2float_round_GPU( descA->mb, descA->nb, T, descA->mb, T_s, descA->mb, hicma_parsec_sr_seed(k, k), cuda_stream->cuda_stream );
-			} else {
-				double2float_GPU( descA->mb, descA->nb, T, descA->mb, T_s, descA->mb, cuda_stream->cuda_stream );
-			}
+			HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, T, descA->mb, OMC_FP32, T_s, descA->mb, descA->mb, descA->nb,
+			        HICMA_OMC_SR(params_tlr->enable_stochastic_rounding, hicma_parsec_sr_seed(k, k)), cuda_stream->cuda_stream) );
 		}
 
 		status = cublasStrsm( handle, CUBLAS_SIDE_RIGHT, CUBLAS_FILL_MODE_LOWER,
@@ -3789,7 +3781,7 @@ void hicma_parsec_core_syrk_gpu( parsec_tiled_matrix_t* descA,
 
                 /* Convert datatype */
                 hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-                float2double_GPU( descA->mb, descA->nb, A, descA->mb, A_d, descA->mb, cuda_stream->cuda_stream );
+                HICMA_OMC( omc_gpu_convert_2d(OMC_FP32, A, descA->mb, OMC_FP64, A_d, descA->mb, descA->mb, descA->nb, NULL, cuda_stream->cuda_stream) );
             }
 
             status = cublasDsyrk(handle, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_N,
@@ -3820,7 +3812,7 @@ void hicma_parsec_core_syrk_gpu( parsec_tiled_matrix_t* descA,
 
             /* Convert datatype */
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            float2double_GPU( descA->mb, Arank * 2, A, descA->mb, A_d, descA->mb, cuda_stream->cuda_stream );
+            HICMA_OMC( omc_gpu_convert_2d(OMC_FP32, A, descA->mb, OMC_FP64, A_d, descA->mb, descA->mb, Arank * 2, NULL, cuda_stream->cuda_stream) );
 
             Au = (void *)A_d;
             Av = (void *)A_d + descA->mb * Arank * sizeof(double);
@@ -3930,7 +3922,7 @@ void hicma_parsec_core_syrk_runtime_decision_gpu( parsec_tiled_matrix_t* descA,
 
                 /* Convert datatype */
                 hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-                float2double_GPU( descA->mb, descA->nb, A, descA->mb, A_d, descA->mb, cuda_stream->cuda_stream );
+                HICMA_OMC( omc_gpu_convert_2d(OMC_FP32, A, descA->mb, OMC_FP64, A_d, descA->mb, descA->mb, descA->nb, NULL, cuda_stream->cuda_stream) );
             }
 
             status = cublasDsyrk(handle, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_N,
@@ -4082,14 +4074,14 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
         /* Convert datatype, A */
         if( DENSE_DP != params_tlr->decisions_send[k*descA->lmt+m] ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            float2double_GPU( descA->mb, descA->nb, A, descA->mb, A_d, descA->mb, cuda_stream->cuda_stream );
+            HICMA_OMC( omc_gpu_convert_2d(OMC_FP32, A, descA->mb, OMC_FP64, A_d, descA->mb, descA->mb, descA->nb, NULL, cuda_stream->cuda_stream) );
             A_use = A_d;
         }
 
         /* Convert datatype, B */
         if( DENSE_DP != params_tlr->decisions_send[k*descA->lmt+n] ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            float2double_GPU( descA->mb, descA->nb, B, descA->mb, B_d, descA->mb, cuda_stream->cuda_stream );
+            HICMA_OMC( omc_gpu_convert_2d(OMC_FP32, B, descA->mb, OMC_FP64, B_d, descA->mb, descA->mb, descA->nb, NULL, cuda_stream->cuda_stream) );
             B_use = B_d;
         }
 
@@ -4109,30 +4101,24 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
         /* Convert datatype, A */
         if( DENSE_DP == params_tlr->decisions_send[k*descA->lmt+m] ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            if( params_tlr->enable_stochastic_rounding ) {
-                double2float_round_GPU( descA->mb, descA->nb, A, descA->mb, A_s, descA->mb, hicma_parsec_sr_seed(m, k), cuda_stream->cuda_stream );
-            } else {
-                double2float_GPU( descA->mb, descA->nb, A, descA->mb, A_s, descA->mb, cuda_stream->cuda_stream );
-            }
+            HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, A, descA->mb, OMC_FP32, A_s, descA->mb, descA->mb, descA->nb,
+                    HICMA_OMC_SR(params_tlr->enable_stochastic_rounding, hicma_parsec_sr_seed(m, k)), cuda_stream->cuda_stream) );
             A_use = A_s;
         } else if( DENSE_HP == params_tlr->decisions_send[k*descA->lmt+m] ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            half2float_GPU( descA->mb, descA->nb, A, descA->mb, A_s, descA->mb, cuda_stream->cuda_stream );
+            HICMA_OMC( omc_gpu_convert_2d(OMC_FP16, A, descA->mb, OMC_FP32, A_s, descA->mb, descA->mb, descA->nb, NULL, cuda_stream->cuda_stream) );
             A_use = A_s;
         }
 
         /* Convert datatype, B */
         if( DENSE_DP == params_tlr->decisions_send[k*descA->lmt+n] ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            if( params_tlr->enable_stochastic_rounding ) {
-                double2float_round_GPU( descA->mb, descA->nb, B, descA->mb, B_s, descA->mb, hicma_parsec_sr_seed(n, k), cuda_stream->cuda_stream );
-            } else {
-                double2float_GPU( descA->mb, descA->nb, B, descA->mb, B_s, descA->mb, cuda_stream->cuda_stream );
-            }
+            HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, B, descA->mb, OMC_FP32, B_s, descA->mb, descA->mb, descA->nb,
+                    HICMA_OMC_SR(params_tlr->enable_stochastic_rounding, hicma_parsec_sr_seed(n, k)), cuda_stream->cuda_stream) );
             B_use = B_s;
         } else if( DENSE_HP == params_tlr->decisions_send[k*descA->lmt+n] ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            half2float_GPU( descA->mb, descA->nb, B, descA->mb, B_s, descA->mb, cuda_stream->cuda_stream );
+            HICMA_OMC( omc_gpu_convert_2d(OMC_FP16, B, descA->mb, OMC_FP32, B_s, descA->mb, descA->mb, descA->nb, NULL, cuda_stream->cuda_stream) );
             B_use = B_s;
         }
 
@@ -4157,38 +4143,26 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
                     /* Convert datatype, A */
                     if( DENSE_DP == params_tlr->decisions_send[k*descA->lmt+m] ) {
                         hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-                        if( params_tlr->enable_stochastic_rounding ) {
-                            double2half_round_GPU( descA->mb, descA->nb, A, descA->mb, A_h, descA->mb, hicma_parsec_sr_seed(m, k), cuda_stream->cuda_stream );
-                        } else {
-                            double2half_GPU( descA->mb, descA->nb, A, descA->mb, A_h, descA->mb, cuda_stream->cuda_stream );
-                        }
+                        HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, A, descA->mb, OMC_FP16, A_h, descA->mb, descA->mb, descA->nb,
+                                HICMA_OMC_SR(params_tlr->enable_stochastic_rounding, hicma_parsec_sr_seed(m, k)), cuda_stream->cuda_stream) );
                         A_use = A_h;
                     } else if( DENSE_SP == params_tlr->decisions_send[k*descA->lmt+m] ) {
                         hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-                        if( params_tlr->enable_stochastic_rounding ) {
-                            float2half_round_GPU( descA->mb, descA->nb, A, descA->mb, A_h, descA->mb, hicma_parsec_sr_seed(m, k), cuda_stream->cuda_stream );
-                        } else {
-                            float2half_GPU( descA->mb, descA->nb, A, descA->mb, A_h, descA->mb, cuda_stream->cuda_stream );
-                        }
+                        HICMA_OMC( omc_gpu_convert_2d(OMC_FP32, A, descA->mb, OMC_FP16, A_h, descA->mb, descA->mb, descA->nb,
+                                HICMA_OMC_SR(params_tlr->enable_stochastic_rounding, hicma_parsec_sr_seed(m, k)), cuda_stream->cuda_stream) );
                         A_use = A_h;
                     }
 
                     /* Convert datatype, B */
                     if( DENSE_DP == params_tlr->decisions_send[k*descA->lmt+n] ) {
                         hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-                        if( params_tlr->enable_stochastic_rounding ) {
-                            double2half_round_GPU( descA->mb, descA->nb, B, descA->mb, B_h, descA->mb, hicma_parsec_sr_seed(n, k), cuda_stream->cuda_stream );
-                        } else {
-                            double2half_GPU( descA->mb, descA->nb, B, descA->mb, B_h, descA->mb, cuda_stream->cuda_stream );
-                        }
+                        HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, B, descA->mb, OMC_FP16, B_h, descA->mb, descA->mb, descA->nb,
+                                HICMA_OMC_SR(params_tlr->enable_stochastic_rounding, hicma_parsec_sr_seed(n, k)), cuda_stream->cuda_stream) );
                         B_use = B_h;
                     } else if( DENSE_SP == params_tlr->decisions_send[k*descA->lmt+n] ) {
                         hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-                        if( params_tlr->enable_stochastic_rounding ) {
-                            float2half_round_GPU( descA->mb, descA->nb, B, descA->mb, B_h, descA->mb, hicma_parsec_sr_seed(n, k), cuda_stream->cuda_stream );
-                        } else {
-                            float2half_GPU( descA->mb, descA->nb, B, descA->mb, B_h, descA->mb, cuda_stream->cuda_stream );
-                        }
+                        HICMA_OMC( omc_gpu_convert_2d(OMC_FP32, B, descA->mb, OMC_FP16, B_h, descA->mb, descA->mb, descA->nb,
+                                HICMA_OMC_SR(params_tlr->enable_stochastic_rounding, hicma_parsec_sr_seed(n, k)), cuda_stream->cuda_stream) );
                         B_use = B_h;
                     }
 
@@ -4196,14 +4170,9 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
                     if( 0 == k && MASK_TF16_A16_B16_C16_OP16 == tensor_gemm_type ) {
                         /* Convert datatype */
                         hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-                        if( params_tlr->enable_stochastic_rounding ) {
-                            float2half_round_GPU( descA->mb, descA->nb, C, descA->mb, C_h, descA->mb, hicma_parsec_sr_seed(m, n), cuda_stream->cuda_stream );
-                        } else {
-                            float2half_GPU( descA->mb, descA->nb, C, descA->mb, C_h, descA->mb, cuda_stream->cuda_stream );
-                        }
-
-                        /* Copy C_h to C */
-                        memcpy_half_GPU( descA->mb, descA->nb, C_h, C, cuda_stream->cuda_stream );
+                        /* in place, single pass */
+                        HICMA_OMC( omc_gpu_convert_inplace_2d(OMC_FP32, OMC_FP16, C, descA->mb, descA->mb, descA->nb,
+                                HICMA_OMC_SR(params_tlr->enable_stochastic_rounding, hicma_parsec_sr_seed(m, n)), cuda_stream->cuda_stream) );
                     }
 
                     /* Call hgemm */
@@ -4217,8 +4186,8 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
                     } else {
                         // convert alpha and beta
                         char alphah[16], betah[16];
-                        float2half_host(alpha, &alphah[0]);
-                        float2half_host(beta, &betah[0]);
+                        hicma_parsec_fp32_to_fp16_host(alpha, &alphah[0]);
+                        hicma_parsec_fp32_to_fp16_host(beta, &betah[0]);
                         status = cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
                                 tempmm, descA->mb, descA->mb,
                                 &alphah[0], A_use, CUDA_R_16F, ldam,
@@ -4232,10 +4201,8 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
                     if( n-1 == k && MASK_TF16_A16_B16_C16_OP16 == tensor_gemm_type ) {
                         /* Convert datatype */
                         hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-                        half2float_GPU( descA->mb, descA->nb, C, descA->mb, C_s, descA->mb, cuda_stream->cuda_stream );
-
-                        /* Copy C_s to C */
-                        memcpy_float_GPU( descA->mb, descA->nb, C_s, C, cuda_stream->cuda_stream );
+                        /* in place, single pass */
+                        HICMA_OMC( omc_gpu_convert_inplace(OMC_FP16, OMC_FP32, C, (size_t)(descA->mb) * (descA->nb), NULL, cuda_stream->cuda_stream) );
                     }
 
                     break;
@@ -4247,22 +4214,22 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
                     /* Convert datatype, A */
                     if( DENSE_DP == params_tlr->decisions_send[k*descA->lmt+m] ) {
                         hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-                        double2bf_GPU( descA->mb, descA->nb, A, descA->mb, A_h, descA->mb, cuda_stream->cuda_stream );
+                        HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, A, descA->mb, OMC_BF16, A_h, descA->mb, descA->mb, descA->nb, NULL, cuda_stream->cuda_stream) );
                         A_use = A_h;
                     } else if( DENSE_SP == params_tlr->decisions_send[k*descA->lmt+m] ) {
                         hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-                        float2bf_GPU( descA->mb, descA->nb, A, descA->mb, A_h, descA->mb, cuda_stream->cuda_stream );
+                        HICMA_OMC( omc_gpu_convert_2d(OMC_FP32, A, descA->mb, OMC_BF16, A_h, descA->mb, descA->mb, descA->nb, NULL, cuda_stream->cuda_stream) );
                         A_use = A_h;
                     }
 
                     /* Convert datatype, B */
                     if( DENSE_DP == params_tlr->decisions_send[k*descA->lmt+n] ) {
                         hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-                        double2bf_GPU( descA->mb, descA->nb, B, descA->mb, B_h, descA->mb, cuda_stream->cuda_stream );
+                        HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, B, descA->mb, OMC_BF16, B_h, descA->mb, descA->mb, descA->nb, NULL, cuda_stream->cuda_stream) );
                         B_use = B_h;
                     } else if( DENSE_SP == params_tlr->decisions_send[k*descA->lmt+n] ) {
                         hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-                        float2bf_GPU( descA->mb, descA->nb, B, descA->mb, B_h, descA->mb, cuda_stream->cuda_stream );
+                        HICMA_OMC( omc_gpu_convert_2d(OMC_FP32, B, descA->mb, OMC_BF16, B_h, descA->mb, descA->mb, descA->nb, NULL, cuda_stream->cuda_stream) );
                         B_use = B_h;
                     }
 
@@ -4270,10 +4237,8 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
                     if( 0 == k && MASK_BF16_A16_B16_C16_OP16 == tensor_gemm_type ) {
                         /* Convert datatype */
                         hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-                        float2bf_GPU( descA->mb, descA->nb, C, descA->mb, C_h, descA->mb, cuda_stream->cuda_stream );
-
-                        /* Copy C_h to C */
-                        memcpy_bf_GPU( descA->mb, descA->nb, C_h, C, cuda_stream->cuda_stream );
+                        /* in place, single pass */
+                        HICMA_OMC( omc_gpu_convert_inplace(OMC_FP32, OMC_BF16, C, (size_t)(descA->mb) * (descA->nb), NULL, cuda_stream->cuda_stream) );
                     }
 
                     /* Call hgemm */
@@ -4298,10 +4263,8 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
                     if( n-1 == k && MASK_BF16_A16_B16_C16_OP16 == tensor_gemm_type ) {
                         /* Convert datatype */
                         hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-                        bf2float_GPU( descA->mb, descA->nb, C, descA->mb, C_s, descA->mb, cuda_stream->cuda_stream );
-
-                        /* Copy C_s to C */
-                        memcpy_float_GPU( descA->mb, descA->nb, C_s, C, cuda_stream->cuda_stream );
+                        /* in place, single pass */
+                        HICMA_OMC( omc_gpu_convert_inplace(OMC_BF16, OMC_FP32, C, (size_t)(descA->mb) * (descA->nb), NULL, cuda_stream->cuda_stream) );
                     }
 
                     break;
@@ -4336,7 +4299,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
                     HICMA_FP8_SCALE_FLOATS * sizeof(float), cudaMemcpyDeviceToDevice, cuda_stream->cuda_stream );
         } else if( DENSE_DP == A_send || DENSE_SP == A_send || DENSE_HP == A_send ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            hicma_fp8_scaled_convert_GPU( (DENSE_DP == A_send) ? (int)sizeof(double) : (DENSE_SP == A_send) ? (int)sizeof(float) : 2,
+            hicma_parsec_fp8_operand_GPU( (DENSE_DP == A_send) ? OMC_FP64 : (DENSE_SP == A_send) ? OMC_FP32 : OMC_FP16,
                     tempmm, descA->mb, A, descA->mb, A_fp8, fp8_ld, fp8_ld, fp8_ld,
                     stream_found->fp8_scale, params_tlr->fp8_scaling, cuda_stream->cuda_stream );
             A_use = A_fp8;
@@ -4350,7 +4313,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
                     HICMA_FP8_SCALE_FLOATS * sizeof(float), cudaMemcpyDeviceToDevice, cuda_stream->cuda_stream );
         } else if( DENSE_DP == B_send || DENSE_SP == B_send || DENSE_HP == B_send ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            hicma_fp8_scaled_convert_GPU( (DENSE_DP == B_send) ? (int)sizeof(double) : (DENSE_SP == B_send) ? (int)sizeof(float) : 2,
+            hicma_parsec_fp8_operand_GPU( (DENSE_DP == B_send) ? OMC_FP64 : (DENSE_SP == B_send) ? OMC_FP32 : OMC_FP16,
                     descA->mb, descA->mb, B, descA->mb, B_fp8, fp8_ld, fp8_ld, fp8_ld,
                     stream_found->fp8_scale + 4, params_tlr->fp8_scaling, cuda_stream->cuda_stream );
             B_use = B_fp8;
@@ -4500,9 +4463,8 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
                    m, n, C_norm, storage_decision, new_decision, params_tlr->decisions[idx_C]);
         }
         if( DENSE_DP != storage_decision ) {
-            double2float_GPU(descA->mb, descA->nb, C, descA->mb, C_s, descA->mb,
-                             cuda_stream->cuda_stream);
-            memcpy_float_GPU(descA->mb, descA->nb, C_s, C, cuda_stream->cuda_stream);
+            /* in place, single pass */
+            HICMA_OMC( omc_gpu_convert_inplace(OMC_FP64, OMC_FP32, C, (size_t)(descA->mb) * (descA->nb), NULL, cuda_stream->cuda_stream) );
             this_task->data._f_C.data_out->original->span =
                 (size_t)descA->mb * (size_t)descA->nb * sizeof(float);
             params_tlr->decisions[idx_C] = DENSE_SP;
@@ -4557,7 +4519,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
 
         if( DENSE_SP == Aprecision ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            float2double_GPU(tempmm, tempnn, A, descA->mb, A_d, descA->mb, cuda_stream->cuda_stream);
+            HICMA_OMC( omc_gpu_convert_2d(OMC_FP32, A, descA->mb, OMC_FP64, A_d, descA->mb, tempmm, tempnn, NULL, cuda_stream->cuda_stream) );
             A_use = A_d;
         } else if( DENSE_DP != Aprecision ) {
             fprintf(stderr, "Unsupported A precision in DP GEMM: %u (%d,%d,%d)\n", (unsigned)Aprecision, m, n, k);
@@ -4568,7 +4530,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
         //if( DENSE_DP != params_tlr->decisions[k*descA->lmt+n] ) {
         if( DENSE_SP == Bprecision ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            float2double_GPU(tempmm, tempnn, B, descA->mb, B_d, descA->mb, cuda_stream->cuda_stream);
+            HICMA_OMC( omc_gpu_convert_2d(OMC_FP32, B, descA->mb, OMC_FP64, B_d, descA->mb, tempmm, tempnn, NULL, cuda_stream->cuda_stream) );
             B_use = B_d;
         } else if( DENSE_DP != Bprecision ) {
             fprintf(stderr, "Unsupported B precision in DP GEMM: %u (%d,%d,%d)\n", (unsigned)Bprecision, m, n, k);
@@ -4578,7 +4540,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
         /* Convert datatype, C */
         if( DENSE_DP != Cprecision ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            float2double_GPU(tempmm, tempnn, C, descA->mb, C_d, descA->mb, cuda_stream->cuda_stream);
+            HICMA_OMC( omc_gpu_convert_2d(OMC_FP32, C, descA->mb, OMC_FP64, C_d, descA->mb, tempmm, tempnn, NULL, cuda_stream->cuda_stream) );
             C_use = C_d;
         }
 
@@ -4634,7 +4596,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
                 }
             }
 
-            memcpy_double_GPU( tempmm, tempnn, C_use, C, cuda_stream->cuda_stream );
+            HICMA_OMC( omc_gpu_convert(OMC_FP64, C_use, OMC_FP64, C, (size_t)tempmm * tempnn, NULL, cuda_stream->cuda_stream) );
         }
         params_tlr->decisions[idx_C] = DENSE_DP;
 
@@ -4643,7 +4605,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
         /* Convert datatype, A */
         if( DENSE_DP == Aprecision ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            double2float_GPU( tempmm, tempnn, A, descA->mb, A_s, descA->mb, cuda_stream->cuda_stream );
+            HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, A, descA->mb, OMC_FP32, A_s, descA->mb, tempmm, tempnn, NULL, cuda_stream->cuda_stream) );
             A_use = A_s;
         } else if( DENSE_SP != Aprecision ) {
             fprintf(stderr, "Unsupported A precision in SP GEMM: %u (%d,%d,%d)\n", (unsigned)Aprecision, m, n, k);
@@ -4653,7 +4615,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
         /* Convert datatype, B */
         if( DENSE_DP == Bprecision ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            double2float_GPU( tempmm, tempnn, B, descA->mb, B_s, descA->mb, cuda_stream->cuda_stream );
+            HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, B, descA->mb, OMC_FP32, B_s, descA->mb, tempmm, tempnn, NULL, cuda_stream->cuda_stream) );
             B_use = B_s;
         } else if( DENSE_SP != Bprecision ) {
             fprintf(stderr, "Unsupported B precision in SP GEMM: %u (%d,%d,%d)\n", (unsigned)Bprecision, m, n, k);
@@ -4771,13 +4733,13 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
          * by a power of two from its largest entry unless --fp8_scaling 0;
          * matmulDesc_scaled multiplies the product by the inverse scales. */
         hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-        hicma_fp8_scaled_convert_GPU( (DENSE_DP == Aprecision) ? (int)sizeof(double) : (int)sizeof(float),
+        hicma_parsec_fp8_operand_GPU( (DENSE_DP == Aprecision) ? OMC_FP64 : OMC_FP32,
                 tempmm, descA->mb, A, descA->mb, A_fp8, fp8_ld, fp8_ld, fp8_ld,
                 stream_found->fp8_scale, params_tlr->fp8_scaling, cuda_stream->cuda_stream );
         A_use = A_fp8;
 
         hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-        hicma_fp8_scaled_convert_GPU( (DENSE_DP == Bprecision) ? (int)sizeof(double) : (int)sizeof(float),
+        hicma_parsec_fp8_operand_GPU( (DENSE_DP == Bprecision) ? OMC_FP64 : OMC_FP32,
                 tempnn, descA->mb, B, descA->mb, B_fp8, fp8_ld, fp8_ld, fp8_ld,
                 stream_found->fp8_scale + 4, params_tlr->fp8_scaling, cuda_stream->cuda_stream );
         B_use = B_fp8;
@@ -4862,9 +4824,8 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
                    m, n, C_norm, new_decision, params_tlr->decisions[idx_C]);
         }
         if( DENSE_DP != new_decision ) {
-            double2float_GPU(descA->mb, descA->nb, C, descA->mb, C_s, descA->mb,
-                             cuda_stream->cuda_stream);
-            memcpy_float_GPU(descA->mb, descA->nb, C_s, C, cuda_stream->cuda_stream);
+            /* in place, single pass */
+            HICMA_OMC( omc_gpu_convert_inplace(OMC_FP64, OMC_FP32, C, (size_t)(descA->mb) * (descA->nb), NULL, cuda_stream->cuda_stream) );
             this_task->data._f_C.data_out->original->span =
                 (size_t)tempmm * (size_t)tempnn * sizeof(float);
             params_tlr->decisions[idx_C] = DENSE_SP;
@@ -4955,14 +4916,14 @@ void hicma_parsec_core_gemm_denseC_lrA_denseB_gpu( parsec_tiled_matrix_t* descA,
         /* Convert datatype, A */
         if( LOW_RANK_SP == params_tlr->decisions[k*descA->lmt+m] ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            float2double_GPU( descA->mb, Arank * 2, A, descA->mb, A_d, descA->mb, cuda_stream->cuda_stream );
+            HICMA_OMC( omc_gpu_convert_2d(OMC_FP32, A, descA->mb, OMC_FP64, A_d, descA->mb, descA->mb, Arank * 2, NULL, cuda_stream->cuda_stream) );
             A_use = A_d;
         }
 
         /* Convert datatype, B */
         if( DENSE_SP == params_tlr->decisions[k*descA->lmt+n] || DENSE_HP == params_tlr->decisions[k*descA->lmt+n] || DENSE_FP8 == params_tlr->decisions[k*descA->lmt+n] ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            float2double_GPU( descA->mb, descA->nb, B, descA->mb, B_d, descA->mb, cuda_stream->cuda_stream );
+            HICMA_OMC( omc_gpu_convert_2d(OMC_FP32, B, descA->mb, OMC_FP64, B_d, descA->mb, descA->mb, descA->nb, NULL, cuda_stream->cuda_stream) );
             B_use = B_d;
         }
 
@@ -4994,14 +4955,14 @@ void hicma_parsec_core_gemm_denseC_lrA_denseB_gpu( parsec_tiled_matrix_t* descA,
         /* Convert datatype, A */
         if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+m] ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            double2float_GPU( descA->mb, Arank * 2, A, descA->mb, A_s, descA->mb, cuda_stream->cuda_stream );
+            HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, A, descA->mb, OMC_FP32, A_s, descA->mb, descA->mb, Arank * 2, NULL, cuda_stream->cuda_stream) );
             A_use = A_s;
         }
 
         /* Convert datatype, B */
         if( DENSE_DP == params_tlr->decisions[k*descA->lmt+n] ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            double2float_GPU( descA->mb, descA->nb, B, descA->mb, B_s, descA->mb, cuda_stream->cuda_stream );
+            HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, B, descA->mb, OMC_FP32, B_s, descA->mb, descA->mb, descA->nb, NULL, cuda_stream->cuda_stream) );
             B_use = B_s;
         }
 
@@ -5034,22 +4995,22 @@ void hicma_parsec_core_gemm_denseC_lrA_denseB_gpu( parsec_tiled_matrix_t* descA,
         /* Convert datatype, A */
         if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+m] ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            double2half_GPU(   descA->mb, Arank * 2, A, descA->mb, A_h, descA->mb, cuda_stream->cuda_stream );
+            HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, A, descA->mb, OMC_FP16, A_h, descA->mb, descA->mb, Arank * 2, NULL, cuda_stream->cuda_stream) );
             A_use = A_h;
         } else {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            float2half_GPU(   descA->mb, Arank * 2, A, descA->mb, A_h, descA->mb, cuda_stream->cuda_stream );
+            HICMA_OMC( omc_gpu_convert_2d(OMC_FP32, A, descA->mb, OMC_FP16, A_h, descA->mb, descA->mb, Arank * 2, NULL, cuda_stream->cuda_stream) );
             A_use = A_h;
         }
 
         /* Convert datatype, B */
         if( DENSE_DP == params_tlr->decisions[k*descA->lmt+n] ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            double2half_GPU(   descA->mb, descA->nb, B, descA->mb, B_h, descA->mb, cuda_stream->cuda_stream );
+            HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, B, descA->mb, OMC_FP16, B_h, descA->mb, descA->mb, descA->nb, NULL, cuda_stream->cuda_stream) );
             B_use = B_h;
         } else {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            float2half_GPU(   descA->mb, descA->nb, B, descA->mb, B_h, descA->mb, cuda_stream->cuda_stream );
+            HICMA_OMC( omc_gpu_convert_2d(OMC_FP32, B, descA->mb, OMC_FP16, B_h, descA->mb, descA->mb, descA->nb, NULL, cuda_stream->cuda_stream) );
             B_use = B_h;
         }
 
@@ -5070,10 +5031,8 @@ void hicma_parsec_core_gemm_denseC_lrA_denseB_gpu( parsec_tiled_matrix_t* descA,
         if( 0 == k && c16 ) {
             /* Convert datatype */
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            float2half_GPU( descA->mb, descA->nb, C, descA->mb, C_h, descA->mb, cuda_stream->cuda_stream );
-
-            /* Copy C_h to C */
-            memcpy_half_GPU( descA->mb, descA->nb, C_h, C, cuda_stream->cuda_stream );
+            /* in place, single pass */
+            HICMA_OMC( omc_gpu_convert_inplace(OMC_FP32, OMC_FP16, C, (size_t)(descA->mb) * (descA->nb), NULL, cuda_stream->cuda_stream) );
         }
 
         /* tmp_mbr = trans(Av) * trans(B) */
@@ -5101,10 +5060,8 @@ void hicma_parsec_core_gemm_denseC_lrA_denseB_gpu( parsec_tiled_matrix_t* descA,
         if( n-1 == k && c16 ) {
             /* Convert datatype */
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            half2float_GPU( descA->mb, descA->nb, C, descA->mb, C_s, descA->mb, cuda_stream->cuda_stream );
-
-            /* Copy C_s to C */
-            memcpy_float_GPU( descA->mb, descA->nb, C_s, C, cuda_stream->cuda_stream );
+            /* in place, single pass */
+            HICMA_OMC( omc_gpu_convert_inplace(OMC_FP16, OMC_FP32, C, (size_t)(descA->mb) * (descA->nb), NULL, cuda_stream->cuda_stream) );
         }
     }
 
@@ -5193,14 +5150,14 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_gpu( parsec_tiled_matrix_t* descA,
         /* Convert datatype, A */
         if( LOW_RANK_SP == params_tlr->decisions[k*descA->lmt+m] ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            float2double_GPU( descA->mb, Arank * 2, A, descA->mb, A_d, descA->mb, cuda_stream->cuda_stream );
+            HICMA_OMC( omc_gpu_convert_2d(OMC_FP32, A, descA->mb, OMC_FP64, A_d, descA->mb, descA->mb, Arank * 2, NULL, cuda_stream->cuda_stream) );
             A_use = A_d;
         }
 
         /* Convert datatype, B */
         if( LOW_RANK_SP == params_tlr->decisions[k*descA->lmt+n] ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            float2double_GPU( descA->mb, Brank * 2, B, descA->mb, B_d, descA->mb, cuda_stream->cuda_stream );
+            HICMA_OMC( omc_gpu_convert_2d(OMC_FP32, B, descA->mb, OMC_FP64, B_d, descA->mb, descA->mb, Brank * 2, NULL, cuda_stream->cuda_stream) );
             B_use = B_d;
         }
 
@@ -5263,14 +5220,14 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_gpu( parsec_tiled_matrix_t* descA,
         /* Convert datatype, A */
         if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+m] ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            double2float_GPU( descA->mb, Arank * 2, A, descA->mb, A_s, descA->mb, cuda_stream->cuda_stream );
+            HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, A, descA->mb, OMC_FP32, A_s, descA->mb, descA->mb, Arank * 2, NULL, cuda_stream->cuda_stream) );
             A_use = A_s;
         }
 
         /* Convert datatype, B */
         if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+n] ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            double2float_GPU( descA->mb, Brank * 2, B, descA->mb, B_s, descA->mb, cuda_stream->cuda_stream );
+            HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, B, descA->mb, OMC_FP32, B_s, descA->mb, descA->mb, Brank * 2, NULL, cuda_stream->cuda_stream) );
             B_use = B_s;
         }
 
@@ -5338,11 +5295,11 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_gpu( parsec_tiled_matrix_t* descA,
         /* Convert datatype, A */
         if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+m] ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            double2half_GPU(   descA->mb, Arank * 2, A, descA->mb, A_h, descA->mb, cuda_stream->cuda_stream );
+            HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, A, descA->mb, OMC_FP16, A_h, descA->mb, descA->mb, Arank * 2, NULL, cuda_stream->cuda_stream) );
             A_use = A_h;
         } else {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            float2half_GPU(   descA->mb, Arank * 2, A, descA->mb, A_h, descA->mb, cuda_stream->cuda_stream );
+            HICMA_OMC( omc_gpu_convert_2d(OMC_FP32, A, descA->mb, OMC_FP16, A_h, descA->mb, descA->mb, Arank * 2, NULL, cuda_stream->cuda_stream) );
             A_use = A_h;
         }
 
@@ -5352,11 +5309,11 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_gpu( parsec_tiled_matrix_t* descA,
          * where an FP16 tile gets a low-rank x low-rank update) */
         if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+n] ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            double2half_GPU(   descA->mb, Brank * 2, B, descA->mb, B_h, descA->mb, cuda_stream->cuda_stream );
+            HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, B, descA->mb, OMC_FP16, B_h, descA->mb, descA->mb, Brank * 2, NULL, cuda_stream->cuda_stream) );
             B_use = B_h;
         } else {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            float2half_GPU(   descA->mb, Brank * 2, B, descA->mb, B_h, descA->mb, cuda_stream->cuda_stream );
+            HICMA_OMC( omc_gpu_convert_2d(OMC_FP32, B, descA->mb, OMC_FP16, B_h, descA->mb, descA->mb, Brank * 2, NULL, cuda_stream->cuda_stream) );
             B_use = B_h;
         }
 
@@ -5379,10 +5336,8 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_gpu( parsec_tiled_matrix_t* descA,
         if( 0 == k && c16 ) {
             /* Convert datatype */
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            float2half_GPU( descA->mb, descA->nb, C, descA->mb, C_h, descA->mb, cuda_stream->cuda_stream );
-
-            /* Copy C_h to C */
-            memcpy_half_GPU( descA->mb, descA->nb, C_h, C, cuda_stream->cuda_stream );
+            /* in place, single pass */
+            HICMA_OMC( omc_gpu_convert_inplace(OMC_FP32, OMC_FP16, C, (size_t)(descA->mb) * (descA->nb), NULL, cuda_stream->cuda_stream) );
         }
 
         /* tmp_rr = trans(Av) * Bv */
@@ -5443,10 +5398,8 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_gpu( parsec_tiled_matrix_t* descA,
         if( n-1 == k && c16 ) {
             /* Convert datatype */
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            half2float_GPU( descA->mb, descA->nb, C, descA->mb, C_s, descA->mb, cuda_stream->cuda_stream );
-
-            /* Copy C_s to C */
-            memcpy_float_GPU( descA->mb, descA->nb, C_s, C, cuda_stream->cuda_stream );
+            /* in place, single pass */
+            HICMA_OMC( omc_gpu_convert_inplace(OMC_FP16, OMC_FP32, C, (size_t)(descA->mb) * (descA->nb), NULL, cuda_stream->cuda_stream) );
         }
     }
 

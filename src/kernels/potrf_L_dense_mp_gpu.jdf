@@ -340,11 +340,8 @@ BODY [type=CUDA]
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
     if( params_tlr->decisions_send[k*params_tlr->NT+k] != DENSE_DP ) {
         hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
-        if( params_tlr->enable_stochastic_rounding) {
-            double2float_round_GPU( descA->mb, descA->nb, T0, descA->mb, T, descA->mb, hicma_parsec_sr_seed(k, k), cuda_stream->cuda_stream );
-        } else {
-            double2float_GPU( descA->mb, descA->nb, T0, descA->mb, T, descA->mb, cuda_stream->cuda_stream );
-        }
+        HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, T0, descA->mb, OMC_FP32, T, descA->mb, descA->mb, descA->nb,
+                HICMA_OMC_SR(params_tlr->enable_stochastic_rounding, hicma_parsec_sr_seed(k, k)), cuda_stream->cuda_stream) );
         this_task->data._f_T.data_out->original->span = descA->mb * descA->nb * sizeof(float);
         /* Remote TRSMs read the host copy of this NEW buffer */
         HICMA_PARSEC_GPU_PUSHOUT(gpu_task, "T");
@@ -358,11 +355,8 @@ BODY [type=HIP]
 #if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
     if( params_tlr->decisions_send[k*params_tlr->NT+k] != DENSE_DP ) {
         hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
-        if( params_tlr->enable_stochastic_rounding) {
-            double2float_round_GPU( descA->mb, descA->nb, T0, descA->mb, T, descA->mb, hicma_parsec_sr_seed(k, k), cuda_stream->cuda_stream );
-        } else {
-            double2float_GPU( descA->mb, descA->nb, T0, descA->mb, T, descA->mb, cuda_stream->cuda_stream );
-        }
+        HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, T0, descA->mb, OMC_FP32, T, descA->mb, descA->mb, descA->nb,
+                HICMA_OMC_SR(params_tlr->enable_stochastic_rounding, hicma_parsec_sr_seed(k, k)), cuda_stream->cuda_stream) );
         this_task->data._f_T.data_out->original->span = descA->mb * descA->nb * sizeof(float);
         /* Remote TRSMs read the host copy of this NEW buffer */
         HICMA_PARSEC_GPU_PUSHOUT(gpu_task, "T");
@@ -376,11 +370,8 @@ BODY
 {
     if( params_tlr->decisions_send[k*params_tlr->NT+k] != DENSE_DP ) {
         hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
-        if( params_tlr->enable_stochastic_rounding) {
-            double2float_round_CPU( descA->mb, descA->nb, T0, descA->mb, T, descA->mb, hicma_parsec_sr_seed(k, k) );
-        } else {
-            LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, T0, descA->mb, T, descA->mb );
-        }
+        HICMA_OMC( omc_convert_2d(OMC_FP64, T0, descA->mb, OMC_FP32, T, descA->mb, descA->mb, descA->nb,
+                HICMA_OMC_SR(params_tlr->enable_stochastic_rounding, hicma_parsec_sr_seed(k, k))) );
         this_task->data._f_T.data_out->original->span = descA->mb * descA->nb * sizeof(float);
     }
 }
@@ -656,27 +647,27 @@ BODY [type=CUDA]
         if( params_tlr->enable_stochastic_rounding ) {
             if( DENSE_SP == params_tlr->decisions_send[k*params_tlr->NT+m] && DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
                 hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
-                double2float_round_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, hicma_parsec_sr_seed(m, k), cuda_stream->cuda_stream );
+                HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, C0, descA->mb, OMC_FP32, C, descA->mb, descA->mb, descA->nb, HICMA_OMC_SR(1, hicma_parsec_sr_seed(m, k)), cuda_stream->cuda_stream) );
             } else if( DENSE_HP == params_tlr->decisions_send[k*params_tlr->NT+m] ) {
                 if( DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
                     hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
-                    double2half_round_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, hicma_parsec_sr_seed(m, k), cuda_stream->cuda_stream );
+                    HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, C0, descA->mb, OMC_FP16, C, descA->mb, descA->mb, descA->nb, HICMA_OMC_SR(1, hicma_parsec_sr_seed(m, k)), cuda_stream->cuda_stream) );
                 } else {
                     hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
-                    float2half_round_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, hicma_parsec_sr_seed(m, k), cuda_stream->cuda_stream );
+                    HICMA_OMC( omc_gpu_convert_2d(OMC_FP32, C0, descA->mb, OMC_FP16, C, descA->mb, descA->mb, descA->nb, HICMA_OMC_SR(1, hicma_parsec_sr_seed(m, k)), cuda_stream->cuda_stream) );
                 }
             }
         } else {
             if( DENSE_SP == params_tlr->decisions_send[k*params_tlr->NT+m] && DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
                 hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
-                double2float_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
+                HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, C0, descA->mb, OMC_FP32, C, descA->mb, descA->mb, descA->nb, NULL, cuda_stream->cuda_stream) );
             } else if( DENSE_HP == params_tlr->decisions_send[k*params_tlr->NT+m] ) {
                 if( DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
                     hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
-                    double2half_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
+                    HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, C0, descA->mb, OMC_FP16, C, descA->mb, descA->mb, descA->nb, NULL, cuda_stream->cuda_stream) );
                 } else {
                     hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
-                    float2half_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
+                    HICMA_OMC( omc_gpu_convert_2d(OMC_FP32, C0, descA->mb, OMC_FP16, C, descA->mb, descA->mb, descA->nb, NULL, cuda_stream->cuda_stream) );
                 }
             }
         }
@@ -713,27 +704,27 @@ BODY [type=HIP]
         if( params_tlr->enable_stochastic_rounding ) {
             if( DENSE_SP == params_tlr->decisions_send[k*params_tlr->NT+m] && DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
                 hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
-                double2float_round_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, hicma_parsec_sr_seed(m, k), cuda_stream->cuda_stream );
+                HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, C0, descA->mb, OMC_FP32, C, descA->mb, descA->mb, descA->nb, HICMA_OMC_SR(1, hicma_parsec_sr_seed(m, k)), cuda_stream->cuda_stream) );
             } else if( DENSE_HP == params_tlr->decisions_send[k*params_tlr->NT+m] ) {
                 if( DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
                     hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
-                    double2half_round_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, hicma_parsec_sr_seed(m, k), cuda_stream->cuda_stream );
+                    HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, C0, descA->mb, OMC_FP16, C, descA->mb, descA->mb, descA->nb, HICMA_OMC_SR(1, hicma_parsec_sr_seed(m, k)), cuda_stream->cuda_stream) );
                 } else {
                     hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
-                    float2half_round_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, hicma_parsec_sr_seed(m, k), cuda_stream->cuda_stream );
+                    HICMA_OMC( omc_gpu_convert_2d(OMC_FP32, C0, descA->mb, OMC_FP16, C, descA->mb, descA->mb, descA->nb, HICMA_OMC_SR(1, hicma_parsec_sr_seed(m, k)), cuda_stream->cuda_stream) );
                 }
             }
         } else {
             if( DENSE_SP == params_tlr->decisions_send[k*params_tlr->NT+m] && DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
                 hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
-                double2float_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
+                HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, C0, descA->mb, OMC_FP32, C, descA->mb, descA->mb, descA->nb, NULL, cuda_stream->cuda_stream) );
             } else if( DENSE_HP == params_tlr->decisions_send[k*params_tlr->NT+m] ) {
                 if( DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
                     hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
-                    double2half_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
+                    HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, C0, descA->mb, OMC_FP16, C, descA->mb, descA->mb, descA->nb, NULL, cuda_stream->cuda_stream) );
                 } else {
                     hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
-                    float2half_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
+                    HICMA_OMC( omc_gpu_convert_2d(OMC_FP32, C0, descA->mb, OMC_FP16, C, descA->mb, descA->mb, descA->nb, NULL, cuda_stream->cuda_stream) );
                 }
             }
         }

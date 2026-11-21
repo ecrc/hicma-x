@@ -20,6 +20,37 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
 - DPLASMA and PaRSEC moved to the ICLDisco master branches (PaRSEC `2c16c652e`,
   which includes ICLDisco/parsec#814, plus the fork's commits).
 
+### Data-type conversions: OmniCast
+
+- Every element conversion now goes through OmniCast (new submodule
+  `omnicast/`, https://github.com/QingleiCao/OmniCast, branch `v2`): one C API
+  for FP64, FP32, FP16, BF16, FP8 (E4M3, E5M2) and integers on the CPU (SIMD
+  chosen at run time: AVX-512, AVX2+F16C, NEON) and on CUDA and HIP GPUs.
+  HiCMA-X's own conversion kernels and loops are removed: the GPU converters
+  of `hicma_parsec.cu`/`hicma_parsec_hip.cu` (`double2half_GPU`,
+  `float2fp8_padded_GPU`, `hicma_fp8_scaled_convert_GPU`, `memcpy_*_GPU`, ...),
+  the stochastic-rounding sources, the `convert_*_unary/binary_CPU` loops and
+  the `LAPACKE_dlag2s`/`slag2d` tile conversions. Call sites use `omc_*`
+  through `HICMA_OMC()`/`HICMA_OMC_SR()` (`hicma_parsec_datatype_convert.h`);
+  `hicma_parsec_fp8_operand_GPU` builds the scaled, transposed FP8 operand of
+  the cuBLASLt matmul.
+- Same results: the accuracy of every CTest case is identical to all printed
+  digits on an A100, a V100 and an H100 (including the FP8 cases).
+  Stochastic rounding keeps its random numbers and probabilities bit for bit.
+  FP64 -> FP8 (and FP16 on HIP) is now rounded once, directly, where HiCMA-X
+  went through FP32 (double rounding, which can differ in rare ties).
+- Faster: converting a tile in place is one kernel instead of a conversion into
+  a scratch tile plus a copy back (1.6-3.3x); the transposed FP8 operands are
+  3-6x faster (coalesced stores); FP32 -> FP16 and the other 2- and 4-byte
+  sources up to 2x; GPU stochastic rounding 1.2-1.45x; CPU stochastic rounding
+  3-9x; CPU FP64 <-> FP32 tiles 1.1-8x faster than MKL's `dlag2s`/`slag2d`.
+  Conversion kernels take 26 % less GPU time in a mixed-precision Cholesky;
+  CPU mixed-precision factorizations are 3-14 % faster. Details in
+  `docs/omnicast/README.md`.
+- FP16 conversions are available on every CPU (they were Fugaku-only), and
+  float -> integer conversions saturate (NaN -> 0) instead of being undefined
+  out of range.
+
 ### Correctness
 
 - The correctness check is binding: `check_dpotrf2` and `check_diff` returned

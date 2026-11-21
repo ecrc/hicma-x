@@ -647,7 +647,7 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t 
                 data->ws_gpu->gpu_workspace[i].stream_workspace[j].pref = pref;
 
                 /* FP8 GEMMs: same GEMM, with device pointers to the per-tile
-                 * scales 1/s_A and 1/s_B that hicma_fp8_scaled_convert_GPU writes,
+                 * scales 1/s_A and 1/s_B that hicma_parsec_fp8_operand_GPU writes,
                  * or the GEMM copies from a tile sent in FP8, on this stream before
                  * each GEMM (initially 1). */
                 float *fp8_scale = NULL;

@@ -145,7 +145,7 @@ LIST(APPEND CMAKE_MODULE_PATH
      "${CMAKE_CURRENT_SOURCE_DIR}")
 
 # Pull submodules if not exist
-if(NOT EXISTS "${PROJECT_SOURCE_DIR}/dplasma/CMakeLists.txt" OR NOT EXISTS "${PROJECT_SOURCE_DIR}/stars-h/CMakeLists.txt" OR NOT EXISTS "${PROJECT_SOURCE_DIR}/hcore/CMakeLists.txt" OR NOT EXISTS "${PROJECT_SOURCE_DIR}/stars-h/cmake_modules/ecrc/modules" OR NOT EXISTS "${PROJECT_SOURCE_DIR}/hcore/cmake_modules/ecrc/modules")
+if(NOT EXISTS "${PROJECT_SOURCE_DIR}/dplasma/CMakeLists.txt" OR NOT EXISTS "${PROJECT_SOURCE_DIR}/stars-h/CMakeLists.txt" OR NOT EXISTS "${PROJECT_SOURCE_DIR}/hcore/CMakeLists.txt" OR NOT EXISTS "${PROJECT_SOURCE_DIR}/stars-h/cmake_modules/ecrc/modules" OR NOT EXISTS "${PROJECT_SOURCE_DIR}/hcore/cmake_modules/ecrc/modules" OR NOT EXISTS "${PROJECT_SOURCE_DIR}/omnicast/CMakeLists.txt")
     find_package(Git QUIET)
     if(GIT_FOUND AND EXISTS "${PROJECT_SOURCE_DIR}/.git")
         if(GIT_SUBMODULE)
@@ -275,6 +275,24 @@ unset(_items)
 unset(_loc)
 unset(_ill)
 unset(_type)
+
+# OmniCast (submodule): every data-type conversion of HiCMA-X, on the CPU and
+# on the GPU backend chosen above. Built as a static, position-independent
+# library inside libhicma_parsec; conversions run inside PaRSEC tasks, so
+# OmniCast's own OpenMP threading is not needed.
+if(HICMA_PARSEC_HAVE_CUDA)
+    set(OMNICAST_GPU_BACKEND CUDA CACHE STRING "OmniCast GPU backend (set by HiCMA-X)" FORCE)
+elseif(HICMA_PARSEC_HAVE_HIP)
+    set(OMNICAST_GPU_BACKEND HIP CACHE STRING "OmniCast GPU backend (set by HiCMA-X)" FORCE)
+else()
+    set(OMNICAST_GPU_BACKEND NONE CACHE STRING "OmniCast GPU backend (set by HiCMA-X)" FORCE)
+endif()
+set(OMNICAST_OPENMP OFF CACHE BOOL "OmniCast host threads (not used by HiCMA-X)" FORCE)
+set(OMNICAST_BUILD_TESTS ${BUILD_TESTING} CACHE BOOL "Build the OmniCast tests")
+set(OMNICAST_BUILD_BENCHMARKS OFF CACHE BOOL "Build the OmniCast benchmarks")
+set(OMNICAST_TEST_LABELS hicma)
+add_subdirectory(omnicast)
+message(STATUS "OmniCast configured from submodule (GPU backend ${OMNICAST_GPU_BACKEND})")
 
 # Configure HCORE from submodule
 # HCORE is now built as part of the project via submodule
@@ -523,6 +541,14 @@ install(FILES
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hicma_parsec_compat
     OPTIONAL
 )
+
+# OmniCast: its header is included by hicma_parsec_datatype_convert.h; the
+# static library is part of the link interface of a static libhicma_parsec
+install(FILES omnicast/include/omnicast/omnicast.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/omnicast)
+install(TARGETS omnicast
+    EXPORT HICMAParsecTargets
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
 
 install(TARGETS hicma_parsec
     EXPORT HICMAParsecTargets
