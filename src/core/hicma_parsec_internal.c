@@ -286,6 +286,7 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         {"adaptive_memory", "0: memory allocated once; 1: memory reallocated per tile after precision decision", 0, &params->adaptive_memory},
         {"fp8", "FP8 GEMMs in kinds 8, 9 and 10: 1 (default) use them when every GPU has compute capability >= 8.9; 0: never (those tiles use HP)", 0, &params->fp8},
         {"fp8_scaling", "FP8 GEMMs: 1 (default) scale each operand tile by a power of two from its max entry; 0: unscaled", 0, &params->fp8_scaling},
+        {"operand_cache", "GPU GEMMs: operand tiles kept converted to the GEMM precision (FP8, FP16/BF16, FP32) per GPU for reuse; -1 (default): up to 2*NT tiles per precision, each at most 5% of the GPU memory PaRSEC manages, taken when needed; 0: off (convert per GEMM); > 0: up to that many tiles per precision", 0, &params->operand_cache},
         {"arena_pinned_memory", "Use pinned host memory for taskpool arenas when GPUs are enabled", 3, &params->arena_pinned_memory},
         {"adaptive_maxrank", "In -D 6, adaptively set the maxrank used in Cholesky based on the generation", 0, &params->adaptive_maxrank},
         {"kind_of_cholesky", "Cholesky type", 0, &params->kind_of_cholesky},
@@ -716,6 +717,8 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     params->adaptive_decision = 0;          // Disable adaptive tile format decision (0=disabled, >0=enabled)
     params->adaptive_decision_runtime = 0;  // Disable adaptive tile format decision during runtime (0=disabled, >0=enabled)
     params->fp8_scaling = 1;                // Scale FP8 GEMM operands per tile (0=unscaled)
+    params->operand_cache = -1;             // GPU operand caches: -1 auto, 0 off, > 0 tiles per precision
+    params->operand_cache_epoch = 0;
     // TODO: Need to test the overhead and restructure memory allocation strategy
     params->adaptive_memory = 0;            // Enable adaptive memory allocation per tile (1=enabled, 0=disabled)
     params->arena_pinned_memory = 0;         // Use the default arena allocator unless explicitly enabled
@@ -1729,7 +1732,7 @@ void hicma_parsec_params_print_initial( hicma_parsec_params_t *params )
         printf("auto_band=%d sparse=%d kind_of_cholesky=%d tensor_gemm=%d datatype_convert=%d left_looking=%d stochastic_rounding=%d\n",
                params->auto_band, params->sparse, params->kind_of_cholesky, params->tensor_gemm,
                params->datatype_convert, params->left_looking, params->enable_stochastic_rounding);
-        printf("fp8= %d fp8_enabled= %d fp8_scaling= %d\n", params->fp8, params->fp8_enabled, params->fp8_scaling);
+        printf("fp8= %d fp8_enabled= %d fp8_scaling= %d operand_cache= %d\n", params->fp8, params->fp8_enabled, params->fp8_scaling, params->operand_cache);
         if( 6 == params->kind_of_problem) printf("mesh_file=%s, rbf_kernel=%d, numobj=%d, order=%d, radius=%f, density=%f\n", params->mesh_file, params->rbf_kernel, params->numobj, params->order, params->radius, params->density);
         printf("time_slots=%d sigma=%lf beta=%lf nu=%lf beta_time=%lf nu_time=%lf nonsep_param=%lf noise= %lf\n", params->time_slots, params->sigma, params->beta, params->nu, params->beta_time, params->nu_time, params->nonsep_param, params->noise);
         printf("numobj/L= %d gpu_rows= %d gpu_cols= %d accumulation_fp32= %d\n\n", params->numobj, params->gpu_rows, params->gpu_cols, params->accumulation_fp32);

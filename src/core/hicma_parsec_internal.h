@@ -57,6 +57,7 @@
 #include <stdlib.h>    /**< Standard library functions */
 #include <stdio.h>     /**< Standard I/O functions */
 #include <string.h>    /**< String manipulation functions */
+#include <pthread.h>   /**< Mutex of the GPU operand caches */
 
 /* ============================================================================
  * System definitions
@@ -673,6 +674,8 @@ typedef struct hicma_parsec_params_s {
     int fp8;                  /**< --fp8: 1 (default) use FP8 GEMMs where the GPUs support them; 0: never */
     int fp8_enabled;          /**< HAVE_FP8, --fp8, kind 8, 9 or 10, and every GPU supports FP8 GEMM (CC >= 8.9) */
     int fp8_scaling;          /**< FP8 GEMMs: scale each operand tile by a power of two from its amax */
+    int operand_cache;        /**< GPU GEMM operand tiles kept converted per GPU; -1 auto (default), 0 off, > 0 tiles per cache */
+    int operand_cache_epoch;  /**< Bumped per factorization: cached operands of an earlier one are stale */
 
     /* ========================================================================
      * Performance metrics
@@ -1000,6 +1003,8 @@ typedef struct parsec_potrf_stream_workspace_s {
     cudaStream_t norm_meta_stream;  /**< Non-blocking stream for metadata reads (NULL if unused) */
     double *norm_meta_host;         /**< Pinned host buffer, 4 doubles: A {norm, precision}, B {norm, precision} */
 
+    struct hicma_operand_cache_s **operand_cache; /**< The device's operand caches (parsec_potrf_gpu_workspace_t) */
+
 #if HAVE_FP8
     /* FP8 precision support */
     cublasLtHandle_t lightHandle;           /**< cuBLASLt handle */
@@ -1015,7 +1020,7 @@ typedef struct parsec_potrf_stream_workspace_s {
     /* FP8 GEMMs: operands scaled per tile by hicma_parsec_fp8_operand_GPU
      * (or sent so by potrf_dtrsm_send); matmulDesc_scaled reads 1/s_A and
      * 1/s_B from fp8_scale[2] and fp8_scale[6] */
-    cublasLtMatmulDesc_t matmulDesc_scaled; /**< matmulDesc with A/B scale pointers */
+    cublasLtMatmulDesc_t matmulDesc_scaled; /**< matmulDesc with A/B scale pointers (hicma_fp8_set_scales before each GEMM) */
     cublasLtMatmulHeuristicResult_t heuristic_scaled; /**< Heuristic result for matmulDesc_scaled */
     float *fp8_scale;                       /**< Device, 8 floats: A {amax, s, 1/s, -}, B {amax, s, 1/s, -} */
 #endif
@@ -1025,10 +1030,68 @@ typedef struct parsec_potrf_stream_workspace_s {
 /**
  * @brief GPU workspace for POTRF operations
  */
+/** Operand caches of a GPU, by what a cached tile holds */
+enum {
+    HICMA_OPC_FP8 = 0,  /**< FP8 GEMM operands (transposed, padded, scale after the entries) */
+    HICMA_OPC_2B,       /**< FP16 and BF16 tiles */
+    HICMA_OPC_4B,       /**< FP32 tiles */
+    HICMA_OPC_NUM
+};
+
 typedef struct parsec_potrf_gpu_workspace_s {
     parsec_potrf_stream_workspace_t *stream_workspace;  /**< Stream workspace */
     parsec_device_cuda_module_t *cuda_device;           /**< CUDA device module */
+    struct hicma_operand_cache_s *operand_cache[HICMA_OPC_NUM];  /**< NULL when off */
 } parsec_potrf_gpu_workspace_t;
+
+/**
+ * GEMM operand cache of a GPU. A GPU GEMM reads its A and B tiles in the
+ * precision of the GEMM, but a panel tile is sent in the highest precision
+ * any of its consumers needs (decisions_send; with a DP diagonal, usually
+ * DP), so the GEMMs of lower precision used to convert both operands, each
+ * time: tile (m, k) was converted once per GEMM reading it, up to NT-1
+ * times, for O(NT^3) conversions in all. A panel tile no longer changes after
+ * its TRSM, and its conversion depends only on the tile (stochastic rounding
+ * seeds per tile, hicma_parsec_sr_seed), so the cache keeps each tile it has
+ * converted, O(NT^2) conversions, bit-identical results. Slots are taken from
+ * the device memory zone when first needed (none for runs without such
+ * conversions), up to max_slots; when full or the zone has no room, the least
+ * recently used slot is converted again. Entries belong to one factorization
+ * (operand_cache_epoch) of one matrix. The streams of the device share it: a
+ * GEMM on another stream than the conversion waits for its event, and a slot
+ * is overwritten only after the GEMMs that read it, on every stream.
+ */
+typedef struct hicma_operand_cache_slot_s {
+    const void *desc;      /**< Matrix of the cached tile */
+    size_t tile;           /**< Tile index, hicma_tile_idx(m, k) */
+    int epoch;             /**< operand_cache_epoch of the conversion */
+    int src_type;          /**< omc_dtype_t the tile was converted from */
+    int dst_type;          /**< omc_dtype_t it was converted to */
+    int sr;                /**< Stochastic rounding */
+    float scale;           /**< Host scale of the conversion (1: none) */
+    int valid;             /**< Holds a converted tile */
+    int pins;              /**< GEMMs between hicma_operand_cache_get and _put */
+    int producer;          /**< Stream index that converted it */
+    uint64_t stamp;        /**< Last use, for LRU */
+    uint64_t used;         /**< Streams (bit j) with a done[j] event recorded since the conversion */
+    void *buf;             /**< The converted tile (FP8: then its scale {amax, s, 1/s, 0}) */
+    cudaEvent_t ready;     /**< Recorded on the producer stream after the conversion */
+    cudaEvent_t *done;     /**< Per stream: recorded after the last GEMM of that stream that read buf */
+} hicma_operand_cache_slot_t;
+
+typedef struct hicma_operand_cache_s {
+    pthread_mutex_t lock;
+    zone_malloc_t *zone;   /**< Device memory zone the slots come from */
+    int max_slots;         /**< Slots it may take */
+    int nslots;            /**< Slots taken so far */
+    int grow;              /**< 0 once the zone had no room: reuse slots */
+    int nstreams;          /**< Stream indices 0 .. nstreams-1 (PaRSEC exec_stream index) */
+    int mb;                /**< Tile size; leading dimension of the cached tiles */
+    size_t slot_bytes;     /**< Bytes of a slot */
+    uint64_t clock;
+    uint64_t hits, misses, fallbacks;
+    hicma_operand_cache_slot_t *slots;
+} hicma_operand_cache_t;
 
 /**
  * @brief Main POTRF workspace structure

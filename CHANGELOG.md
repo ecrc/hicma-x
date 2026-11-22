@@ -57,6 +57,20 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
 - FP16 conversions are available on every CPU (they were Fugaku-only), and
   float -> integer conversions saturate (NaN -> 0) instead of being undefined
   out of range.
+- GPU operand cache (`--operand_cache`, default on). A tile sent in a higher
+  precision than a GEMM's was converted again by every GEMM reading it, up to
+  NT - 1 times. Each GPU now keeps the converted FP8, FP16/BF16 and FP32
+  operands of a factorization and reuses them, with bit-identical results.
+  The memory comes from PaRSEC's device zone when first needed: up to 2*NT
+  tiles per precision, at most 5 % of the zone each. FP8 GEMMs read their
+  scales through cuBLASLt pointer attributes instead of two device copies.
+  On an H100 (N = 45056): 1.07-1.08x for kinds 8, 9 and 10, 1.02-1.04x for
+  the FP32/FP16 kinds; conversions take 4.9 % instead of 19 % of the GPU time
+  when most tiles are FP8. Report in `docs/omnicast/round3/REPORT.md`.
+- OmniCast round 3: hardware FP8 converts on sm_89+, 4 loads in flight in the
+  amax pass of dynamic scaling, an opt-in fused dynamic-scaling kernel, and,
+  for its other users, faster host FP8 encoding (F16C) and streaming stores
+  for large in-place widening on the host.
 
 ### Correctness
 

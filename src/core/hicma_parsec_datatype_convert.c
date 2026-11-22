@@ -871,4 +871,151 @@ void hicma_parsec_fp8_operand_GPU(omc_dtype_t src_type, int nrows, int ncols,
     }
     HICMA_OMC( omc_gpu_convert_2d(src_type, S, lds, OMC_FP8_E4M3, T, ldt, nrows, ncols, &o, stream) );
 }
+
+static void hicma_operand_cache_check(cudaError_t err, const char *what)
+{
+    if( cudaSuccess != err ) {
+        fprintf(stderr, "GPU operand cache: %s failed: %s\n", what, cudaGetErrorString(err));
+        abort();
+    }
+}
+
+void hicma_operand_convert(const hicma_operand_conv_t *cv, void *T, int mb, cudaStream_t stream)
+{
+#if HAVE_FP8
+    if( OMC_FP8_E4M3 == cv->dst_type ) {
+        int ld = hicma_fp8_ld(mb);
+        hicma_parsec_fp8_operand_GPU(cv->src_type, cv->nrows, cv->ncols, cv->S, cv->lds, T, ld, ld, ld,
+                hicma_fp8_tile_scale(T, mb), cv->fp8_scaling, stream);
+        return;
+    }
+#endif
+    omc_options_t o = {0};
+    if( cv->sr ) { o.rounding = OMC_ROUND_STOCHASTIC; o.seed = cv->seed; }
+    if( 1.0f != cv->scale ) { o.scale_mode = OMC_SCALE_HOST; o.scale = cv->scale; }
+    HICMA_OMC( omc_gpu_convert_2d(cv->src_type, cv->S, cv->lds, cv->dst_type, T, mb, cv->nrows, cv->ncols,
+                                  (cv->sr || 1.0f != cv->scale) ? &o : NULL, stream) );
+}
+
+/* Take one more slot from the device memory zone; NULL (and no more tries)
+ * when it has no room */
+static hicma_operand_cache_slot_t *hicma_operand_cache_grow(hicma_operand_cache_t *c)
+{
+    hicma_operand_cache_slot_t *e = &c->slots[c->nslots];
+    void *buf = zone_malloc(c->zone, c->slot_bytes);
+    if( NULL == buf ) {
+        c->grow = 0;
+        return NULL;
+    }
+    e->done = (cudaEvent_t *)calloc((size_t)c->nstreams, sizeof(cudaEvent_t));
+    int ok = (NULL != e->done) && cudaSuccess == cudaEventCreateWithFlags(&e->ready, cudaEventDisableTiming);
+    int j = 0;
+    for( ; ok && j < c->nstreams; j++ ) {
+        ok = cudaSuccess == cudaEventCreateWithFlags(&e->done[j], cudaEventDisableTiming);
+    }
+    if( !ok ) {
+        fprintf(stderr, "GPU operand cache: event creation failed\n");
+        abort();
+    }
+    e->buf = buf;
+    e->producer = -1;
+    e->valid = 0;
+    e->stamp = 0;
+    e->used = 0;
+    e->pins = 0;
+    c->nslots++;
+    return e;
+}
+
+void *hicma_operand_cache_get(hicma_operand_cache_t *c, int sidx, cudaStream_t stream,
+        const void *desc, int epoch, size_t tile, const hicma_operand_conv_t *cv, int *converted)
+{
+    *converted = 0;
+    if( NULL == c || sidx < 0 || sidx >= c->nstreams ) return NULL;
+
+    pthread_mutex_lock(&c->lock);
+    hicma_operand_cache_slot_t *hit = NULL, *victim = NULL;
+    for( int i = 0; i < c->nslots; i++ ) {
+        hicma_operand_cache_slot_t *e = &c->slots[i];
+        if( e->valid && e->tile == tile && e->desc == desc && e->epoch == epoch
+                && e->src_type == (int)cv->src_type && e->dst_type == (int)cv->dst_type
+                && e->sr == cv->sr && e->scale == cv->scale ) {
+            hit = e;
+            break;
+        }
+        if( 0 == e->pins && (NULL == victim || e->stamp < victim->stamp) ) {
+            victim = e;
+        }
+    }
+
+    if( NULL != hit ) {
+        if( hit->producer != sidx ) {
+            hicma_operand_cache_check(cudaStreamWaitEvent(stream, hit->ready, 0), "cudaStreamWaitEvent");
+        }
+        hit->pins++;
+        hit->stamp = ++c->clock;
+        c->hits++;
+        pthread_mutex_unlock(&c->lock);
+        return hit->buf;
+    }
+
+    /* A stale or empty slot first, then a new slot, then the least recently used one */
+    hicma_operand_cache_slot_t *e = NULL;
+    if( NULL != victim && (!victim->valid || victim->epoch != epoch || victim->desc != desc) ) {
+        e = victim;
+    } else if( c->grow && c->nslots < c->max_slots ) {
+        e = hicma_operand_cache_grow(c);
+    }
+    if( NULL == e ) e = victim;
+    if( NULL == e ) {
+        c->fallbacks++;
+        pthread_mutex_unlock(&c->lock);
+        return NULL;
+    }
+
+    /* Overwrite the slot only after its conversion and every GEMM that read
+     * it; those of this stream are ordered before already */
+    for( int j = 0; j < c->nstreams; j++ ) {
+        if( j != sidx && ((e->used >> j) & 1) ) {
+            hicma_operand_cache_check(cudaStreamWaitEvent(stream, e->done[j], 0), "cudaStreamWaitEvent");
+        }
+    }
+    if( e->producer >= 0 && e->producer != sidx ) {
+        hicma_operand_cache_check(cudaStreamWaitEvent(stream, e->ready, 0), "cudaStreamWaitEvent");
+    }
+
+    hicma_operand_convert(cv, e->buf, c->mb, stream);
+    hicma_operand_cache_check(cudaEventRecord(e->ready, stream), "cudaEventRecord");
+
+    e->desc = desc;
+    e->tile = tile;
+    e->epoch = epoch;
+    e->src_type = (int)cv->src_type;
+    e->dst_type = (int)cv->dst_type;
+    e->sr = cv->sr;
+    e->scale = cv->scale;
+    e->valid = 1;
+    e->producer = sidx;
+    e->used = 0;
+    e->pins = 1;
+    e->stamp = ++c->clock;
+    c->misses++;
+    *converted = 1;
+    pthread_mutex_unlock(&c->lock);
+    return e->buf;
+}
+
+void hicma_operand_cache_put(hicma_operand_cache_t *c, void *buf, int sidx, cudaStream_t stream)
+{
+    pthread_mutex_lock(&c->lock);
+    hicma_operand_cache_slot_t *e = NULL;
+    for( int i = 0; i < c->nslots; i++ ) {
+        if( c->slots[i].buf == buf ) { e = &c->slots[i]; break; }
+    }
+    assert(NULL != e && e->pins > 0);
+    hicma_operand_cache_check(cudaEventRecord(e->done[sidx], stream), "cudaEventRecord");
+    e->used |= (uint64_t)1 << sidx;
+    e->pins--;
+    pthread_mutex_unlock(&c->lock);
+}
 #endif

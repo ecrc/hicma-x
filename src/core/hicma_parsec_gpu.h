@@ -120,6 +120,9 @@ parsec_potrf_stream_workspace_t *lookup_gpu_workspace( parsec_device_cuda_module
 int lookup_gpu_workspace_j( parsec_device_cuda_module_t *cuda_device,
         parsec_cuda_exec_stream_t *cuda_stream );
 
+/** Operand cache counters {conversions, reuses, fallbacks, slots, bytes} of this process's GPUs */
+void hicma_operand_cache_stats( hicma_parsec_data_t *data, uint64_t stats[5], int reset );
+
 /**
  * @brief Allocate memory for workspace
  * 

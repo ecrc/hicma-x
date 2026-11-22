@@ -211,7 +211,79 @@ static void hicma_parsec_warn_sr_hp_cpu(void)
         abort();                                                                 \
     } while(0)
 
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+/* A GEMM operand held in a slot of an operand cache until the GEMM reading it
+ * is enqueued (hicma_operand_release) */
+typedef struct hicma_operand_hold_s {
+    hicma_operand_cache_t *c;
+    void *buf;
+} hicma_operand_hold_t;
+
+/* The device's operand cache for tiles converted to dst_type; NULL for FP64 */
+static hicma_operand_cache_t *hicma_operand_cache_for(parsec_potrf_stream_workspace_t *ws, omc_dtype_t dst_type)
+{
+    if( NULL == ws->operand_cache ) return NULL;
+    switch( dst_type ) {
+        case OMC_FP8_E4M3: return ws->operand_cache[HICMA_OPC_FP8];
+        case OMC_FP16:
+        case OMC_BF16:     return ws->operand_cache[HICMA_OPC_2B];
+        case OMC_FP32:     return ws->operand_cache[HICMA_OPC_4B];
+        default:           return NULL;
+    }
+}
+
+/* GEMM operand tile (row, k) of descA converted as cv says: from the device's
+ * operand cache, which converts a tile once for every GEMM that reads it, or
+ * else converted into buf (a full-tile stream buffer). */
+static void *hicma_operand(hicma_parsec_params_t *params_tlr, parsec_tiled_matrix_t *descA,
+        parsec_potrf_stream_workspace_t *ws, int sidx, cudaStream_t stream, int counter_id,
+        int row, int k, const hicma_operand_conv_t *cv, void *buf, hicma_operand_hold_t *hold)
+{
+    int converted = 0;
+    hicma_operand_cache_t *c = hicma_operand_cache_for(ws, cv->dst_type);
+    void *p = hicma_operand_cache_get(c, sidx, stream, descA, params_tlr->operand_cache_epoch,
+            hicma_tile_idx(params_tlr, row, k), cv, &converted);
+    if( NULL != p ) {
+        if( converted ) hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
+        hold->c = c;
+        hold->buf = p;
+        return p;
+    }
+    hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
+    hicma_operand_convert(cv, buf, descA->mb, stream);
+    return buf;
+}
+
+static void hicma_operand_release(hicma_operand_hold_t *hold, int sidx, cudaStream_t stream)
+{
+    if( NULL != hold->buf ) {
+        hicma_operand_cache_put(hold->c, hold->buf, sidx, stream);
+        hold->buf = NULL;
+    }
+}
+
+/* Conversion of a full operand tile S (mb x nb, leading dimension mb) */
+#define HICMA_CONV(src_, dst_, S_, sr_, seed_) (&(hicma_operand_conv_t){ \
+        .src_type = (src_), .dst_type = (dst_), .S = (S_), .lds = descA->mb, \
+        .nrows = descA->mb, .ncols = descA->nb, .sr = (sr_), .seed = (seed_), \
+        .scale = 1.0f, .fp8_scaling = params_tlr->fp8_scaling })
+#define HICMA_CONV_SR(src_, dst_, S_, row_, col_) \
+        HICMA_CONV(src_, dst_, S_, params_tlr->enable_stochastic_rounding, \
+                   params_tlr->enable_stochastic_rounding ? hicma_parsec_sr_seed(row_, col_) : 0)
+#endif /* PARSEC_HAVE_DEV_CUDA_SUPPORT || PARSEC_HAVE_DEV_HIP_SUPPORT */
+
 #if HAVE_FP8
+/* Point matmulDesc_scaled at the inverse scales 1/s of this GEMM's operands:
+ * each scale is {amax, s, 1/s, 0} (hicma_parsec_fp8_operand_GPU), behind the
+ * entries of the FP8 tile (sent, cached or converted into a stream buffer).
+ * cublasLtMatmul reads the attribute when it is called. */
+static void hicma_fp8_set_scales(cublasLtMatmulDesc_t desc, const float *A_scale, const float *B_scale)
+{
+    const float *a = A_scale + 2, *b = B_scale + 2;
+    cublasLtMatmulDescSetAttribute(desc, CUBLASLT_MATMUL_DESC_A_SCALE_POINTER, &a, sizeof(a));
+    cublasLtMatmulDescSetAttribute(desc, CUBLASLT_MATMUL_DESC_B_SCALE_POINTER, &b, sizeof(b));
+}
+
 static int hicma_parsec_check_cublaslt_status(cublasStatus_t status,
                                               const char *op,
                                               int m, int n, int k)
@@ -4046,6 +4118,11 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
     buffer_mbr = (double *)stream_found->gpu_buffer_mbr;
     buffer_rr = (double *)stream_found->gpu_buffer_rr;
 
+    /* Operands converted to the GEMM precision come from the device's operand
+     * cache (hicma_operand), released after the GEMM */
+    const int sidx = lookup_gpu_workspace_j(cuda_device, cuda_stream);
+    hicma_operand_hold_t A_hold = {0}, B_hold = {0};
+
     if(DEBUG_INFO) printf("GPU GEMM (%d, %d, %d) : %d %d %d : C_DENSE, A_DENSE, B_DENSE\n",
             m, n, k, params_tlr->decisions[n*descA->lmt+m], params_tlr->decisions[k*descA->lmt+m], params_tlr->decisions[k*descA->lmt+n]);
 
@@ -4100,26 +4177,20 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
 
         /* Convert datatype, A */
         if( DENSE_DP == params_tlr->decisions_send[k*descA->lmt+m] ) {
-            hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, A, descA->mb, OMC_FP32, A_s, descA->mb, descA->mb, descA->nb,
-                    HICMA_OMC_SR(params_tlr->enable_stochastic_rounding, hicma_parsec_sr_seed(m, k)), cuda_stream->cuda_stream) );
-            A_use = A_s;
+            A_use = hicma_operand(params_tlr, descA, stream_found, sidx, cuda_stream->cuda_stream, counter_id, m, k,
+                    HICMA_CONV_SR(OMC_FP64, OMC_FP32, A, m, k), A_s, &A_hold);
         } else if( DENSE_HP == params_tlr->decisions_send[k*descA->lmt+m] ) {
-            hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            HICMA_OMC( omc_gpu_convert_2d(OMC_FP16, A, descA->mb, OMC_FP32, A_s, descA->mb, descA->mb, descA->nb, NULL, cuda_stream->cuda_stream) );
-            A_use = A_s;
+            A_use = hicma_operand(params_tlr, descA, stream_found, sidx, cuda_stream->cuda_stream, counter_id, m, k,
+                    HICMA_CONV(OMC_FP16, OMC_FP32, A, 0, 0), A_s, &A_hold);
         }
 
         /* Convert datatype, B */
         if( DENSE_DP == params_tlr->decisions_send[k*descA->lmt+n] ) {
-            hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, B, descA->mb, OMC_FP32, B_s, descA->mb, descA->mb, descA->nb,
-                    HICMA_OMC_SR(params_tlr->enable_stochastic_rounding, hicma_parsec_sr_seed(n, k)), cuda_stream->cuda_stream) );
-            B_use = B_s;
+            B_use = hicma_operand(params_tlr, descA, stream_found, sidx, cuda_stream->cuda_stream, counter_id, n, k,
+                    HICMA_CONV_SR(OMC_FP64, OMC_FP32, B, n, k), B_s, &B_hold);
         } else if( DENSE_HP == params_tlr->decisions_send[k*descA->lmt+n] ) {
-            hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            HICMA_OMC( omc_gpu_convert_2d(OMC_FP16, B, descA->mb, OMC_FP32, B_s, descA->mb, descA->mb, descA->nb, NULL, cuda_stream->cuda_stream) );
-            B_use = B_s;
+            B_use = hicma_operand(params_tlr, descA, stream_found, sidx, cuda_stream->cuda_stream, counter_id, n, k,
+                    HICMA_CONV(OMC_FP16, OMC_FP32, B, 0, 0), B_s, &B_hold);
         }
 
         float alpha = -1.0f, beta = 1.0f;
@@ -4142,28 +4213,20 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
                 {
                     /* Convert datatype, A */
                     if( DENSE_DP == params_tlr->decisions_send[k*descA->lmt+m] ) {
-                        hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-                        HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, A, descA->mb, OMC_FP16, A_h, descA->mb, descA->mb, descA->nb,
-                                HICMA_OMC_SR(params_tlr->enable_stochastic_rounding, hicma_parsec_sr_seed(m, k)), cuda_stream->cuda_stream) );
-                        A_use = A_h;
+                        A_use = hicma_operand(params_tlr, descA, stream_found, sidx, cuda_stream->cuda_stream, counter_id, m, k,
+                                HICMA_CONV_SR(OMC_FP64, OMC_FP16, A, m, k), A_h, &A_hold);
                     } else if( DENSE_SP == params_tlr->decisions_send[k*descA->lmt+m] ) {
-                        hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-                        HICMA_OMC( omc_gpu_convert_2d(OMC_FP32, A, descA->mb, OMC_FP16, A_h, descA->mb, descA->mb, descA->nb,
-                                HICMA_OMC_SR(params_tlr->enable_stochastic_rounding, hicma_parsec_sr_seed(m, k)), cuda_stream->cuda_stream) );
-                        A_use = A_h;
+                        A_use = hicma_operand(params_tlr, descA, stream_found, sidx, cuda_stream->cuda_stream, counter_id, m, k,
+                                HICMA_CONV_SR(OMC_FP32, OMC_FP16, A, m, k), A_h, &A_hold);
                     }
 
                     /* Convert datatype, B */
                     if( DENSE_DP == params_tlr->decisions_send[k*descA->lmt+n] ) {
-                        hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-                        HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, B, descA->mb, OMC_FP16, B_h, descA->mb, descA->mb, descA->nb,
-                                HICMA_OMC_SR(params_tlr->enable_stochastic_rounding, hicma_parsec_sr_seed(n, k)), cuda_stream->cuda_stream) );
-                        B_use = B_h;
+                        B_use = hicma_operand(params_tlr, descA, stream_found, sidx, cuda_stream->cuda_stream, counter_id, n, k,
+                                HICMA_CONV_SR(OMC_FP64, OMC_FP16, B, n, k), B_h, &B_hold);
                     } else if( DENSE_SP == params_tlr->decisions_send[k*descA->lmt+n] ) {
-                        hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-                        HICMA_OMC( omc_gpu_convert_2d(OMC_FP32, B, descA->mb, OMC_FP16, B_h, descA->mb, descA->mb, descA->nb,
-                                HICMA_OMC_SR(params_tlr->enable_stochastic_rounding, hicma_parsec_sr_seed(n, k)), cuda_stream->cuda_stream) );
-                        B_use = B_h;
+                        B_use = hicma_operand(params_tlr, descA, stream_found, sidx, cuda_stream->cuda_stream, counter_id, n, k,
+                                HICMA_CONV_SR(OMC_FP32, OMC_FP16, B, n, k), B_h, &B_hold);
                     }
 
                     /* First local GEMM convert C from single to half */
@@ -4213,24 +4276,20 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
                 {
                     /* Convert datatype, A */
                     if( DENSE_DP == params_tlr->decisions_send[k*descA->lmt+m] ) {
-                        hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-                        HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, A, descA->mb, OMC_BF16, A_h, descA->mb, descA->mb, descA->nb, NULL, cuda_stream->cuda_stream) );
-                        A_use = A_h;
+                        A_use = hicma_operand(params_tlr, descA, stream_found, sidx, cuda_stream->cuda_stream, counter_id, m, k,
+                                HICMA_CONV(OMC_FP64, OMC_BF16, A, 0, 0), A_h, &A_hold);
                     } else if( DENSE_SP == params_tlr->decisions_send[k*descA->lmt+m] ) {
-                        hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-                        HICMA_OMC( omc_gpu_convert_2d(OMC_FP32, A, descA->mb, OMC_BF16, A_h, descA->mb, descA->mb, descA->nb, NULL, cuda_stream->cuda_stream) );
-                        A_use = A_h;
+                        A_use = hicma_operand(params_tlr, descA, stream_found, sidx, cuda_stream->cuda_stream, counter_id, m, k,
+                                HICMA_CONV(OMC_FP32, OMC_BF16, A, 0, 0), A_h, &A_hold);
                     }
 
                     /* Convert datatype, B */
                     if( DENSE_DP == params_tlr->decisions_send[k*descA->lmt+n] ) {
-                        hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-                        HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, B, descA->mb, OMC_BF16, B_h, descA->mb, descA->mb, descA->nb, NULL, cuda_stream->cuda_stream) );
-                        B_use = B_h;
+                        B_use = hicma_operand(params_tlr, descA, stream_found, sidx, cuda_stream->cuda_stream, counter_id, n, k,
+                                HICMA_CONV(OMC_FP64, OMC_BF16, B, 0, 0), B_h, &B_hold);
                     } else if( DENSE_SP == params_tlr->decisions_send[k*descA->lmt+n] ) {
-                        hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-                        HICMA_OMC( omc_gpu_convert_2d(OMC_FP32, B, descA->mb, OMC_BF16, B_h, descA->mb, descA->mb, descA->nb, NULL, cuda_stream->cuda_stream) );
-                        B_use = B_h;
+                        B_use = hicma_operand(params_tlr, descA, stream_found, sidx, cuda_stream->cuda_stream, counter_id, n, k,
+                                HICMA_CONV(OMC_FP32, OMC_BF16, B, 0, 0), B_h, &B_hold);
                     }
 
                     /* First local GEMM convert C from single to half */
@@ -4287,40 +4346,36 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
         int use_padded_fp8 = (fp8_ld != descA->mb) || (tempmm != descA->mb);
         uint16_t A_send = params_tlr->decisions_send[k*descA->lmt+m];
         uint16_t B_send = params_tlr->decisions_send[k*descA->lmt+n];
+        const float *A_scale = NULL, *B_scale = NULL;
 
         /* Operands are FP8 scaled per tile by a power of two (unless
          * --fp8_scaling 0), in the layout cuBLASLt takes (transposed, padded
          * to fp8_ld); matmulDesc_scaled multiplies the product by 1/s_A and
-         * 1/s_B from fp8_scale[2] and fp8_scale[6]. A tile potrf_dtrsm_send
-         * sent in FP8 carries its scale after its entries: copy it in. Convert
-         * the others here. */
-        if( DENSE_FP8 == A_send ) {
-            cudaMemcpyAsync( stream_found->fp8_scale, hicma_fp8_tile_scale(A, descA->mb),
-                    HICMA_FP8_SCALE_FLOATS * sizeof(float), cudaMemcpyDeviceToDevice, cuda_stream->cuda_stream );
-        } else if( DENSE_DP == A_send || DENSE_SP == A_send || DENSE_HP == A_send ) {
-            hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            hicma_parsec_fp8_operand_GPU( (DENSE_DP == A_send) ? OMC_FP64 : (DENSE_SP == A_send) ? OMC_FP32 : OMC_FP16,
-                    tempmm, descA->mb, A, descA->mb, A_fp8, fp8_ld, fp8_ld, fp8_ld,
-                    stream_found->fp8_scale, params_tlr->fp8_scaling, cuda_stream->cuda_stream );
-            A_use = A_fp8;
-        } else {
+         * 1/s_B. A tile potrf_dtrsm_send sent in FP8 carries its scale after
+         * its entries. The others were sent in the precision of another
+         * consumer: take their FP8 operand from the device's cache, which
+         * converts each tile once for every GEMM reading it. */
+        if( DENSE_DP == A_send || DENSE_SP == A_send || DENSE_HP == A_send ) {
+            hicma_operand_conv_t cv = *HICMA_CONV((DENSE_DP == A_send) ? OMC_FP64 : (DENSE_SP == A_send) ? OMC_FP32 : OMC_FP16,
+                    OMC_FP8_E4M3, A, 0, 0);
+            cv.nrows = tempmm;
+            A_use = hicma_operand(params_tlr, descA, stream_found, sidx, cuda_stream->cuda_stream, counter_id, m, k,
+                    &cv, A_fp8, &A_hold);
+        } else if( DENSE_FP8 != A_send ) {
             fprintf(stderr, "Precision A is not correct FP8: %d %d %d: %u!\n", m, n, k, (unsigned)A_send);
             HICMA_GPU_TIME_RETURN;
         }
 
-        if( DENSE_FP8 == B_send ) {
-            cudaMemcpyAsync( stream_found->fp8_scale + 4, hicma_fp8_tile_scale(B, descA->mb),
-                    HICMA_FP8_SCALE_FLOATS * sizeof(float), cudaMemcpyDeviceToDevice, cuda_stream->cuda_stream );
-        } else if( DENSE_DP == B_send || DENSE_SP == B_send || DENSE_HP == B_send ) {
-            hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            hicma_parsec_fp8_operand_GPU( (DENSE_DP == B_send) ? OMC_FP64 : (DENSE_SP == B_send) ? OMC_FP32 : OMC_FP16,
-                    descA->mb, descA->mb, B, descA->mb, B_fp8, fp8_ld, fp8_ld, fp8_ld,
-                    stream_found->fp8_scale + 4, params_tlr->fp8_scaling, cuda_stream->cuda_stream );
-            B_use = B_fp8;
-        } else {
+        if( DENSE_DP == B_send || DENSE_SP == B_send || DENSE_HP == B_send ) {
+            B_use = hicma_operand(params_tlr, descA, stream_found, sidx, cuda_stream->cuda_stream, counter_id, n, k,
+                    HICMA_CONV((DENSE_DP == B_send) ? OMC_FP64 : (DENSE_SP == B_send) ? OMC_FP32 : OMC_FP16,
+                               OMC_FP8_E4M3, B, 0, 0), B_fp8, &B_hold);
+        } else if( DENSE_FP8 != B_send ) {
             fprintf(stderr, "Precision B is not correct FP8: %d %d %d: %u!\n", m, n, k, (unsigned)B_send);
             HICMA_GPU_TIME_RETURN;
         }
+        A_scale = hicma_fp8_tile_scale(A_use, descA->mb);
+        B_scale = hicma_fp8_tile_scale(B_use, descA->mb);
 
         cublasLtHandle_t lightHandle = stream_found->lightHandle; 
         cublasLtMatmulDesc_t matmulDesc = stream_found->matmulDesc_scaled;
@@ -4332,8 +4387,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
         size_t workspaceSize = stream_found->workspaceSize; 
         void *workspace = stream_found->workspace;
         cublasLtMatmulHeuristicResult_t heuristicResultsArray = stream_found->heuristic_scaled;
-	
-        //cublasSetStream(handle, cuda_stream->cuda_stream);
+        hicma_fp8_set_scales(matmulDesc, A_scale, B_scale);
 
         // FP8
         status = cublasLtMatmul(lightHandle, matmulDesc,
@@ -4353,6 +4407,9 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
 
 #endif // HAVE_FP8
     }
+
+    hicma_operand_release(&A_hold, sidx, cuda_stream->cuda_stream);
+    hicma_operand_release(&B_hold, sidx, cuda_stream->cuda_stream);
 
 #if PRINT_KERNEL_TIME && defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
     if(gpu_time_active) {
@@ -4394,6 +4451,8 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
     void *A_use = A;
     void *B_use = B;
     void *C_use = C;
+    const int sidx = lookup_gpu_workspace_j(cuda_device, cuda_stream);
+    hicma_operand_hold_t A_hold = {0}, B_hold = {0};
 
     const int idx_send_A = k * descA->lmt + m;
     const int idx_send_B = k * descA->lmt + n;
@@ -4604,9 +4663,10 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
     } else if( DENSE_SP == new_decision ) {
         /* Convert datatype, A */
         if( DENSE_DP == Aprecision ) {
-            hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, A, descA->mb, OMC_FP32, A_s, descA->mb, tempmm, tempnn, NULL, cuda_stream->cuda_stream) );
-            A_use = A_s;
+            hicma_operand_conv_t cv = *HICMA_CONV(OMC_FP64, OMC_FP32, A, 0, 0);
+            cv.nrows = tempmm;
+            A_use = hicma_operand(params_tlr, descA, stream_found, sidx, cuda_stream->cuda_stream, counter_id, m, k,
+                    &cv, A_s, &A_hold);
         } else if( DENSE_SP != Aprecision ) {
             fprintf(stderr, "Unsupported A precision in SP GEMM: %u (%d,%d,%d)\n", (unsigned)Aprecision, m, n, k);
             HICMA_GPU_TIME_RETURN;
@@ -4614,9 +4674,10 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
 
         /* Convert datatype, B */
         if( DENSE_DP == Bprecision ) {
-            hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, B, descA->mb, OMC_FP32, B_s, descA->mb, tempmm, tempnn, NULL, cuda_stream->cuda_stream) );
-            B_use = B_s;
+            hicma_operand_conv_t cv = *HICMA_CONV(OMC_FP64, OMC_FP32, B, 0, 0);
+            cv.nrows = tempnn;
+            B_use = hicma_operand(params_tlr, descA, stream_found, sidx, cuda_stream->cuda_stream, counter_id, n, k,
+                    &cv, B_s, &B_hold);
         } else if( DENSE_SP != Bprecision ) {
             fprintf(stderr, "Unsupported B precision in SP GEMM: %u (%d,%d,%d)\n", (unsigned)Bprecision, m, n, k);
             HICMA_GPU_TIME_RETURN;
@@ -4659,13 +4720,17 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
 
         /* Convert datatype, A */
         if( DENSE_DP == Aprecision ) {
-            hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            HICMA_D2H_SCALED( tempmm, tempnn, A, descA->mb, A_h, descA->mb, scale_A, cuda_stream->cuda_stream );
-            A_use = A_h;
+            hicma_operand_conv_t cv = *HICMA_CONV(OMC_FP64, OMC_FP16, A, 0, 0);
+            cv.nrows = tempmm;
+            cv.scale = scale_A;
+            A_use = hicma_operand(params_tlr, descA, stream_found, sidx, cuda_stream->cuda_stream, counter_id, m, k,
+                    &cv, A_h, &A_hold);
         } else if( DENSE_SP == Aprecision ) {
-            hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            HICMA_S2H_SCALED( tempmm, tempnn, A, descA->mb, A_h, descA->mb, scale_A, cuda_stream->cuda_stream );
-            A_use = A_h;
+            hicma_operand_conv_t cv = *HICMA_CONV(OMC_FP32, OMC_FP16, A, 0, 0);
+            cv.nrows = tempmm;
+            cv.scale = scale_A;
+            A_use = hicma_operand(params_tlr, descA, stream_found, sidx, cuda_stream->cuda_stream, counter_id, m, k,
+                    &cv, A_h, &A_hold);
         } else {
             fprintf(stderr, "Precision A is not correct: %d %d %d (%u)!\n", m, n, k, (unsigned)Aprecision);
             HICMA_GPU_TIME_RETURN;
@@ -4673,13 +4738,17 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
 
         /* Convert datatype, B */
         if( DENSE_DP == Bprecision ) {
-            hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            HICMA_D2H_SCALED( tempmm, tempnn, B, descA->mb, B_h, descA->mb, scale_B, cuda_stream->cuda_stream );
-            B_use = B_h;
+            hicma_operand_conv_t cv = *HICMA_CONV(OMC_FP64, OMC_FP16, B, 0, 0);
+            cv.nrows = tempnn;
+            cv.scale = scale_B;
+            B_use = hicma_operand(params_tlr, descA, stream_found, sidx, cuda_stream->cuda_stream, counter_id, n, k,
+                    &cv, B_h, &B_hold);
         } else if( DENSE_SP == Bprecision ) {
-            hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            HICMA_S2H_SCALED( tempmm, tempnn, B, descA->mb, B_h, descA->mb, scale_B, cuda_stream->cuda_stream );
-            B_use = B_h;
+            hicma_operand_conv_t cv = *HICMA_CONV(OMC_FP32, OMC_FP16, B, 0, 0);
+            cv.nrows = tempnn;
+            cv.scale = scale_B;
+            B_use = hicma_operand(params_tlr, descA, stream_found, sidx, cuda_stream->cuda_stream, counter_id, n, k,
+                    &cv, B_h, &B_hold);
         } else {
             fprintf(stderr, "Precision B is not correct: %d %d %d (%u)!\n", m, n, k, (unsigned)Bprecision);
             HICMA_GPU_TIME_RETURN;
@@ -4729,20 +4798,21 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
             HICMA_GPU_TIME_RETURN;
         }
 
-        /* Convert A and B to FP8 (transposed, padded to fp8_ld), each scaled
-         * by a power of two from its largest entry unless --fp8_scaling 0;
-         * matmulDesc_scaled multiplies the product by the inverse scales. */
-        hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-        hicma_parsec_fp8_operand_GPU( (DENSE_DP == Aprecision) ? OMC_FP64 : OMC_FP32,
-                tempmm, descA->mb, A, descA->mb, A_fp8, fp8_ld, fp8_ld, fp8_ld,
-                stream_found->fp8_scale, params_tlr->fp8_scaling, cuda_stream->cuda_stream );
-        A_use = A_fp8;
-
-        hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-        hicma_parsec_fp8_operand_GPU( (DENSE_DP == Bprecision) ? OMC_FP64 : OMC_FP32,
-                tempnn, descA->mb, B, descA->mb, B_fp8, fp8_ld, fp8_ld, fp8_ld,
-                stream_found->fp8_scale + 4, params_tlr->fp8_scaling, cuda_stream->cuda_stream );
-        B_use = B_fp8;
+        /* A and B in FP8 (transposed, padded to fp8_ld), each scaled by a
+         * power of two from its largest entry unless --fp8_scaling 0;
+         * matmulDesc_scaled multiplies the product by the inverse scales.
+         * Converted once per tile in the device's FP8 operand cache. */
+        const float *A_scale = NULL, *B_scale = NULL;
+        hicma_operand_conv_t cvA = *HICMA_CONV((DENSE_DP == Aprecision) ? OMC_FP64 : OMC_FP32, OMC_FP8_E4M3, A, 0, 0);
+        hicma_operand_conv_t cvB = *HICMA_CONV((DENSE_DP == Bprecision) ? OMC_FP64 : OMC_FP32, OMC_FP8_E4M3, B, 0, 0);
+        cvA.nrows = tempmm;
+        cvB.nrows = tempnn;
+        A_use = hicma_operand(params_tlr, descA, stream_found, sidx, cuda_stream->cuda_stream, counter_id, m, k,
+                &cvA, A_fp8, &A_hold);
+        B_use = hicma_operand(params_tlr, descA, stream_found, sidx, cuda_stream->cuda_stream, counter_id, n, k,
+                &cvB, B_fp8, &B_hold);
+        A_scale = hicma_fp8_tile_scale(A_use, descA->mb);
+        B_scale = hicma_fp8_tile_scale(B_use, descA->mb);
 
         /* FP8 */
         cublasLtHandle_t lightHandle = stream_found->lightHandle;
@@ -4753,6 +4823,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
         size_t workspaceSize = stream_found->workspaceSize;
         void *workspace = stream_found->workspace;
         cublasLtMatmulHeuristicResult_t heuristicResultsArray = stream_found->heuristic_scaled;
+        hicma_fp8_set_scales(matmulDesc, A_scale, B_scale);
 
         if( DENSE_DP == params_tlr->decisions[idx_C] || use_padded_fp8 ) {
             float alpha = 1.0f, beta = 0.0f;
@@ -4786,6 +4857,9 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
     } else {
             fprintf(stderr, "New decision is not supported: %d %d %d!\n", m, n, k);
     }
+
+    hicma_operand_release(&A_hold, sidx, cuda_stream->cuda_stream);
+    hicma_operand_release(&B_hold, sidx, cuda_stream->cuda_stream);
 
 #if PRINT_KERNEL_TIME && defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
     if(gpu_time_active) {

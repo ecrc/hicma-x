@@ -8,6 +8,16 @@ changed, how it was validated and what it bought. OmniCast's own design,
 profiling and kernel measurements are in `omnicast/docs/REPORT.md` (with
 `DESIGN.md` and `PERFORMANCE.md` next to it).
 
+## Converting once: the GPU operand cache (round 3)
+
+GPU GEMMs used to convert their operands from the tile's send precision on
+every call, so a panel tile was converted up to NT - 1 times. Each GPU now
+keeps the converted copies, with bit-identical results (`--operand_cache`,
+default on). With most tiles in FP8, conversions fall from 19 % to 4.9 % of
+the GPU kernel time, and the factorization runs 1.07-1.08x faster on an
+H100. Design, validation and measurements, with figures:
+[`round3/REPORT.md`](round3/REPORT.md).
+
 ## OmniCast update of 2026-11-22
 
 The submodule now points to the second round of OmniCast work

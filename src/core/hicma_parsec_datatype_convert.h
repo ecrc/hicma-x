@@ -832,6 +832,47 @@ int convert_datatype_adaptive_unary_GPU(void *A, int mb, int nb, int lda,
 void hicma_parsec_fp8_operand_GPU(omc_dtype_t src_type, int nrows, int ncols,
         const void *S, int lds, void *T, int ldt, int padded_rows, int padded_cols,
         float *scale, int scaling, cudaStream_t stream);
+
+/**
+ * @brief A conversion of a GEMM operand tile for hicma_operand_cache_get
+ *
+ * S (src_type, nrows by ncols, leading dimension lds) to dst_type with
+ * leading dimension mb, rounded stochastically (seed) if sr, multiplied by
+ * scale unless 1. dst_type OMC_FP8_E4M3: the FP8 GEMM operand of
+ * hicma_parsec_fp8_operand_GPU (transposed, padded to hicma_fp8_ld(mb),
+ * scaled per tile if fp8_scaling, scale at hicma_fp8_tile_scale(buf, mb)).
+ */
+typedef struct hicma_operand_conv_s {
+    omc_dtype_t src_type, dst_type;
+    const void *S;
+    int lds, nrows, ncols;
+    int sr;
+    uint64_t seed;
+    float scale;
+    int fp8_scaling;
+} hicma_operand_conv_t;
+
+/** @brief Run the conversion cv into T (leading dimension mb) on stream */
+void hicma_operand_convert(const hicma_operand_conv_t *cv, void *T, int mb, cudaStream_t stream);
+
+/**
+ * @brief Tile `tile` of matrix desc converted as cv says, from the device's
+ * operand cache c (hicma_operand_cache_t)
+ *
+ * Returns the cached tile after making `stream` wait for its conversion; on
+ * a miss converts it into a free or the least recently used slot on `stream`
+ * and sets *converted. Returns NULL (no conversion) when c is NULL or no slot
+ * is free: the caller converts into its own buffer. Each non-NULL return needs
+ * a hicma_operand_cache_put after the GEMM that reads it is enqueued.
+ *
+ * @param[in] sidx Index of `stream` among the device's exec streams
+ * @param[in] epoch params->operand_cache_epoch: entries of other epochs are stale
+ */
+void *hicma_operand_cache_get(hicma_operand_cache_t *c, int sidx, cudaStream_t stream,
+        const void *desc, int epoch, size_t tile, const hicma_operand_conv_t *cv, int *converted);
+
+/** @brief Release a hicma_operand_cache_get after the GEMM reading buf on `stream` is enqueued */
+void hicma_operand_cache_put(hicma_operand_cache_t *c, void *buf, int sidx, cudaStream_t stream);
 #endif
 
 

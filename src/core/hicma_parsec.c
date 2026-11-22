@@ -23,6 +23,9 @@
  **/
 
 #include "hicma_parsec.h"
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+#include "hicma_parsec_gpu.h"
+#endif
 #include "hicma_parsec_sparse_analysis.h"
 
 /* =============================================================================
@@ -459,6 +462,16 @@ int hicma_parsec_potrf( parsec_context_t *parsec,
                (size_t)params->counter_stride * sizeof(uint64_t));
     }
 
+    /* GEMM operands cached by an earlier factorization (or the warmup) are
+     * stale: tiles of this one have other values */
+    params->operand_cache_epoch++;
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    {
+        uint64_t operand_cache_stats[5];
+        hicma_operand_cache_stats(data, operand_cache_stats, 1);
+    }
+#endif
+
     /* Synchronize all processes and start timing for accurate measurement */
     MPI_Barrier( MPI_COMM_WORLD );
     SYNC_TIME_START();
@@ -642,6 +655,18 @@ int hicma_parsec_potrf( parsec_context_t *parsec,
                     params->nb_gemms[DENSE_DP*counter_stride], params->nb_gemms[DENSE_SP*counter_stride], params->nb_gemms[DENSE_HP*counter_stride],
                     params->nb_gemms[DENSE_FP8*counter_stride], params->nb_gemms[LOW_RANK_DP*counter_stride], params->nb_gemms[LOW_RANK_SP*counter_stride], params->nb_datatype_conversions[0]);
         }
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+        if( params->gpus > 0 ) {
+            uint64_t operand_cache_stats[5];
+            hicma_operand_cache_stats(data, operand_cache_stats, 1);
+            MPI_Allreduce(MPI_IN_PLACE, operand_cache_stats, 5, MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+            if( 0 == params->rank ) {
+                fprintf(stderr, GRN"GPU_operand_cache: conversions= %lu reuses= %lu fallbacks= %lu slots= %lu MB= %.1f\n"RESET,
+                        operand_cache_stats[0], operand_cache_stats[1], operand_cache_stats[2],
+                        operand_cache_stats[3], (double)operand_cache_stats[4] / 1.0e6);
+            }
+        }
+#endif
     }
 
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)

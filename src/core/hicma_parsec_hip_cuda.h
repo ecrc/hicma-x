@@ -117,6 +117,9 @@ typedef struct parsec_hip_exec_stream_s parsec_hip_exec_stream_t;
 #define cudaEventDestroy hipEventDestroy                  // Destroy event object
 #define cudaEventElapsedTime hipEventElapsedTime          // Calculate elapsed time between events
 #define cudaEventRecord hipEventRecord                    // Record event in stream
+#define cudaEventCreateWithFlags hipEventCreateWithFlags  // Create event object with flags
+#define cudaEventDisableTiming hipEventDisableTiming      // Event without timing data
+#define cudaStreamWaitEvent hipStreamWaitEvent            // Make a stream wait for an event
 #define cudaEventSynchronize hipEventSynchronize          // Wait for event completion
 
 // Memory management functions
