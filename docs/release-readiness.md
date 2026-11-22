@@ -1284,6 +1284,74 @@ earlier checks on this source.
 **leconte** was not run: it was taken by other jobs, and this round skips it
 on request. Section 5.18's leconte results are on this source.
 
+### 5.20 Radeon VII (gfx906): HIP at run time (2026-11-22)
+
+**Why.** Since the ninth pass (section 5.15) the HIP code had been compiled
+but not run: the tenth pass's placement rule and shared CPU GEMM, OmniCast,
+and the GPU operand cache. No gfx90a GPU is available here; histamine2 and
+histamine3 each have two Radeon VIIs (gfx906, 16 GB) and an EPYC 7302.
+
+**Build.** The ROCm 6.4.3 on these nodes (`/opt/rocm`) has no rocBLAS
+kernels for gfx906: its Tensile library starts at gfx908. ROCm 6.3.2
+(`/apps/rocm/rocm-6.3.2`) still has them, and a rocBLAS `dgemm` plus
+rocSOLVER `dpotrf` probe with it gives the reference result on the
+Radeon VII. The tree (`27a2a62`) was built against 6.3.2 with
+`-DCMAKE_HIP_ARCHITECTURES=gfx906` and every ROCm package directory
+(`hip_DIR`, `rocblas_DIR`, ...) set to 6.3.2; otherwise CMake takes HIP 6.4
+from `/opt/rocm`.
+
+**Runs.** One Radeon VII and 2 CPU cores (other jobs held the other 30), so
+PaRSEC ran one worker thread.
+
+- CTest `-L hicma` 46 / 46: the 14 GPU cases, OmniCast's 4 tests, the 27 CPU
+  cases with the two-rank ones, and the fixture.
+- GPU operand cache, N=16384, NB=1024, 11 configurations: kind 5 adaptive at
+  1e-8 and 1e-4 (FP16, BF16, stochastic rounding), static bands with BF16
+  operands and FP32 or BF16 C, an FP32 band, kinds 8, 9 and 10 at 1e-3, and
+  runtime decisions. Each ran with the cache on, off, and at 4 slots, and
+  all three gave identical residuals. The cache took 67-201 MB with no
+  fallbacks, and cut the conversions per factorization 1.3-7.9x.
+- Two of the 11 fail their check in all three settings, as they do with the
+  baseline (`b72d652`) on the H100:
+  - kind 5 at 1e-8 (2.31e-8 for a bound of 1e-8; the CTest case runs N=8192);
+  - BF16 operands with BF16 C. The factorization loses positive definiteness
+    (info 9265; 9258 on the H100's baseline) and the driver exits non-zero.
+- Interleaved timings, N=30720, NB=2048: three rounds of three runs, the
+  first run of each process dropped. The cache gives 0.997-1.014x, within
+  the run-to-run spread (1-9 %):
+
+  | configuration | no cache (s) | cache (s) | speedup |
+  |---|---|---|---|
+  | kind 5, 1e-8 | 3.224 | 3.219 | 1.002 |
+  | kind 5, 1e-4 | 2.089 | 2.060 | 1.014 |
+  | kind 5, 1e-4, BF16 | 12.739 | 12.731 | 1.001 |
+  | kind 5, 1e-4, stochastic rounding | 2.098 | 2.074 | 1.011 |
+  | kind 8, 1e-3 | 1.939 | 1.927 | 1.006 |
+  | kind 9, 1e-3 | 1.493 | 1.480 | 1.009 |
+  | kind 10, 1e-3 | 2.036 | 2.017 | 1.009 |
+  | runtime decisions | 2.693 | 2.702 | 0.997 |
+
+- rocprofv3 kernel traces of the factorization phase show why the gain is
+  small. Conversions take 2.6 % (kind 8) and 2.9 % (kind 5 with stochastic
+  rounding) of the GPU kernel time without the cache, and 1.1 % and 1.5 %
+  with it (1120 -> 334 and 658 -> 315 launches). GEMMs take most of the rest.
+  On the H100 with FP8 tiles, conversions were 17-19 %.
+- **FP16 on gfx906.** rocBLAS's FP16 GEMMs keep subnormal inputs (2^-20)
+  with FP32 C (`rocblas_gemm_ex`, k = 64 and 2048) and with FP16 C
+  (`rocblas_hgemm`). gfx906 has no BF16 hardware: BF16 GEMMs made adaptive
+  kind 5 at 1e-4 6x slower (12.73 s against 2.06-2.09 s). FP16 accuracy
+  matches NVIDIA's (adaptive kind 5 at 1e-4: 2.42e-7 here, 2.07e-7 on the
+  H100).
+  - The start-up note pointing HIP runs with FP16 tiles to BF16 therefore
+    skips gfx906 (`hicma_parsec.c`, from `gcnArchName`).
+  - Checked: no note with 13 FP16 tiles on the Radeon VII. The gfx90a HIP
+    tree and the CUDA tree still build.
+- The start-up warm-up runs 8 BF16 GEMMs of 84 ms each on this GPU: 0.67 s
+  per process, outside the timed factorization.
+
+Not covered: gfx90a and newer AMD GPUs at run time since the ninth pass,
+several AMD GPUs, and multi-node runs.
+
 
 ## 6. Release checklist
 
@@ -1329,9 +1397,10 @@ on request. Section 5.18's leconte results are on this source.
    effectively checked; binding it would need a second, looser bound).
 4. **CI**: both jobs (CPU build, tests and install; CUDA compile) pass on every
    push since section 5.10 (one run per push, listed in ecrc/hicma-x#13).
-5. **Hardware not available here**: multi-node runs and AMD GPUs other than
-   gfx90a. The GPU validation matrix ran on an H100 (section 5.13) and on an
-   MI250X node (section 5.15).
+5. **Hardware not available here**: multi-node runs, and gfx90a and newer AMD
+   GPUs since the ninth pass. The GPU validation matrix ran on an H100
+   (section 5.13) and on an MI250X node (section 5.15); the current code ran
+   on a Radeon VII (gfx906, section 5.20).
 6. **Defaults that cost performance** (section 5.11): a GPU build runs on the
    CPU unless `--gpus` is given, and kinds 1 and 2 (tile low-rank) are fully
    dense unless `--band_dense` is given. Both now print a note. Making
@@ -1351,7 +1420,8 @@ on request. Section 5.18's leconte results are on this source.
    say so and point to `--tensor_gemm_hp 0x20`; the HIP builds' adaptive GPU
    tests use it. Kind 10 scales its FP16 operands on HIP. A per-tile scale
    for the static FP16 paths (as the FP8 GEMMs have) would make FP16 safe
-   on AMD GPUs too; it is not done.
+   on AMD GPUs too; it is not done. gfx906 keeps FP16 subnormals and has no
+   BF16 hardware, so the note skips it (section 5.20).
 
 ## 8. Remaining and future work
 

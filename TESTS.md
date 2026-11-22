@@ -151,7 +151,10 @@ CUDA build; see `BUILD.md`.
   adaptive kind-5 run gives 1.0e-5 in FP16 and 1.2e-8 in BF16 for
   `--fixedacc 1e-8`. A HIP run that uses FP16 tiles prints how many. Kind 10
   scales its FP16 operands on HIP and is not affected; the HIP builds' CTest
-  cases of adaptive kinds 5, 8 and 9 use 0x20.
+  cases of adaptive kinds 5, 8 and 9 use 0x20. gfx906 (Radeon VII) keeps FP16
+  subnormals and has no BF16 hardware, so keep FP16 there (BF16 GEMMs made an
+  adaptive kind-5 run 6x slower); its CTest cases still pass with 0x20.
+  rocBLAS has no gfx906 kernels from ROCm 6.4 on: build against ROCm 6.3.
 - `--enable_stochastic_rounding` is implemented for kinds 1 to 5 and the
   TRMM, not for kinds 8, 9 and 10.
 - The GPU GEMM variants other than the default are not implemented

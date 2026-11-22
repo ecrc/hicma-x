@@ -453,6 +453,22 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   (`PARSEC_MCA_mpi_gpu_aware` and a user-set mode still win). With GTL and
   the variable set, two ranks with one MI250X GCD each pass as they are.
 
+### Radeon VII pass (HIP on gfx906)
+
+- HiCMA-X ran on an AMD Radeon VII (gfx906) with the ROCm 6.3.2 user space:
+  CTest 46 / 46 (the 14 GPU cases, OmniCast's 4 tests, the two-rank cases),
+  with OmniCast and the GPU operand cache. ROCm 6.4 and later ship no rocBLAS
+  kernels for gfx906: build against ROCm 6.3 or earlier there
+  (`docs/release-readiness.md`, section 5.20).
+- gfx906 keeps FP16 subnormals in rocBLAS's FP16 GEMMs (FP32 and FP16 C) and
+  has no BF16 hardware: BF16 GEMMs (`--tensor_gemm_hp 0x20`) made an adaptive
+  kind-5 run at N=30720 6x slower (12.7 s against 2.1 s). The start-up note
+  that points HIP runs with FP16 tiles to BF16 is no longer printed on gfx906.
+- The operand cache gives bit-identical residuals on gfx906 (11
+  configurations; cache on, off and at 4 slots). Conversions are 2.6-2.9 % of
+  the GPU kernel time there, so halving them leaves the factorization within
+  noise (0.997-1.014x).
+
 ### Documentation
 
 - `TESTS.md` regenerated from the option table; `BUILD.md`, `README.md` and
@@ -462,9 +478,11 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
 
 - Cholesky drivers need `N % NB == 0`.
 - Kinds 1 to 4 have no HIP bodies. HIP GPU runs were validated on Frontier
-  (MI210, MI250X; `docs/release-readiness.md`, section 5.15).
-- AMD GPUs flush FP16 subnormals in their FP16 GEMMs: use
-  `--tensor_gemm_hp 0x20` (BF16) with adaptive precisions in the dense layout.
+  (MI210, MI250X; `docs/release-readiness.md`, section 5.15) and on a Radeon
+  VII (gfx906, section 5.20).
+- AMD gfx90a GPUs (MI210, MI250X) flush FP16 subnormals in their FP16 GEMMs:
+  use `--tensor_gemm_hp 0x20` (BF16) with adaptive precisions in the dense
+  layout. gfx906 keeps them and has no BF16 hardware: keep FP16 there.
 - `--enable_stochastic_rounding` is not implemented for kinds 8, 9 and 10.
 - The CPU and GPU runtime-decision GEMMs use different storage policies for
   FP16 updates.

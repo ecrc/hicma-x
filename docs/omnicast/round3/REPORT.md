@@ -36,6 +36,10 @@ draws the figures from those logs.
 - **The gain grows with N.** Per-GEMM conversions grow as NT³ and cached ones
   as NT². The FP8 cache alone gave 1.055× at N = 32768 and 1.097× at
   N = 45056.
+- **AMD (Radeon VII, HIP).** CTest passes 46/46 and the cache is
+  bit-identical. The speedup is within noise (0.997–1.014×): there is no FP8
+  on this GPU, and in the two profiled runs conversions were under 3 % of its
+  GPU kernel time even without the cache.
 
 ![End-to-end speedup on the H100](figures/end_to_end_h100.png)
 
@@ -135,9 +139,15 @@ The code is in `src/core/hicma_parsec_datatype_convert.c`
   All 13 give the same ‖LLᵀ − A‖/‖A‖ to the printed digit under all four
   settings. The three configurations that exceed their `--check_tol` at this
   size do so identically on the baseline.
-- **CTest.** 55/55 on the H100 and on the V100, and 30/30 in the CPU-only
-  build (`data/tests.txt`). The HIP build compiles; it was not run (no gfx90a
-  GPU here).
+- **CTest.** 55/55 on the H100 and on the V100, 30/30 in the CPU-only build,
+  and 46/46 on a Radeon VII (gfx906) in a HIP build (`data/tests.txt`).
+- **Residuals on the Radeon VII**, N = 16384, NB = 1024
+  (`data/radeonvii_correctness_N16384.txt`). There is no HIP baseline build,
+  so I compared the cache on, off and at 4 slots. All 11 configurations give
+  identical residuals: kind 5 adaptive with FP16, BF16 and stochastic
+  rounding, BF16 and FP32 bands, kinds 8, 9 and 10 at 1e-3, and runtime
+  decisions. The two that fail their check (kind 5 at 1e-8, BF16 with BF16 C)
+  fail identically on the H100 baseline.
 - **Stage 1** (FP8 cache only, before the generalization). Kinds 8, 9 and 10
   matched the baseline bit-for-bit as well, including with a 4-slot cache.
 
@@ -216,6 +226,39 @@ time. The first stage (FP8 cache only, same build for both sizes) measured:
 
 ![FP8 cache speedup against N](figures/fp8_cache_vs_n.png)
 
+### 4.5 AMD: Radeon VII (HIP)
+
+The HIP build ran on a Radeon VII (gfx906, 16 GB) with the ROCm 6.3.2 user
+space: ROCm 6.4 and later ship no rocBLAS kernels for gfx906. Other jobs left
+2 CPU cores on the node, so PaRSEC ran one worker thread. HIP has no FP8
+GEMMs: kinds 8 and 9 put those tiles in FP16, and kind 10 scales its FP16
+operands. The timings are interleaved: N = 30720, NB = 2048, three rounds of
+`--nruns 3`, the first run of each process dropped
+(`data/radeonvii_end_to_end_N30720.txt`).
+
+![End-to-end speedup on the Radeon VII](figures/end_to_end_radeonvii.png)
+
+Every configuration is within noise, 0.997–1.014×. The rocprofv3 kernel
+traces of the factorization phase show why
+(`data/radeonvii_kernel_share_N30720.txt`):
+
+| configuration | conversions, no cache | with the cache | launches |
+|---|---|---|---|
+| kind 8, 1e-3 | 43.9 ms, 2.6 % of kernel time | 17.9 ms, 1.1 % | 1120 → 334 |
+| kind 5, 1e-4, stochastic rounding | 54.2 ms, 2.9 % | 27.0 ms, 1.5 % | 658 → 315 |
+
+The cache cuts conversion time 2–2.5× here. But conversions are under 3 % of
+the work, not the 17–19 % of an FP8-heavy H100 run, so the 26–27 ms saved
+out of about 2 s is lost in the run-to-run spread (1–9 %).
+
+Two facts about this GPU surfaced along the way:
+
+- **gfx906 keeps FP16 subnormals.** rocBLAS's FP16 GEMMs keep inputs of
+  2⁻²⁰, with FP32 C and with FP16 C. The start-up note that sends HIP runs to
+  BF16 targets gfx90a, which flushes them, so it now skips gfx906.
+- **gfx906 has no BF16 hardware.** With BF16 GEMMs, adaptive kind 5 at 1e-4
+  takes 12.7 s against 2.1 s in FP16.
+
 ## 5. OmniCast round 3
 
 The details are in OmniCast's `docs/REPORT.md`, section 5. In short:
@@ -248,4 +291,7 @@ python3 docs/omnicast/round3/make_figures.py
 ```
 
 On hexane the runs used `CUDA_VISIBLE_DEVICES=0` and
-`numactl --cpunodebind=0 --membind=0`.
+`numactl --cpunodebind=0 --membind=0`. The Radeon VII build used
+`-DHICMA_PARSEC_HAVE_HIP=ON -DCMAKE_HIP_ARCHITECTURES=gfx906` against ROCm
+6.3.2, with every ROCm package directory (`hip_DIR`, `rocblas_DIR`, ...)
+pointing there, and `rocprofv3 --kernel-trace --stats` in place of `nsys`.

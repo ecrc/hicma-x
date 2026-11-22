@@ -46,7 +46,7 @@ def timings(path):
     """{(config, variant): [steady-state times]}: the first run of each process is a warm-up"""
     d = collections.defaultdict(list)
     for line in open(path):
-        m = re.match(r"(\S+) (\S+) r=\d+: (.*)", line)
+        m = re.match(r"(\S+) (\S+) r=\d+(?: rc=0)?: (.*)", line)
         if m:
             t = [float(x) for x in m.group(3).split()]
             d[(m.group(1), m.group(2))] += t[1:]
@@ -61,8 +61,9 @@ def speedups(d, cfgs, variant, base="base"):
     return out
 
 
-def barh_speedup(ax, cfgs, series, title):
+def barh_speedup(ax, cfgs, series, title, labels=None, xlabel="speedup over the baseline (median; whiskers: min-max)"):
     """series: [(label, color, [(median, lo, hi)])]"""
+    labels = labels or LABELS
     n = len(series)
     h = 0.8 / n
     for s, (lab, col, vals) in enumerate(series):
@@ -75,9 +76,9 @@ def barh_speedup(ax, cfgs, series, title):
             ax.text(max(m, v[2]) + 0.004, yy, f"{m:.3f}x", va="center", fontsize=7.5, color=INK)
     ax.axvline(1.0, color=INK2, linewidth=0.8)
     ax.set_yticks(range(len(cfgs)))
-    ax.set_yticklabels([LABELS.get(c, c) for c in cfgs])
+    ax.set_yticklabels([labels.get(c, c) for c in cfgs])
     ax.invert_yaxis()
-    ax.set_xlabel("speedup over the baseline (median; whiskers: min-max)")
+    ax.set_xlabel(xlabel)
     ax.set_title(title, loc="left", fontsize=10)
     ax.grid(axis="y", visible=False)
 
@@ -222,6 +223,34 @@ def fig_fp8_scaling():
     plt.close(fig)
 
 
+# HIP has no FP8 GEMMs: kinds 8 and 9 put those tiles in FP16, kind 10 scales its FP16 operands
+LABELS_HIP = {
+    "k5_1e-8": "kind 5, adaptive, 1e-8 (default)",
+    "k5_1e-4": "kind 5, adaptive, 1e-4 (FP16)",
+    "k5_1e-4_bf16": "kind 5, adaptive, 1e-4, BF16 (6x slower here)",
+    "k5_sr": "kind 5, 1e-4, stochastic rounding",
+    "k8_1e-3": "kind 8, 1e-3 (FP16 in place of FP8)",
+    "k9_1e-3": "kind 9, 1e-3 (FP16 in place of FP8)",
+    "k10_1e-3": "kind 10, runtime, 1e-3 (scaled FP16)",
+    "runtime": "runtime decisions (kind 5)",
+}
+
+
+def fig_radeonvii():
+    path = os.path.join(DATA, "radeonvii_end_to_end_N30720.txt")
+    if not os.path.exists(path):
+        return
+    d = timings(path)
+    cfgs = ["k5_1e-4", "k5_sr", "k9_1e-3", "k10_1e-3", "k8_1e-3", "k5_1e-8", "k5_1e-4_bf16", "runtime"]
+    fig, ax = plt.subplots(figsize=(7.2, 3.4))
+    barh_speedup(ax, cfgs, [("operand cache", BLUE, speedups(d, cfgs, "cache", base="nocache"))],
+                 "HiCMA-X Cholesky on one Radeon VII (gfx906, HIP), N = 30720, NB = 2048 (6 runs per bar)",
+                 labels=LABELS_HIP, xlabel="speedup over --operand_cache 0 (median; whiskers: min-max)")
+    ax.set_xlim(0.94, 1.10)
+    fig.savefig(os.path.join(FIG, "end_to_end_radeonvii.png"))
+    plt.close(fig)
+
+
 def parse_stage1(path):
     """stage-1 logs: lines '<variant> acc=<acc> r=<r>: times'"""
     d = collections.defaultdict(list)
@@ -237,6 +266,7 @@ def main():
     os.makedirs(FIG, exist_ok=True)
     fig_end_to_end()
     fig_v100()
+    fig_radeonvii()
     fig_kernel_share()
     fig_conversions()
     fig_fp8_scaling()

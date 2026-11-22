@@ -298,8 +298,16 @@ int hicma_parsec_matrix_pre_analysis( parsec_context_t *parsec,
      * ||LL^T-A||/||A|| = 1.0e-5 for --fixedacc 1e-8, the same tiles in BF16
      * (FP32's exponent range) 1.2e-8. --tensor_gemm chooses; say so when the
      * decisions produced FP16 tiles. The run-time decision (kind 10) scales its
-     * FP16 operands and is not concerned. */
-    if( params->gpus > 0 && 0 == params->rank && !params->adaptive_decision_runtime
+     * FP16 operands and is not concerned. gfx906 (Radeon VII, MI50/60), which
+     * has no matrix cores, keeps FP16 subnormals in rocBLAS's FP16 GEMMs (FP32
+     * and FP16 C, measured) and has no BF16 hardware (BF16 GEMMs made an
+     * adaptive kind-5 run 6x slower): no note there. */
+    int fp16_flushes = 1;
+    hipDeviceProp_t prop;
+    if( params->gpus > 0 && hipSuccess == hipGetDeviceProperties(&prop, 0)
+        && 0 == strncmp(prop.gcnArchName, "gfx906", 6) )
+        fp16_flushes = 0;
+    if( fp16_flushes && params->gpus > 0 && 0 == params->rank && !params->adaptive_decision_runtime
         && (MASK_TF16_A16_B16_C32_OP32 == HICMA_FP16_GEMM(params) || MASK_TF16_A16_B16_C16_OP16 == HICMA_FP16_GEMM(params)) ) {
         const int NT = params->NT;
         int nb_hp = 0;

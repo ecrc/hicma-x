@@ -27,6 +27,7 @@ and the genomics (kernel ridge regression) applications.
 | Linux x86_64, CPU only (OpenBLAS or MKL, LAPACKE, Open MPI or MPICH) | tested (CI, 1 and 2 ranks) |
 | Linux x86_64 + CUDA 12 (A100, V100; H100 for FP8) | tested on one A100 (1 and 2 ranks sharing it), one 8-A100 node (1 to 8 ranks), one H100 (FP8; 1 and 2 ranks) and one 8-V100 node (1 to 8 GPUs in one process, 2 and 8 ranks) |
 | Linux + ROCm 6 (HIP, gfx90a) | tested on Frontier: one MI210 (CTest 35 / 35) and one MI250X node (CTest 42 / 42 with the two-rank cases, `test_CI.sh`, the GPU validation matrix; 1 to 8 GCDs in one process, two ranks with one GCD each or sharing one); kinds 1 to 4 run on the CPU |
+| Linux + ROCm 6.3 (HIP, gfx906: Radeon VII, MI50/60) | tested on one Radeon VII with ROCm 6.3.2 (CTest 46 / 46 with the two-rank cases). ROCm 6.4 and later ship no rocBLAS kernels for gfx906 |
 | Fugaku (`ON_FUGAKU`), macOS, Windows | not supported |
 
 Requirements: CMake 3.21, a C11/C++17 compiler, a Fortran compiler (BLAS/LAPACK
@@ -41,8 +42,11 @@ GPU builds (`90a` architecture needs 12.0); GSL optional (Matérn kernels).
 - AMD GPUs (gfx90a: MI210, MI250X) flush FP16 subnormals (|x| < 6.1e-5) to
   zero in their FP16 GEMMs, and adaptive decisions put small entries in FP16:
   an adaptive kind-5 run at N=30720 gave 1.0e-5 for `--fixedacc 1e-8`. Pass
-  `--tensor_gemm_hp 0x20` (BF16, FP32's exponent range; 1.2e-8) on AMD GPUs
+  `--tensor_gemm_hp 0x20` (BF16, FP32's exponent range; 1.2e-8) on these GPUs
   when every tile is dense; HIP runs that use FP16 tiles say so at start-up.
+  gfx906 (Radeon VII) keeps FP16 subnormals and has no BF16 hardware (BF16
+  GEMMs made an adaptive kind-5 run 6x slower): keep FP16 there, and no note
+  is printed.
   The run-time decision (kind 10) scales its FP16 operands and is not
   affected. Low-rank (TLR) layouts have no BF16 variant and keep FP16.
   Kind 3 with a half-precision band runs on GPUs only (the CPU bodies have no
