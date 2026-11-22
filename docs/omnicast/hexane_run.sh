@@ -8,4 +8,4 @@ cd /home/qcao3/hicma-x/omnicast
 $N0 ./build_cuda/tests/omnicast_test_gpu > $R/test_gpu_h100.txt 2>&1; tail -1 $R/test_gpu_h100.txt
 $N0 ./build_cuda/bench/omnicast_bench_gpu 1024 2048 4096 8192 > $R/gpu_h100.txt 2>&1; echo bench done
 cd /home/qcao3/hicma-x/build_omc && ctest -L hicma -V -j 1 > $R/hicma/ctest_omc_h100.log 2>&1; grep 'tests passed' $R/hicma/ctest_omc_h100.log
-cd /home/qcao3/hicma-x-base/build && ctest -L hicma -V -j 1 > $R/hicma/ctest_base_h100.log 2>&1; grep 'tests passed' $R/hicma/ctest_base_h100.log
+cd ${HICMA_BASE:?set HICMA_BASE to the baseline build directory (4256ff9)} && ctest -L hicma -V -j 1 > $R/hicma/ctest_base_h100.log 2>&1; grep 'tests passed' $R/hicma/ctest_base_h100.log

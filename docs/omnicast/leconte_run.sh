@@ -10,4 +10,4 @@ hostname; nvidia-smi --query-gpu=name --format=csv,noheader; lscpu | grep 'Model
 ./build_cuda/bench/omnicast_bench_gpu 1024 2048 4096 8192 > $R/gpu_v100.txt 2>&1
 ./build_cuda/bench/omnicast_bench_cpu 16384 262144 33554432 > $R/cpu_broadwell_avx2.txt 2>&1
 cd /home/qcao3/hicma-x/build_omc && ctest -L gpu -V -j 1 > $R/hicma/ctest_omc_v100.log 2>&1; grep 'tests passed' $R/hicma/ctest_omc_v100.log
-cd /home/qcao3/hicma-x-base/build && ctest -L gpu -V -j 1 > $R/hicma/ctest_base_v100.log 2>&1; grep 'tests passed' $R/hicma/ctest_base_v100.log
+cd ${HICMA_BASE:?set HICMA_BASE to the baseline build directory (4256ff9)} && ctest -L gpu -V -j 1 > $R/hicma/ctest_base_v100.log 2>&1; grep 'tests passed' $R/hicma/ctest_base_v100.log

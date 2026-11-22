@@ -1,7 +1,8 @@
 #!/bin/bash
 # Interleaved A/B timing on the CPU (--gpus 0) of the two CUDA builds.
 REPS=${1:-3}; N=${2:-8192}; NB=${3:-512}
-BASE=/home/qcao3/hicma-x-base/build/tests/testing_potrf_tlr
+# HICMA_BASE: build directory of the commit before OmniCast (4256ff9), e.g. a git worktree built like build_omc
+BASE=${HICMA_BASE:?set HICMA_BASE to the baseline build directory}/tests/testing_potrf_tlr
 OMC=/home/qcao3/hicma-x/build_omc/tests/testing_potrf_tlr
 COMMON="--N $N --NB $NB --kind_of_problem 2 --gpus 0 --check 0 --verbose 1"
 declare -A CFG

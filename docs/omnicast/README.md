@@ -126,5 +126,6 @@ OmniCast was faster.
 - `ab_run.sh`, `ab_cpu.sh`: the A/B scripts; `ab_*.txt`: their outputs (`*_r10.txt`: the
   10-run CPU comparison); `ab_stats.py`: medians and paired intervals.
 - `leconte_run.sh`, `leconte_hicma.sh`, `hexane_run.sh`: the V100 / H100 runs.
-- The verbose CTest logs (baseline and OmniCast, A100/V100/H100) are outside the
-  repository, in `/home/qcao3/hicma-x-omnicast-logs/`.
+- The scripts take the baseline build (commit 4256ff9, before OmniCast) from
+  `HICMA_BASE`. The verbose CTest logs of the runs were not kept; the accuracy
+  comparison is summarized above.
