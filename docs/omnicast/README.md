@@ -4,9 +4,30 @@ HiCMA-X converts tiles between FP64, FP32, FP16, BF16 and FP8 all the time:
 before mixed-precision GEMMs and TRSMs, when precisions are decided, for the
 FP8 operands of cuBLASLt, with stochastic rounding. All of it now goes through
 [OmniCast](../../omnicast) (submodule, branch `v2`); this page records what
-changed, how it was validated and what it bought. OmniCast's own design and
-kernel measurements are in `omnicast/docs/DESIGN.md` and
-`omnicast/docs/PERFORMANCE.md`.
+changed, how it was validated and what it bought. OmniCast's own design,
+profiling and kernel measurements are in `omnicast/docs/REPORT.md` (with
+`DESIGN.md` and `PERFORMANCE.md` next to it).
+
+## OmniCast update of 2026-11-22
+
+The submodule now points to the second round of OmniCast work
+(`omnicast/docs/REPORT.md`):
+
+- Every conversion with every option runs out of place and in place, on the
+  host, CUDA and HIP. This includes GPU in place of tiles with ld > m, in place
+  with transposition or padding, scaling for every pair, and stochastic
+  rounding of scaled values. HiCMA-X's calls are unchanged.
+- Faster kernels that HiCMA-X uses (H100, 8192² tiles, before → after):
+  - FP8 operands (transposed, padded) from FP32: 1.13x. From FP64: 1.04x.
+  - In-place tile conversions: 1.04–1.06x, and 1.08–1.18x on 2048² tiles.
+  - GPU stochastic rounding FP32 → FP16: 1.0–1.3x.
+  - The FP64-source stochastic rounding that HiCMA-X uses most is unchanged.
+- A fix for AMD GPUs: gfx906 fused an FP32 product and its FP16 conversion
+  (one rounding). HiCMA-X's HIP build scales its FP16 operands by powers of
+  two, whose products are exact, so its results are unchanged.
+- Validation with the updated submodule: CTest `-L hicma` 54/54 on the V100
+  and 30/30 in the CPU-only build (the extra tests are OmniCast's coverage
+  tests). All 39 accuracy figures are identical to the baseline.
 
 ## What changed
 

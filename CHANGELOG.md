@@ -48,6 +48,12 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   (the factorization is 0-1.6 % faster); CPU factorizations with stochastic
   rounding are 18-19 % faster, the other CPU kinds unchanged. Details in
   `docs/omnicast/README.md`.
+- OmniCast update (2026-11-22): every conversion with every option in place
+  and out of place on the host, CUDA and HIP; faster FP8 operands (1.04-1.13x),
+  in-place tile conversions (1.04-1.18x) and stochastic rounding from FP32
+  sources; a fix for scaled FP32 -> FP16 conversions on AMD GPUs (HiCMA-X
+  scales by powers of two and is not affected). Report in
+  `omnicast/docs/REPORT.md`.
 - FP16 conversions are available on every CPU (they were Fugaku-only), and
   float -> integer conversions saturate (NaN -> 0) instead of being undefined
   out of range.
