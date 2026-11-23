@@ -13,14 +13,19 @@ profiling and kernel measurements are in `omnicast/docs/REPORT.md` (with
 The final build (OmniCast round 3 and the operand cache, `f0ec341`) against
 the code before OmniCast (`4256ff9`), built side by side:
 
-- Residuals are identical in all 10 configurations on the A100.
+- Residuals are identical in all 10 configurations on the A100 and on the
+  H100 (FP8 GEMMs included).
+- On the H100 (N = 45056), where the FP8 GEMMs run, kinds 8 and 10 are
+  1.18x and 1.24x faster with OmniCast alone, and 1.24x and 1.33x with the
+  operand cache. Stochastic rounding is 1.05x and 1.10x faster, and the
+  FP32/FP16 kinds 1.01-1.04x. Every mixed-precision case was faster in all
+  5 rounds except `--datatype_convert 2`. FP64 dense is unchanged.
 - On the A100 (N = 45056), OmniCast alone is 1.01-1.04x faster, most with
   stochastic rounding. With the operand cache it is up to 1.06x faster
   (stochastic rounding, kinds 8 and 10, faster in every round). FP64 dense,
   which converts nothing, moves by under 2 %.
 - On a 28-core Broadwell CPU, stochastic rounding is 1.03x faster and the
   other kinds are unchanged.
-- Not measured: the H100 with FP8 tiles (node busy).
 
 Tables, figure, method and scripts: [`final/README.md`](final/README.md).
 

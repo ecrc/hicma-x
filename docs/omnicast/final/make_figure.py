@@ -42,10 +42,10 @@ LABELS = {
     "k5_adapt": "kind 5, adaptive, 1e-4",
     "k5_sr": "kind 5, 1e-4, stochastic rounding",
     "k5_dtconv2": "kind 5, 1e-4, datatype_convert 2",
-    "k8_1e-3": "kind 8, 1e-3 (FP16 on the A100)",
+    "k8_1e-3": "kind 8, 1e-3 (FP8 on the H100, FP16 on the A100)",
     "k10_1e-3": "kind 10, runtime, 1e-3",
-    "runtime": "runtime decisions (kind 5)",
-    "k10_runtime": "runtime decisions (kind 5)",
+    "runtime": "runtime decisions, 1e-8 (kind 10)",
+    "k10_runtime": "runtime decisions, 1e-8 (kind 10)",
 }
 LINE = re.compile(r"(\S+) (\S+) r=(\d+): ([\d. ]+)\|")
 
@@ -131,17 +131,21 @@ def panel(ax, d, order, series, title):
 
 def main():
     gpu, cpu = os.path.join(DATA, "a100_N45056.txt"), os.path.join(DATA, "cpu_broadwell_N16384.txt")
+    h100 = os.path.join(DATA, "h100_N45056.txt")
+    th, dh, oh = table(h100, ["nocache", "cache"])
     tg, dg, og = table(gpu, ["nocache", "cache"])
     tc, dc, oc = table(cpu, ["omc"])
-    print("A100 (methane), N=45056, NB=2048; nocache = OmniCast, cache = OmniCast + operand cache\n" + tg)
+    print("H100 (hexane), N=45056, NB=2048; nocache = OmniCast, cache = OmniCast + operand cache\n" + th)
+    print("\nA100 (methane), N=45056, NB=2048; nocache = OmniCast, cache = OmniCast + operand cache\n" + tg)
     print("\nCPU (caffeine, Xeon E5-2660 v4, 28 cores), N=16384, NB=512; omc = OmniCast\n" + tc)
-    # one x scale for both panels, so that the platforms compare by eye
-    fig, axs = plt.subplots(2, 1, figsize=(7.2, 7.0), sharex=True,
-                            gridspec_kw={"height_ratios": [len(og), len(oc)]})
-    panel(axs[0], dg, og, [("nocache", "OmniCast", BLUE), ("cache", "OmniCast + GPU operand cache", ORANGE)],
-          "A100, N = 45056, NB = 2048 (4 rounds)")
-    panel(axs[1], dc, oc, [("omc", "OmniCast", BLUE)], "CPU, 28-core Broadwell, N = 16384, NB = 512 (10 rounds)")
-    axs[1].set_xlabel("speedup over the build without OmniCast (whiskers: 95 % interval)")
+    # one x scale for all panels, so that the platforms compare by eye
+    fig, axs = plt.subplots(3, 1, figsize=(7.2, 10.2), sharex=True,
+                            gridspec_kw={"height_ratios": [len(oh), len(og), len(oc)]})
+    series = [("nocache", "OmniCast", BLUE), ("cache", "OmniCast + GPU operand cache", ORANGE)]
+    panel(axs[0], dh, oh, series, "H100, N = 45056, NB = 2048 (5 rounds)")
+    panel(axs[1], dg, og, series, "A100, N = 45056, NB = 2048 (4 rounds)")
+    panel(axs[2], dc, oc, [("omc", "OmniCast", BLUE)], "CPU, 28-core Broadwell, N = 16384, NB = 512 (10 rounds)")
+    axs[2].set_xlabel("speedup over the build without OmniCast (whiskers: 95 % interval)")
     fig.tight_layout(rect=(0, 0, 1, 0.96))
     fig.legend(*axs[0].get_legend_handles_labels(), loc="upper center", ncol=2, fontsize=8)
     os.makedirs(os.path.join(HERE, "figures"), exist_ok=True)

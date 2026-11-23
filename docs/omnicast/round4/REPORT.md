@@ -38,8 +38,9 @@ HiCMA-X `qinglei/release-cleanup` after aeef482 (OmniCast `main` at 4d0be85),
   - DPLASMA `adtt-null-register-hooks`: wrapping a collection whose
     `register_memory` is NULL crashed. Before the fix, POTRF on a GPU
     segfaulted with NULL hooks; after it, the factorization is correct.
-- **Not done yet:** the H100 FP8 comparison with and without OmniCast. Its
-  job is queued and starts when hexane is idle (section 6).
+- **H100 with and without OmniCast** (FP8 GEMMs; run when hexane was free,
+  section 6): kinds 8 and 10 are 1.18x and 1.24x faster with OmniCast alone,
+  and 1.24x and 1.33x with the operand cache. All residuals are identical.
 
 ![Speedup from --flush_subnormals](figures/flush_subnormals_cpu.png)
 
@@ -276,15 +277,37 @@ The full PaRSEC CTest was 255/256 at first on both branches. The one failure,
 `dsl/dtd/simple_gemm:gpu`, was the test not finding MKL on leconte, and it
 passes with MKL on the library path.
 
-## 6. H100 with and without OmniCast (pending)
+## 6. H100 with and without OmniCast
 
-The comparison of the final comparison (`docs/omnicast/final/`), on the H100
-with its FP8 GEMMs, is queued as Slurm job 66786. It runs
-`docs/omnicast/final/gpu_check.sh` and `gpu.sh` (now with `GPU`/`NUMA`
-parameters: H100 = GPU 0 on NUMA node 0) on the same two builds as the A100
-run (4256ff9 and f0ec341), five rounds. It needs hexane idle (`--exclusive`):
-another user's job held it all night, and Slurm estimates a start around
-12:40.
+The H100 part of the final comparison (`docs/omnicast/final/`) is the
+same two builds as the A100 run (4256ff9 without OmniCast, f0ec341 with it)
+and the same scripts, with `GPU=0 NUMA=0`.
+- **When:** Slurm job 66786 (`--exclusive`) waited until hexane was free and
+  ran 2026-11-23 from 12:35 to 13:27 UTC.
+- **Runs:** five interleaved rounds of 10 configurations × 3 builds, plus one
+  checked run of each.
+- **Temperature:** at most 70 °C, and no thermal slowdown in any of the 150
+  runs.
+
+| configuration | OmniCast | OmniCast + operand cache | faster |
+|---|---|---|---|
+| kind 8, 1e-3 (FP8 GEMMs) | 1.181 [1.152, 1.203] | 1.242 [1.231, 1.277] | 5/5, 5/5 |
+| kind 10, runtime decisions, 1e-3 (FP8 GEMMs) | 1.241 [1.182, 1.254] | 1.329 [1.301, 1.335] | 5/5, 5/5 |
+| kind 5, 1e-4, stochastic rounding | 1.052 [1.045, 1.054] | 1.096 [1.092, 1.102] | 5/5, 5/5 |
+| runtime decisions, 1e-8 (kind 10) | 1.054 [1.048, 1.066] | 1.072 [1.059, 1.083] | 5/5, 5/5 |
+| kind 3 and kind 5, FP32/FP16 tiles | 1.012-1.038 | 1.023-1.037 | 5/5 |
+| FP64 dense (no conversions) | 1.005 [0.989, 1.017] | 0.997 [0.985, 1.016] | 3/5, 2/5 |
+
+Speedups are over the build without OmniCast: the median of the per-round
+ratios, with the 95 % interval.
+
+- **Residuals:** identical in all 10 configurations across the three builds,
+  as on the A100.
+- **Why FP8 gains most:** before OmniCast, each FP8 operand went through
+  HiCMA-X's own transposed conversion (one byte per thread, strided stores,
+  plus a memset, an amax pass and a scale).
+
+Full tables and figure: `docs/omnicast/final/README.md`.
 
 ## 7. Next steps
 
