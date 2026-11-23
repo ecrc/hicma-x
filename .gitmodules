@@ -13,4 +13,4 @@
 [submodule "omnicast"]
 	path = omnicast
 	url = ../../QingleiCao/OmniCast.git
-	branch = v2
+	branch = main

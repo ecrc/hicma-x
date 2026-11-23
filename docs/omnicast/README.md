@@ -3,7 +3,7 @@
 HiCMA-X converts tiles between FP64, FP32, FP16, BF16 and FP8 all the time:
 before mixed-precision GEMMs and TRSMs, when precisions are decided, for the
 FP8 operands of cuBLASLt, with stochastic rounding. All of it now goes through
-[OmniCast](../../omnicast) (submodule, branch `v2`); this page records what
+[OmniCast](../../omnicast) (submodule, branch `main`); this page records what
 changed, how it was validated and what it bought. OmniCast's own design,
 profiling and kernel measurements are in `omnicast/docs/REPORT.md` (with
 `DESIGN.md` and `PERFORMANCE.md` next to it).

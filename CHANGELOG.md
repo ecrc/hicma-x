@@ -23,7 +23,7 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
 ### Data-type conversions: OmniCast
 
 - Every element conversion now goes through OmniCast (new submodule
-  `omnicast/`, https://github.com/QingleiCao/OmniCast, branch `v2`): one C API
+  `omnicast/`, https://github.com/QingleiCao/OmniCast, branch `main`): one C API
   for FP64, FP32, FP16, BF16, FP8 (E4M3, E5M2) and integers on the CPU (SIMD
   chosen at run time: AVX-512, AVX2+F16C, NEON) and on CUDA and HIP GPUs.
   HiCMA-X's own conversion kernels and loops are removed: the GPU converters
