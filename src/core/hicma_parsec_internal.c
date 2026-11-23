@@ -7,9 +7,6 @@
  *                              All rights reserved.
  **/
 
-#if defined(__SSE2__)
-#include <xmmintrin.h>   /* _mm_getcsr, _mm_setcsr: --flush_subnormals */
-#endif
 #include "hicma_parsec.h"
 #include "hicma_parsec_sparse_analysis.h"
 
@@ -27,6 +24,11 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <ctype.h>
+/* after hicma_parsec.h, which defines _GNU_SOURCE: xmmintrin.h includes
+ * stdlib.h, and included first it hid strdup and asprintf */
+#if defined(__SSE2__)
+#include <xmmintrin.h>   /* _mm_getcsr, _mm_setcsr: --flush_subnormals */
+#endif
 
 #ifdef GSL
 #include <gsl/gsl_errno.h>
