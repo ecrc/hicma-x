@@ -676,6 +676,9 @@ typedef struct hicma_parsec_params_s {
     int fp8_scaling;          /**< FP8 GEMMs: scale each operand tile by a power of two from its amax */
     int operand_cache;        /**< GPU GEMM operand tiles kept converted per GPU; -1 auto (default), 0 off, > 0 tiles per cache */
     int operand_cache_epoch;  /**< Bumped per factorization: cached operands of an earlier one are stale */
+    int flush_subnormals;     /**< --flush_subnormals: CPU threads flush subnormals (FTZ/DAZ) while HiCMA-X runs; 1 (default) or 0 */
+    int fp_env_changed;       /**< hicma_parsec_setup_parsec changed the main thread's floating-point control register */
+    unsigned long fp_env_saved; /**< That register before the change, restored by hicma_parsec_cleanup_parsec */
 
     /* ========================================================================
      * Performance metrics

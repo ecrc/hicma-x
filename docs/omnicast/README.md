@@ -24,6 +24,21 @@ the code before OmniCast (`4256ff9`), built side by side:
 
 Tables, figure, method and scripts: [`final/README.md`](final/README.md).
 
+## Subnormals on the CPU (round 4)
+
+On Intel CPUs the mixed-precision kinds were 1.2-1.4x slower than FP64. The
+cause was not the conversions (1 % of the time) but MKL's FP32 GEMMs: the
+FP32 tiles of the covariance problems hold many subnormal numbers, and each
+SIMD operation on one takes a microcode assist (568 million in one
+factorization). HiCMA-X now flushes subnormals on its CPU threads
+(`--flush_subnormals`, default on). Kinds 3, 5 and 10 are 1.6-2.6x faster on
+a Broadwell and a Skylake-SP node, FP64 is unchanged, and residuals agree to
+4-5 digits. An AMD Zen 2 CPU has no such penalty and is unchanged. OmniCast's
+host conversions now give the same bits whatever the caller's FTZ/DAZ or
+rounding mode. OmniCast#1 is merged, and the merged state passes CTest on the
+CPU, an A100 and a Radeon VII. Report, data and scripts:
+[`round4/REPORT.md`](round4/REPORT.md).
+
 ## Converting once: the GPU operand cache (round 3)
 
 GPU GEMMs used to convert their operands from the tile's send precision on

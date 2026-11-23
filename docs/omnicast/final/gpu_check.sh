@@ -3,8 +3,10 @@
 # operand cache off and on; one factorization per process, checked (--check 1).
 # HICMA_BASE / HICMA_HEAD: build directories (CUDA builds for gpu*.sh, CPU builds for cpu.sh) of 4256ff9 and of the
 # commit with OmniCast, built the same way (here: git worktrees, Release, CUDA architectures 70;80;90a).
+# GPU / NUMA: the GPU index and its NUMA node (methane's A100: 0 and 1, the default; hexane's H100: 0 and 0).
 for v in $(env | grep -oE '^(SLURM|PMIX|PMI|OMPI_MCA_ess|PRTE)[A-Za-z0-9_]*'); do unset $v; done
-export CUDA_VISIBLE_DEVICES=0
+GPU=${GPU:-0}; NUMA=${NUMA:-1}
+export CUDA_VISIBLE_DEVICES=$GPU
 export LD_LIBRARY_PATH=/apps/spacks/2025-04-15/opt/spack/linux-rocky9-x86_64/gcc-12.4.0/intel-oneapi-mkl-2024.2.2-gmswvhnqpsibivkjbt5nuay46ydpn6n4/mkl/2024.2/lib:$LD_LIBRARY_PATH
 BASE=${HICMA_BASE:?set HICMA_BASE to the build directory of 4256ff9 (before OmniCast)}/tests/testing_potrf_tlr
 HEAD=${HICMA_HEAD:?set HICMA_HEAD to the build directory of the commit with OmniCast}/tests/testing_potrf_tlr
@@ -28,7 +30,7 @@ for rnd in 1; do
       exe=$HEAD; extra=
       case $var in base) exe=$BASE;; nocache) extra="--operand_cache 0";; esac
       log=$OUT/$cfg.$var.N$NS.r$rnd.log
-      numactl --cpunodebind=1 --membind=1 $exe $C ${CFG[$cfg]} $extra > $log 2>&1 < /dev/null
+      numactl --cpunodebind=$NUMA --membind=$NUMA $exe $C ${CFG[$cfg]} $extra > $log 2>&1 < /dev/null
       echo "$cfg $var: $(sed 's/\x1b\[[0-9;]*m//g' $log | grep -oE 'Check (passed|FAILED)[^,]*' | head -1)"
     done
   done

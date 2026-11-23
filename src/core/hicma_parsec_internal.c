@@ -7,6 +7,9 @@
  *                              All rights reserved.
  **/
 
+#if defined(__SSE2__)
+#include <xmmintrin.h>   /* _mm_getcsr, _mm_setcsr: --flush_subnormals */
+#endif
 #include "hicma_parsec.h"
 #include "hicma_parsec_sparse_analysis.h"
 
@@ -313,6 +316,7 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         {"fp8", "FP8 GEMMs in kinds 8, 9 and 10: 1 (default) use them when every GPU has compute capability >= 8.9; 0: never (those tiles use HP)", 0, &params->fp8},
         {"fp8_scaling", "FP8 GEMMs: 1 (default) scale each operand tile by a power of two from its max entry; 0: unscaled", 0, &params->fp8_scaling},
         {"operand_cache", "GPU GEMMs: operand tiles kept converted to the GEMM precision (FP8, FP16/BF16, FP32) per GPU for reuse; -1 (default): up to 2*NT tiles per precision, each at most 5% of the GPU memory PaRSEC manages, taken when needed; 0: off (convert per GEMM); > 0: up to that many tiles per precision", 0, &params->operand_cache},
+        {"flush_subnormals", "CPU threads: 1 (default) flush subnormal results to zero and read subnormal inputs as zero (FTZ/DAZ on x86-64, FZ on AArch64) while HiCMA-X runs: low-precision BLAS on tiles with tiny entries no longer pays for subnormal arithmetic (2.0-2.5x for the mixed-precision kinds on a Broadwell CPU); 0: IEEE subnormals. GPU kernels and OmniCast conversions are not affected", 0, &params->flush_subnormals},
         {"arena_pinned_memory", "Use pinned host memory for taskpool arenas when GPUs are enabled", 3, &params->arena_pinned_memory},
         {"adaptive_maxrank", "In -D 6, adaptively set the maxrank used in Cholesky based on the generation", 0, &params->adaptive_maxrank},
         {"kind_of_cholesky", "Cholesky type", 0, &params->kind_of_cholesky},
@@ -745,6 +749,9 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     params->fp8_scaling = 1;                // Scale FP8 GEMM operands per tile (0=unscaled)
     params->operand_cache = -1;             // GPU operand caches: -1 auto, 0 off, > 0 tiles per precision
     params->operand_cache_epoch = 0;
+    params->flush_subnormals = 1;           // CPU threads flush subnormals (FTZ/DAZ) while HiCMA-X runs
+    params->fp_env_changed = 0;
+    params->fp_env_saved = 0;
     // TODO: Need to test the overhead and restructure memory allocation strategy
     params->adaptive_memory = 0;            // Enable adaptive memory allocation per tile (1=enabled, 0=disabled)
     params->arena_pinned_memory = 0;         // Use the default arena allocator unless explicitly enabled
@@ -1142,6 +1149,54 @@ static void print_arguments(hicma_parsec_params_t *params)
  * @note This function may exit the program if initialization fails
  * @note GPU support is automatically detected and configured if available
  */
+/**
+ * @brief --flush_subnormals: FTZ/DAZ (x86-64) or FZ (AArch64) for the CPU threads
+ *
+ * FP32 tiles of matrices with rapidly decaying entries (the covariance
+ * problems) hold many subnormal numbers. On x86 CPUs every SIMD operation on
+ * a subnormal input or result takes a microcode assist of about a hundred
+ * cycles: on a Broadwell node the FP32 GEMMs of kind 5 ran at 0.74x the speed
+ * of FP64 ones instead of about 2x (568 million assists in one factorization,
+ * none in FP64). Flushing them costs nothing in accuracy: a subnormal FP32
+ * value is below 1.2e-38, far under FP32's precision relative to any tile the
+ * precision decisions keep (the residuals of kinds 3, 5 and 10 agreed to five
+ * digits with and without). Set in the main thread before parsec_init, so the
+ * worker threads PaRSEC creates inherit it, and restored in the main thread
+ * by hicma_parsec_cleanup_parsec. OmniCast's conversions run in the default
+ * environment whatever the caller sets, and the GPUs are not affected.
+ */
+static void hicma_parsec_fp_env_flush(hicma_parsec_params_t *params)
+{
+    params->fp_env_changed = 0;
+    if( !params->flush_subnormals ) return;
+#if defined(__SSE2__)
+    const unsigned int csr = _mm_getcsr();
+    params->fp_env_saved = csr;
+    _mm_setcsr(csr | 0x8040u);                  /* FTZ (bit 15), DAZ (bit 6) */
+    params->fp_env_changed = 1;
+#elif defined(__aarch64__)
+    unsigned long fpcr;
+    __asm__ __volatile__("mrs %0, fpcr" : "=r"(fpcr));
+    params->fp_env_saved = fpcr;
+    fpcr |= 1ul << 24;                          /* FZ: inputs and results, single and double */
+    __asm__ __volatile__("msr fpcr, %0" : : "r"(fpcr));
+    params->fp_env_changed = 1;
+#endif
+}
+
+/** @brief Restore the main thread's floating-point environment changed by hicma_parsec_fp_env_flush */
+static void hicma_parsec_fp_env_restore(hicma_parsec_params_t *params)
+{
+    if( NULL == params || !params->fp_env_changed ) return;
+#if defined(__SSE2__)
+    _mm_setcsr((unsigned int)params->fp_env_saved);
+#elif defined(__aarch64__)
+    const unsigned long fpcr = params->fp_env_saved;
+    __asm__ __volatile__("msr fpcr, %0" : : "r"(fpcr));
+#endif
+    params->fp_env_changed = 0;
+}
+
 parsec_context_t* hicma_parsec_setup_parsec(int argc, char **argv, hicma_parsec_params_t * params)
 {
 	// Set verbose flag for rank 0 only (avoid duplicate output in parallel execution)
@@ -1162,6 +1217,9 @@ parsec_context_t* hicma_parsec_setup_parsec(int argc, char **argv, hicma_parsec_
 		for( parsec_argc = 1, idx++; idx < argc;
 				parsec_argv[parsec_argc] = argv[idx], parsec_argc++, idx++);
 	}
+
+	// CPU threads flush subnormals (--flush_subnormals): the workers inherit it from this thread
+	hicma_parsec_fp_env_flush(params);
 
 	// Initialize PaRSEC runtime with specified number of cores
 	parsec_context_t* ctx = parsec_init(params->cores,
@@ -1509,6 +1567,7 @@ void hicma_parsec_cleanup_parsec(parsec_context_t* parsec, hicma_parsec_params_t
 
     // Finalize PaRSEC runtime system - releases all PaRSEC resources
     parsec_fini(&parsec);
+    hicma_parsec_fp_env_restore(params);
 
     // Finalize MPI only if we initialized it
 #ifdef PARSEC_HAVE_MPI
@@ -1779,7 +1838,7 @@ void hicma_parsec_params_print_initial( hicma_parsec_params_t *params )
         printf("auto_band=%d sparse=%d kind_of_cholesky=%d tensor_gemm=%d datatype_convert=%d left_looking=%d stochastic_rounding=%d\n",
                params->auto_band, params->sparse, params->kind_of_cholesky, params->tensor_gemm,
                params->datatype_convert, params->left_looking, params->enable_stochastic_rounding);
-        printf("fp8= %d fp8_enabled= %d fp8_scaling= %d operand_cache= %d\n", params->fp8, params->fp8_enabled, params->fp8_scaling, params->operand_cache);
+        printf("fp8= %d fp8_enabled= %d fp8_scaling= %d operand_cache= %d flush_subnormals= %d\n", params->fp8, params->fp8_enabled, params->fp8_scaling, params->operand_cache, params->flush_subnormals);
         if( 6 == params->kind_of_problem) printf("mesh_file=%s, rbf_kernel=%d, numobj=%d, order=%d, radius=%f, density=%f\n", params->mesh_file, params->rbf_kernel, params->numobj, params->order, params->radius, params->density);
         printf("time_slots=%d sigma=%lf beta=%lf nu=%lf beta_time=%lf nu_time=%lf nonsep_param=%lf noise= %lf\n", params->time_slots, params->sigma, params->beta, params->nu, params->beta_time, params->nu_time, params->nonsep_param, params->noise);
         printf("numobj/L= %d gpu_rows= %d gpu_cols= %d accumulation_fp32= %d\n\n", params->numobj, params->gpu_rows, params->gpu_cols, params->accumulation_fp32);

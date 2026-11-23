@@ -71,6 +71,20 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   amax pass of dynamic scaling, an opt-in fused dynamic-scaling kernel, and,
   for its other users, faster host FP8 encoding (F16C) and streaming stores
   for large in-place widening on the host.
+- Subnormals on the CPU (`--flush_subnormals`, default on). The FP32 tiles of
+  the covariance problems hold many subnormal numbers, and on Intel CPUs every
+  SIMD operation on one takes a microcode assist: MKL's FP32 GEMMs ran at
+  0.74x the speed of the FP64 ones, so the mixed-precision kinds were
+  1.2-1.4x *slower* than FP64 on CPUs. HiCMA-X now sets flush-to-zero and
+  denormals-are-zero on its CPU threads while it runs (the main thread's
+  setting is restored at the end). On a Broadwell and a Skylake-SP node
+  (N = 16384, NB = 512) the mixed-precision kinds are 1.6-2.6x faster and
+  about 2x faster than FP64; FP64 runs are unchanged, and residuals agree
+  to 4-5 digits. An AMD Zen 2 CPU has no such penalty and is unchanged.
+  `--flush_subnormals 0` keeps IEEE subnormals. OmniCast's host conversions
+  now give the same bits whatever the caller's FTZ/DAZ or rounding mode
+  (some had changed under FTZ/DAZ; QingleiCao/OmniCast#2). Report in
+  `docs/omnicast/round4/REPORT.md`.
 
 ### Correctness
 

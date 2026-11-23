@@ -304,6 +304,7 @@ Generated from the option table in `src/core/hicma_parsec_internal.c`.
 | `--fp8` | int | FP8 GEMMs in kinds 8, 9 and 10: 1 (default) use them when every GPU has compute capability >= 8.9; 0: never (those tiles use HP) |
 | `--fp8_scaling` | int | FP8 GEMMs: 1 (default) scale each operand tile by a power of two from its max entry; 0: unscaled |
 | `--operand_cache` | int | GPU GEMMs: operand tiles kept converted to the GEMM precision (FP8, FP16/BF16, FP32) per GPU for reuse; -1 (default): up to 2*NT tiles per precision, each at most 5% of the GPU memory PaRSEC manages, taken when needed; 0: off (convert per GEMM); > 0: up to that many tiles per precision |
+| `--flush_subnormals` | int | CPU threads: 1 (default) flush subnormal results to zero and read subnormal inputs as zero (FTZ/DAZ on x86-64, FZ on AArch64) while HiCMA-X runs: low-precision BLAS on tiles with tiny entries no longer pays for subnormal arithmetic (2.0-2.5x for the mixed-precision kinds on a Broadwell CPU); 0: IEEE subnormals. GPU kernels and OmniCast conversions are not affected |
 | `--arena_pinned_memory` | flag | Use pinned host memory for taskpool arenas when GPUs are enabled |
 | `--adaptive_maxrank` | int | In -D 6, adaptively set the maxrank used in Cholesky based on the generation |
 | `--kind_of_cholesky` | int | Cholesky type |
