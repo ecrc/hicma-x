@@ -319,9 +319,8 @@ Full tables and figure: `docs/omnicast/final/README.md`.
   the host like the GPU one (one FP32 copy per panel tile, freed when the
   panel's last GEMM has read it) would remove most of the 10 %. Kind 5 spends
   2.3 % converting, so it would gain little.
-- **OmniCast release.** The guard is QingleiCao/OmniCast#2, merged into `main`
-  as b67a18a, which the submodule points at. It is a behavior fix and would
-  fit an OmniCast 2.0.1 tag.
+- **OmniCast release.** The guard is QingleiCao/OmniCast#2, released as
+  OmniCast 2.0.1 (tag `v2.0.1`, e21735b), which the submodule points at.
 - **AArch64 run.** The guard and `--flush_subnormals` compile for AArch64 but
   were not run there.
 
