@@ -1,0 +1,9 @@
+# host caffeine: Intel(R) Xeon(R) CPU E5-2660 v4 @ 2.00GHz, 28 cpus, 2026-11-23T17:29:09+00:00, N=32768
+k10_runtime off r1: 20.10903 19.95635 20.13431 | Number_of_Datatype_Conversions= 78770 Number_of_Datatype_Conversions= 78770 
+k10_runtime on r1: 17.31427 17.70811 17.46146 | Number_of_Datatype_Conversions= 14523 CPU_operand_cache: conversions= 14523 reuses= 64247 fallbacks= 0 evictions= 12522 tiles= 504 MB= 528.5 held= 0 
+k10_runtime on r2: 17.69062 17.61470 17.86868 | Number_of_Datatype_Conversions= 22235 CPU_operand_cache: conversions= 22235 reuses= 56535 fallbacks= 0 evictions= 20279 tiles= 504 MB= 528.5 held= 0 
+k10_runtime off r2: 20.57059 20.67716 20.27432 | Number_of_Datatype_Conversions= 78770 Number_of_Datatype_Conversions= 78770 
+k10_runtime off r3: 20.14105 20.32263 20.28227 | Number_of_Datatype_Conversions= 78770 Number_of_Datatype_Conversions= 78770 
+k10_runtime on r3: 16.72610 17.21253 17.45936 | Number_of_Datatype_Conversions= 21219 CPU_operand_cache: conversions= 21219 reuses= 57551 fallbacks= 0 evictions= 19262 tiles= 504 MB= 528.5 held= 0 
+k10_runtime on r4: 17.40492 17.10406 17.11437 | Number_of_Datatype_Conversions= 11811 CPU_operand_cache: conversions= 11811 reuses= 66959 fallbacks= 0 evictions= 9816 tiles= 504 MB= 528.5 held= 0 
+k10_runtime off r4: 20.18716 20.07745 20.08884 | Number_of_Datatype_Conversions= 78770 Number_of_Datatype_Conversions= 78770 

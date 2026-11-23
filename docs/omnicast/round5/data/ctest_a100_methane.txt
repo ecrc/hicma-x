@@ -1,0 +1,15 @@
+      Start 444: gpu_tlr_hp_band
+54/55 Test #444: gpu_tlr_hp_band ..................   Passed    3.24 sec
+      Start 445: gpu_tlr_fp8_band
+55/55 Test #445: gpu_tlr_fp8_band .................   Passed    3.35 sec
+
+100% tests passed, 0 tests failed out of 55
+
+Label Time Summary:
+dplasma     =   0.25 sec*proc (1 test)
+gpu         = 107.39 sec*proc (25 tests)
+hicma       = 215.52 sec*proc (54 tests)
+mpi         =   7.17 sec*proc (7 tests)
+omnicast    = 122.15 sec*proc (5 tests)
+
+Total Test time (real) = 215.82 sec

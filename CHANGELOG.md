@@ -85,6 +85,16 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   now give the same bits whatever the caller's FTZ/DAZ or rounding mode
   (some had changed under FTZ/DAZ; QingleiCao/OmniCast#2). Report in
   `docs/omnicast/round4/REPORT.md`.
+- Host operand cache for kind 10 on CPUs (`--operand_cache`, default on).
+  With runtime decisions, every CPU GEMM that picks FP32 converted both of
+  its FP64 panel tiles again: 9342 conversions of 496 tiles at N = 16384. A
+  process without GPUs now keeps one FP32 copy per panel tile, converted
+  once and freed after the last GEMM of the process that reads it. The
+  copies are bounded, by default to a quarter of the process's panel tiles;
+  at the bound the copy whose tile has the fewest readers left is evicted.
+  Results are bit-identical. On a Broadwell node: 1.13-1.15x at N = 16384
+  (2454 conversions left instead of 9342, 130 MB) and 1.16x at N = 32768. Report
+  in `docs/omnicast/round5/REPORT.md`.
 
 ### Correctness
 

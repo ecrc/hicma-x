@@ -1,0 +1,20 @@
+# Which tiles kind 10 leaves in FP64 on a CPU (N = 8192, NB = 512, one checked run each): nb_dense_dp/nb_dense_sp = tiles after the factorization.
+# Every panel tile stays FP64, so the only operand conversion of the CPU GEMMs is FP64 -> FP32 (HOC_KINDS came from a temporary per-kind counter).
+p2.1e-10: nb_dense_dp= 136 nb_dense_sp= 0 DENSE_DP= 290 DENSE_SP= 270 HOC_KINDS fp32= 103 fp64= 0 fp16r= 0 
+p2.1e-12: nb_dense_dp= 136 nb_dense_sp= 0 DENSE_DP= 390 DENSE_SP= 170 HOC_KINDS fp32= 64 fp64= 0 fp16r= 0 
+p2.1e-6: nb_dense_dp= 136 nb_dense_sp= 0 DENSE_DP= 0 DENSE_SP= 560 HOC_KINDS fp32= 243 fp64= 0 fp16r= 0 
+p2.1e-7: nb_dense_dp= 136 nb_dense_sp= 0 DENSE_DP= 8 DENSE_SP= 552 HOC_KINDS fp32= 265 fp64= 0 fp16r= 0 
+p2.1e-8: nb_dense_dp= 136 nb_dense_sp= 0 DENSE_DP= 81 DENSE_SP= 479 HOC_KINDS fp32= 278 fp64= 0 fp16r= 0 
+p2.1e-9: nb_dense_dp= 136 nb_dense_sp= 0 DENSE_DP= 217 DENSE_SP= 343 HOC_KINDS fp32= 176 fp64= 0 fp16r= 0 
+p3.1e-10: nb_dense_dp= 136 nb_dense_sp= 0 DENSE_DP= 431 DENSE_SP= 129 HOC_KINDS fp32= 65 fp64= 0 fp16r= 0 
+p3.1e-12: nb_dense_dp= 136 nb_dense_sp= 0 DENSE_DP= 521 DENSE_SP= 39 HOC_KINDS fp32= 26 fp64= 0 fp16r= 0 
+p3.1e-6: nb_dense_dp= 136 nb_dense_sp= 0 DENSE_DP= 0 DENSE_SP= 560 HOC_KINDS fp32= 302 fp64= 0 fp16r= 0 
+p3.1e-7: nb_dense_dp= 136 nb_dense_sp= 0 DENSE_DP= 45 DENSE_SP= 515 HOC_KINDS fp32= 177 fp64= 0 fp16r= 0 
+p3.1e-8: nb_dense_dp= 136 nb_dense_sp= 0 DENSE_DP= 214 DENSE_SP= 346 HOC_KINDS fp32= 149 fp64= 0 fp16r= 0 
+p3.1e-9: nb_dense_dp= 136 nb_dense_sp= 0 DENSE_DP= 340 DENSE_SP= 220 HOC_KINDS fp32= 116 fp64= 0 fp16r= 0 
+p4.1e-10: nb_dense_dp= 136 nb_dense_sp= 0 DENSE_DP= 531 DENSE_SP= 29 HOC_KINDS fp32= 28 fp64= 0 fp16r= 0 
+p4.1e-12: nb_dense_dp= 136 nb_dense_sp= 0 DENSE_DP= 560 DENSE_SP= 0 HOC_KINDS fp32= 0 fp64= 0 fp16r= 0 
+p4.1e-6: nb_dense_dp= 136 nb_dense_sp= 0 DENSE_DP= 0 DENSE_SP= 560 HOC_KINDS fp32= 341 fp64= 0 fp16r= 0 
+p4.1e-7: nb_dense_dp= 136 nb_dense_sp= 0 DENSE_DP= 13 DENSE_SP= 547 HOC_KINDS fp32= 209 fp64= 0 fp16r= 0 
+p4.1e-8: nb_dense_dp= 136 nb_dense_sp= 0 DENSE_DP= 220 DENSE_SP= 340 HOC_KINDS fp32= 177 fp64= 0 fp16r= 0 
+p4.1e-9: nb_dense_dp= 136 nb_dense_sp= 0 DENSE_DP= 430 DENSE_SP= 130 HOC_KINDS fp32= 68 fp64= 0 fp16r= 0 

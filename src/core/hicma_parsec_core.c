@@ -235,6 +235,47 @@ static void hicma_parsec_warn_sr_hp_cpu(void)
         abort();                                                                 \
     } while(0)
 
+/* The FP32 copy of an FP64 panel tile for a CPU GEMM: a copy in the host
+ * operand cache (pinned, handle) or a work buffer of `pool` (buf) */
+typedef struct hicma_cpu_operand_s {
+    void *buf;
+    parsec_memory_pool_t *pool;
+    void *handle;
+} hicma_cpu_operand_t;
+
+/* Panel tile (row, k), S, in FP32: from the host operand cache, which
+ * converts a tile once for the GEMMs of the process that read it, or else
+ * converted into a work buffer of pool. */
+static void *hicma_cpu_operand_fp32(hicma_parsec_params_t *params_tlr, parsec_tiled_matrix_t *descA,
+        int counter_id, int row, int k, void *S, parsec_memory_pool_t *pool, hicma_cpu_operand_t *op)
+{
+    int converted = 0;
+    void *p = hicma_host_operand_cache_get(params_tlr->host_operand_cache, descA, params_tlr,
+            row, k, S, &converted, &op->handle);
+    if( NULL != p ) {
+        if( converted ) hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
+        return p;
+    }
+    op->buf = parsec_private_memory_pop(pool);
+    op->pool = pool;
+    hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
+    hicma_host_operand_convert(S, op->buf, descA->mb, descA->nb);
+    return op->buf;
+}
+
+/* The GEMM is done with panel tile (row, k), whether or not it converted it:
+ * hicma_host_operand_cache_release counts every GEMM that reads the tile */
+static void hicma_cpu_operand_done(hicma_parsec_params_t *params_tlr, parsec_tiled_matrix_t *descA,
+        int row, int k, hicma_cpu_operand_t *op)
+{
+    if( NULL != op->buf ) {
+        parsec_private_memory_push(op->pool, op->buf);
+        op->buf = NULL;
+    }
+    hicma_host_operand_cache_release(params_tlr->host_operand_cache, descA, params_tlr, row, k, op->handle);
+    op->handle = NULL;
+}
+
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
 /* A GEMM operand held in a slot of an operand cache until the GEMM reading it
  * is enqueued (hicma_operand_release) */
@@ -1848,7 +1889,8 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
     int ldan = BLKLDD( descA, n );
     void *A_use = A;
     void *B_use = B;
-    void *A_d, *A_s, *B_d, *B_s, *A_h, *B_h, *C_h;
+    void *A_d, *B_d, *A_h, *B_h, *C_h;
+    hicma_cpu_operand_t opA = {0}, opB = {0};   /* FP32 copies of A(m, k) and B(n, k) */
     double Anorm = (params_tlr->adaptive_decision_runtime)? hicma_tile_meta_norm(A_norm): 0;
     double Bnorm = (params_tlr->adaptive_decision_runtime)? hicma_tile_meta_norm(B_norm): 0;
     uint16_t Aprecision = (params_tlr->adaptive_decision_runtime)? hicma_tile_meta_precision(A_norm): (uint16_t)-1;
@@ -1946,20 +1988,12 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
 
         /* If sgemm */
     } else if( DENSE_SP == new_decision ) {
-        /* Convert datatype, A */
+        /* Convert datatype, A and B: FP32 copies of the FP64 panel tiles */
         if( DENSE_DP == Aprecision ) {
-            A_s = parsec_private_memory_pop( p_work_full_sp );
-            hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            HICMA_OMC( omc_convert_2d(OMC_FP64, A, descA->mb, OMC_FP32, A_s, descA->mb, descA->mb, descA->nb, NULL) );
-            A_use = A_s;
+            A_use = hicma_cpu_operand_fp32(params_tlr, descA, counter_id, m, k, A, p_work_full_sp, &opA);
         }
-
-        /* Convert datatype, B */
         if( DENSE_DP == Bprecision ) {
-            B_s = parsec_private_memory_pop( p_work_full_sp );
-            hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            HICMA_OMC( omc_convert_2d(OMC_FP64, B, descA->mb, OMC_FP32, B_s, descA->mb, descA->mb, descA->nb, NULL) );
-            B_use = B_s;
+            B_use = hicma_cpu_operand_fp32(params_tlr, descA, counter_id, n, k, B, p_work_full_sp, &opB);
         }
 
 #if ACC_DP
@@ -2052,13 +2086,6 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
             }
         }
 #endif
-
-        /* Push back to mempool */
-        if( DENSE_DP == Aprecision )
-            parsec_private_memory_push( p_work_full_sp, A_s );
-
-        if( DENSE_DP == Bprecision )
-            parsec_private_memory_push( p_work_full_sp, B_s );
     }
 #if !HAVE_HP_CPU
     /* Convert A and B in 16-bit and call sgemm */
@@ -2186,6 +2213,10 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
 
     }
 #endif
+
+    /* Done with the panel tiles: their cached copies are freed after the last GEMM reading them */
+    hicma_cpu_operand_done(params_tlr, descA, m, k, &opA);
+    hicma_cpu_operand_done(params_tlr, descA, n, k, &opB);
 
     if( 0 == k ) {
         params_tlr->decisions_gemm_first[n*descA->lmt+m] = new_decision;

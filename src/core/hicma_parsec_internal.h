@@ -57,7 +57,7 @@
 #include <stdlib.h>    /**< Standard library functions */
 #include <stdio.h>     /**< Standard I/O functions */
 #include <string.h>    /**< String manipulation functions */
-#include <pthread.h>   /**< Mutex of the GPU operand caches */
+#include <pthread.h>   /**< Mutexes of the GPU and host operand caches */
 
 /* ============================================================================
  * System definitions
@@ -674,8 +674,9 @@ typedef struct hicma_parsec_params_s {
     int fp8;                  /**< --fp8: 1 (default) use FP8 GEMMs where the GPUs support them; 0: never */
     int fp8_enabled;          /**< HAVE_FP8, --fp8, kind 8, 9 or 10, and every GPU supports FP8 GEMM (CC >= 8.9) */
     int fp8_scaling;          /**< FP8 GEMMs: scale each operand tile by a power of two from its amax */
-    int operand_cache;        /**< GPU GEMM operand tiles kept converted per GPU; -1 auto (default), 0 off, > 0 tiles per cache */
+    int operand_cache;        /**< GEMM operand tiles kept converted, per GPU and on the host (kind 10 runtime CPU GEMMs); -1 auto (default), 0 off, > 0 tiles per cache */
     int operand_cache_epoch;  /**< Bumped per factorization: cached operands of an earlier one are stale */
+    struct hicma_host_operand_cache_s *host_operand_cache; /**< FP32 copies of the panel tiles for the kind 10 runtime CPU GEMMs (hicma_host_operand_cache_begin); NULL when off */
     int flush_subnormals;     /**< --flush_subnormals: CPU threads flush subnormals (FTZ/DAZ) while HiCMA-X runs; 1 (default) or 0 */
     int fp_env_changed;       /**< hicma_parsec_setup_parsec changed the main thread's floating-point control register */
     unsigned long fp_env_saved; /**< That register before the change, restored by hicma_parsec_cleanup_parsec */

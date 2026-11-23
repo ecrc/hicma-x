@@ -1,0 +1,25 @@
+--- a/src/core/hicma_parsec.c
++++ b/src/core/hicma_parsec.c
+@@ -746,6 +746,22 @@
+         SYNC_TIME_PRINT(params->rank, ("Convert S2D\n"));
+     }
+ 
++    /* Debug only: hash of the factor (dense dcAd), to compare runs bit for bit */
++    if( params->check && NULL != getenv("HICMA_DEBUG_FACTOR_HASH")
++            && params->band_size_dense >= params->NT && params->auto_band == 0 && !params->adaptive_memory ) {
++        parsec_tiled_matrix_t *dd = (parsec_tiled_matrix_t *)&data->dcAd;
++        uint64_t h = 1469598103934665603ULL;
++        for( int k = 0; k < dd->nt; k++ ) {
++            for( int m = k; m < dd->mt; m++ ) {
++                if( dd->super.myrank != dd->super.rank_of(&dd->super, m, k) ) continue;
++                const uint64_t *t = (const uint64_t *)parsec_data_copy_get_ptr(
++                        parsec_data_get_copy(dd->super.data_of(&dd->super, m, k), 0));
++                for( size_t i = 0; i < (size_t)dd->mb * dd->nb; i++ ) h = (h ^ t[i]) * 1099511628211ULL;
++            }
++        }
++        printf("FACTOR_HASH rank %d %016lx\n", params->rank, (unsigned long)h);
++    }
++
+     if(params->verbose > 9) {
+         parsec_tiled_matrix_t *decision_desc = (parsec_tiled_matrix_t *)&data->dcA;
+         if( params->band_size_dense >= params->NT &&

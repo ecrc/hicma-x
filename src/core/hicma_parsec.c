@@ -675,6 +675,18 @@ int hicma_parsec_potrf( parsec_context_t *parsec,
             }
         }
 #endif
+        if( params->adaptive_decision_runtime ) {
+            /* Every rank takes part; ranks with GPUs have no host cache and add zeros */
+            uint64_t host_cache_stats[8];
+            hicma_host_operand_cache_stats(params->host_operand_cache, host_cache_stats, 1);
+            host_cache_stats[7] = NULL != params->host_operand_cache;
+            MPI_Allreduce(MPI_IN_PLACE, host_cache_stats, 8, MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+            if( 0 == params->rank && host_cache_stats[7] > 0 ) {
+                fprintf(stderr, GRN"CPU_operand_cache: conversions= %lu reuses= %lu fallbacks= %lu evictions= %lu tiles= %lu MB= %.1f held= %lu\n"RESET,
+                        host_cache_stats[0], host_cache_stats[1], host_cache_stats[2], host_cache_stats[3],
+                        host_cache_stats[4], (double)host_cache_stats[5] / 1.0e6, host_cache_stats[6]);
+            }
+        }
     }
 
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)

@@ -807,6 +807,94 @@ int parsec_datatype_convert_dense_adaptive(parsec_context_t *parsec,
         uint16_t *decisions,
         int convert_direction);
 
+/**
+ * Host operand cache of the CPU GEMMs of kind 10 with runtime decisions
+ * (hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu).
+ *
+ * GEMM (m, n, k) reads the panel tiles (m, k) and (n, k), which the CPU TRSMs
+ * of this kind leave in FP64, and converts both to FP32 when it chooses an
+ * FP32 GEMM. Tile (m, k) is read by up to NT-k-2 GEMMs, so converting per
+ * GEMM is O(NT^3) conversions of O(NT^2) tiles. A panel tile no longer
+ * changes after its TRSM, and the conversion is deterministic (round to
+ * nearest, no stochastic rounding in kind 10), so this cache keeps one FP32
+ * copy per panel tile for the GEMMs of the process: bit-identical results.
+ *
+ * - A copy is made once: the first GEMM that needs it converts it outside the
+ *   cache's mutex; the GEMMs asking for it meanwhile wait for it.
+ * - A copy is freed as soon as every GEMM of this process that reads tile
+ *   (m, k) is done, those that choose FP64 included: each tile counts its
+ *   GEMMs done against the number of local GEMMs reading it. GEMMs between
+ *   _get and _release pin the copy, so it is never freed or evicted while
+ *   one reads it.
+ * - Buffers are taken from the heap when first needed, up to a bound
+ *   (HICMA_HOST_OPERAND_CACHE_AUTO or --operand_cache), and reused
+ *   afterwards. At the bound, a new copy takes the buffer of a copy nobody
+ *   pins: the one whose tile has the fewest GEMMs left to read it, the most
+ *   recently used of those (its tile is converted again if read again). If
+ *   all are pinned, the GEMM converts into its own work buffer, as without
+ *   the cache.
+ * - hicma_host_operand_cache_begin empties the cache before each
+ *   factorization; copies of an earlier one are never read.
+ *
+ * Only processes without GPUs have one: with GPUs, the GEMMs run on the GPUs,
+ * which have their own operand caches.
+ */
+typedef struct hicma_host_operand_cache_s hicma_host_operand_cache_t;
+
+/** Buffers of the host operand cache with --operand_cache -1, for a process
+ * with `local` panel tiles (m > k) of an NT-by-NT tile matrix: a quarter of
+ * them (an eighth of the memory of those tiles in FP64), at least 2*NT */
+#define HICMA_HOST_OPERAND_CACHE_SHARE 4
+#define HICMA_HOST_OPERAND_CACHE_AUTO(local, nt) \
+    ((local) / HICMA_HOST_OPERAND_CACHE_SHARE > 2L * (nt) ? (local) / HICMA_HOST_OPERAND_CACHE_SHARE : 2L * (nt))
+
+/**
+ * @brief FP32 copy T of the mb-by-nb FP64 tile S (both contiguous, leading
+ * dimension mb): the conversion the host operand cache keeps, and the one a
+ * GEMM does itself when the cache is off or full
+ */
+void hicma_host_operand_convert(const void *S, void *T, int mb, int nb);
+
+/**
+ * @brief Set up the host operand cache for a factorization
+ *
+ * Called by potrf_L_dense_mp_gpu_fp8_adaptive_New (kind 10) before each
+ * factorization of descA, when no task runs: creates params->host_operand_cache
+ * the first time it is needed (runtime decisions, --operand_cache != 0, no
+ * GPU), empties it and clears its statistics.
+ */
+void hicma_host_operand_cache_begin(hicma_parsec_params_t *params, parsec_tiled_matrix_t *descA);
+
+/** @brief Free the host operand cache c (NULL: nothing) */
+void hicma_host_operand_cache_destroy(hicma_host_operand_cache_t *c);
+
+/**
+ * @brief FP32 copy of the FP64 panel tile (m, k) of descA from the host
+ * operand cache c
+ *
+ * Returns the cached copy, converting S (the tile) into it first when no GEMM
+ * did yet; *converted is then set. Returns NULL when c is NULL or every buffer
+ * holds a copy some GEMM pins: the caller converts into its own buffer. Every
+ * GEMM that reads tile (m, k) calls hicma_host_operand_cache_release once
+ * after its last use of the tile, with the *handle this set (NULL if it did
+ * not call this or got NULL).
+ */
+void *hicma_host_operand_cache_get(hicma_host_operand_cache_t *c, parsec_tiled_matrix_t *descA,
+        const hicma_parsec_params_t *params, int m, int k, const void *S, int *converted, void **handle);
+
+/** @brief GEMM done with panel tile (m, k): see hicma_host_operand_cache_get */
+void hicma_host_operand_cache_release(hicma_host_operand_cache_t *c, parsec_tiled_matrix_t *descA,
+        const hicma_parsec_params_t *params, int m, int k, void *handle);
+
+/**
+ * @brief Statistics of the host operand cache c since the last reset:
+ * stats = {conversions, reuses, fallbacks (every buffer pinned), evictions,
+ * buffers, bytes, copies held} (all zero when c is NULL). Copies held after a
+ * factorization are 0 when every GEMM reading a tile was counted.
+ * reset: start counting again.
+ */
+void hicma_host_operand_cache_stats(hicma_host_operand_cache_t *c, uint64_t stats[7], int reset);
+
 
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
 /**

@@ -207,6 +207,11 @@ potrf_L_dense_mp_gpu_fp8_adaptive_New( parsec_context_t *parsec,
     hicma_potrf_gpu_devices(&nb, &dev_index);
 
     params->info = 0;
+
+    /* Runtime decisions without GPUs: the host operand cache of the CPU GEMMs,
+     * emptied for this factorization (no task runs) */
+    hicma_host_operand_cache_begin(params, A);
+
     parsec_potrf_L_dense_mp_gpu_fp8_adaptive_taskpool_t *tp = parsec_potrf_L_dense_mp_gpu_fp8_adaptive_new( A, Ar, Rank, Fake, params );
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
     tp->_g_ws_gpu = (void *)data->ws_gpu;

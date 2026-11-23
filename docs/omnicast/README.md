@@ -29,6 +29,18 @@ the code before OmniCast (`4256ff9`), built side by side:
 
 Tables, figure, method and scripts: [`final/README.md`](final/README.md).
 
+## Converting once on the CPU (round 5)
+
+With the FP32 GEMMs fast after round 4, the conversions of kind 10 (runtime
+decisions) showed on the CPU: every GEMM that picks FP32 converted both of
+its FP64 panel tiles, 9342 conversions of 496 tiles at N = 16384 (10 % of
+the time). A process without GPUs now keeps one FP32 copy per panel tile,
+freed after its last reader and bounded by default to a quarter of the
+process's panel tiles (`--operand_cache`). Results are bit-identical, and
+kind 10 is 1.13-1.15x faster at N = 16384 and 1.16x at N = 32768 on a
+Broadwell node. Design, eviction policy, bound and measurements:
+[`round5/REPORT.md`](round5/REPORT.md).
+
 ## Subnormals on the CPU (round 4)
 
 On Intel CPUs the mixed-precision kinds were 1.2-1.4x slower than FP64. The

@@ -822,6 +822,344 @@ bool hicma_parsec_convert_in_trsm( hicma_parsec_params_t *params_tlr, int m, int
            );
 }
 
+/* ============================================================================
+   Host operand cache of the kind 10 runtime CPU GEMMs
+   (see hicma_host_operand_cache_t in hicma_parsec_datatype_convert.h)
+   ============================================================================ */
+
+struct hicma_host_operand_slot_s;
+
+/* A buffer and the FP32 copy it holds */
+typedef struct hicma_host_operand_entry_s {
+    void *buf;
+    struct hicma_host_operand_slot_s *slot;  /* Tile it holds a copy of; NULL when free */
+    int ready;                               /* 0 while the copy is being converted */
+    int pins;                                /* GEMMs between _get and _release */
+    int idle;                                /* Its idle list (readers left), -1 if in none */
+    struct hicma_host_operand_entry_s *prev, *next;  /* Idle list or free list */
+} hicma_host_operand_entry_t;
+
+/* Panel tile (m, k), m > k */
+typedef struct hicma_host_operand_slot_s {
+    hicma_host_operand_entry_t *e;  /* Its copy, NULL if none */
+    int readers;   /* GEMMs of this process that read the tile; -1: not counted yet */
+    int reads;     /* Of those, the ones done (hicma_host_operand_cache_release) */
+} hicma_host_operand_slot_t;
+
+/* Buffers are taken from the heap up to max and then reused. The copies
+ * nobody pins are idle: idle list r holds those whose tile has r GEMMs left
+ * to read it, in the order of their last use. */
+struct hicma_host_operand_cache_s {
+    pthread_mutex_t lock;     /* Everything below; not held during a conversion */
+    pthread_cond_t ready;     /* Broadcast after each conversion */
+    int nt;                   /* Tiles per row and column */
+    size_t nslots;
+    hicma_host_operand_slot_t *slots;     /* Tile (m, k) at m*(m-1)/2 + k */
+    size_t bytes;                         /* Of a buffer */
+    int max;                              /* Buffers it may allocate */
+    int count;                            /* Allocated so far: entries[0 .. count-1] */
+    hicma_host_operand_entry_t *entries;  /* max entries */
+    hicma_host_operand_entry_t *free;     /* Buffers holding no copy */
+    int nidle;                            /* Idle lists: readers left 0 .. nidle-1 */
+    hicma_host_operand_entry_t **head, **tail;
+    int low;                              /* Idle lists below are empty */
+    uint64_t conversions, reuses, fallbacks, evictions;
+};
+
+void hicma_host_operand_convert(const void *S, void *T, int mb, int nb)
+{
+    HICMA_OMC( omc_convert_2d(OMC_FP64, S, mb, OMC_FP32, T, mb, mb, nb, NULL) );
+}
+
+static inline hicma_host_operand_slot_t *hicma_host_operand_slot(hicma_host_operand_cache_t *c, int m, int k)
+{
+    assert(0 <= k && k < m && m < c->nt);
+    return &c->slots[(size_t)m * (m - 1) / 2 + k];
+}
+
+static inline int hicma_host_operand_dense(const hicma_parsec_params_t *params, int m, int n)
+{
+    uint16_t d = params->decisions[hicma_tile_idx(params, m, n)];
+    return DENSE_DP == d || DENSE_SP == d || DENSE_HP == d || DENSE_FP8 == d;
+}
+
+/* The GEMMs of this process that read the dense panel tile (m, k) in
+ * hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu: as A of
+ * GEMM (m, n, k), k < n < m, and as B of GEMM (i, m, k), m < i < mt, each run
+ * by the process of its C, when C, A and B are dense. Dense tiles stay dense
+ * during the factorization (runtime decisions switch between DENSE_DP and
+ * DENSE_SP only). */
+static int hicma_host_operand_readers(parsec_tiled_matrix_t *descA, const hicma_parsec_params_t *params,
+        int m, int k)
+{
+    parsec_data_collection_t *dc = &descA->super;
+    int me = (int)dc->myrank;
+    int readers = 0;
+    for( int n = k+1; n < m; n++ ) {
+        if( hicma_host_operand_dense(params, m, n) && hicma_host_operand_dense(params, n, k)
+                && me == (int)dc->rank_of(dc, m, n) ) readers++;
+    }
+    for( int i = m+1; i < descA->mt; i++ ) {
+        if( hicma_host_operand_dense(params, i, m) && hicma_host_operand_dense(params, i, k)
+                && me == (int)dc->rank_of(dc, i, m) ) readers++;
+    }
+    return readers;
+}
+
+/* Idle lists (c->lock held) */
+static void hicma_host_operand_idle_remove(hicma_host_operand_cache_t *c, hicma_host_operand_entry_t *e)
+{
+    int r = e->idle;
+    assert(r >= 0);
+    if( NULL != e->prev ) e->prev->next = e->next; else c->head[r] = e->next;
+    if( NULL != e->next ) e->next->prev = e->prev; else c->tail[r] = e->prev;
+    e->prev = e->next = NULL;
+    e->idle = -1;
+}
+
+static void hicma_host_operand_idle_append(hicma_host_operand_cache_t *c, hicma_host_operand_entry_t *e)
+{
+    int r = e->slot->readers - e->slot->reads;
+    r = r < 0 ? 0 : (r >= c->nidle ? c->nidle - 1 : r);
+    e->idle = r;
+    e->prev = c->tail[r];
+    e->next = NULL;
+    if( NULL != c->tail[r] ) c->tail[r]->next = e; else c->head[r] = e;
+    c->tail[r] = e;
+    if( r < c->low ) c->low = r;
+}
+
+/* Detach the copy e holds from its tile; e is in no list (c->lock held) */
+static void hicma_host_operand_detach(hicma_host_operand_entry_t *e)
+{
+    assert(0 == e->pins && NULL != e->slot);
+    e->slot->e = NULL;
+    e->slot = NULL;
+}
+
+/* A buffer for a new copy: a free one, a new one up to the bound, or else
+ * the idle copy whose tile has the fewest GEMMs left to read it, the most
+ * recently used of those; NULL if every copy is pinned (c->lock held).
+ * The GEMMs run roughly row by row (task priorities), and row i reads nearly
+ * every panel tile (n, k), n < i, once as B: a cyclic scan, on which LRU
+ * keeps nothing that is read again in time, while evicting the most recent
+ * copy keeps a stable set. Tiles whose own row is still to come have more
+ * readers left and are kept first. */
+static hicma_host_operand_entry_t *hicma_host_operand_take(hicma_host_operand_cache_t *c)
+{
+    hicma_host_operand_entry_t *e = c->free;
+    if( NULL != e ) {
+        c->free = e->next;
+        e->next = NULL;
+        return e;
+    }
+    if( c->count < c->max ) {
+        e = &c->entries[c->count];
+        if( 0 == posix_memalign(&e->buf, 64, c->bytes) ) {
+            c->count++;
+            return e;
+        }
+        e->buf = NULL;
+        c->max = c->count;   /* No more tries */
+    }
+    for( ; c->low < c->nidle; c->low++ ) {
+        e = c->tail[c->low];
+        if( NULL != e ) {
+            hicma_host_operand_idle_remove(c, e);
+            hicma_host_operand_detach(e);   /* Its tile is converted again if read again */
+            c->evictions++;
+            return e;
+        }
+    }
+    return NULL;
+}
+
+static hicma_host_operand_cache_t *hicma_host_operand_cache_create(const hicma_parsec_params_t *params,
+        parsec_tiled_matrix_t *descA)
+{
+    int nt = params->NT;
+    size_t nslots = nt > 1 ? (size_t)nt * (nt - 1) / 2 : 0;
+
+    /* Default bound: a share of this process's own panel tiles */
+    long local = 0;
+    for( int k = 0; k < descA->nt; k++ ) {
+        for( int m = k+1; m < descA->mt; m++ ) {
+            if( descA->super.myrank == descA->super.rank_of(&descA->super, m, k) ) local++;
+        }
+    }
+    long max = params->operand_cache > 0 ? params->operand_cache : HICMA_HOST_OPERAND_CACHE_AUTO(local, nt);
+    if( max > (long)nslots ) max = (long)nslots;
+
+    hicma_host_operand_cache_t *c = (hicma_host_operand_cache_t *)calloc(1, sizeof(hicma_host_operand_cache_t));
+    if( NULL == c ) return NULL;
+    c->nt = nt;
+    c->nslots = nslots;
+    c->bytes = (size_t)params->NB * params->NB * sizeof(float);
+    c->max = (int)max;
+    c->nidle = nt > 0 ? nt : 1;   /* A tile has at most NT-2 readers */
+    c->slots = (hicma_host_operand_slot_t *)calloc(nslots > 0 ? nslots : 1, sizeof(hicma_host_operand_slot_t));
+    c->entries = (hicma_host_operand_entry_t *)calloc(max > 0 ? (size_t)max : 1, sizeof(hicma_host_operand_entry_t));
+    c->head = (hicma_host_operand_entry_t **)calloc((size_t)c->nidle, sizeof(hicma_host_operand_entry_t *));
+    c->tail = (hicma_host_operand_entry_t **)calloc((size_t)c->nidle, sizeof(hicma_host_operand_entry_t *));
+    if( NULL == c->slots || NULL == c->entries || NULL == c->head || NULL == c->tail ) {
+        free(c->slots);
+        free(c->entries);
+        free(c->head);
+        free(c->tail);
+        free(c);
+        return NULL;
+    }
+    pthread_mutex_init(&c->lock, NULL);
+    pthread_cond_init(&c->ready, NULL);
+    return c;
+}
+
+void hicma_host_operand_cache_destroy(hicma_host_operand_cache_t *c)
+{
+    if( NULL == c ) return;
+    for( int j = 0; j < c->count; j++ ) free(c->entries[j].buf);
+    pthread_cond_destroy(&c->ready);
+    pthread_mutex_destroy(&c->lock);
+    free(c->slots);
+    free(c->entries);
+    free(c->head);
+    free(c->tail);
+    free(c);
+}
+
+void hicma_host_operand_cache_begin(hicma_parsec_params_t *params, parsec_tiled_matrix_t *descA)
+{
+    hicma_host_operand_cache_t *c = params->host_operand_cache;
+    if( NULL == c ) {
+        if( DENSE_MP_GPU_FP8_ADAPTIVE != params->kind_of_cholesky || !params->adaptive_decision_runtime
+                || 0 == params->operand_cache || params->gpus > 0 ) {
+            return;
+        }
+        c = hicma_host_operand_cache_create(params, descA);
+        if( NULL == c ) {
+            fprintf(stderr, "Host operand cache: out of memory, GEMMs convert their operands themselves\n");
+            return;
+        }
+        params->host_operand_cache = c;
+    }
+
+    /* No task runs: copies of an earlier factorization are stale, and the
+     * tiles count their readers again */
+    c->free = NULL;
+    for( int r = 0; r < c->nidle; r++ ) c->head[r] = c->tail[r] = NULL;
+    c->low = c->nidle;
+    for( int j = c->count - 1; j >= 0; j-- ) {
+        hicma_host_operand_entry_t *e = &c->entries[j];
+        if( 0 != e->pins ) {
+            fprintf(stderr, "Host operand cache: a copy is still pinned by %d GEMMs\n", e->pins);
+            abort();
+        }
+        e->slot = NULL;
+        e->idle = -1;
+        e->prev = NULL;
+        e->next = c->free;
+        c->free = e;
+    }
+    for( size_t i = 0; i < c->nslots; i++ ) {
+        c->slots[i].e = NULL;
+        c->slots[i].readers = -1;
+        c->slots[i].reads = 0;
+    }
+    c->conversions = c->reuses = c->fallbacks = c->evictions = 0;
+}
+
+void *hicma_host_operand_cache_get(hicma_host_operand_cache_t *c, parsec_tiled_matrix_t *descA,
+        const hicma_parsec_params_t *params, int m, int k, const void *S, int *converted, void **handle)
+{
+    *converted = 0;
+    *handle = NULL;
+    if( NULL == c || (size_t)descA->mb * descA->nb * sizeof(float) > c->bytes ) return NULL;
+
+    hicma_host_operand_slot_t *s = hicma_host_operand_slot(c, m, k);
+    pthread_mutex_lock(&c->lock);
+    if( s->readers < 0 ) s->readers = hicma_host_operand_readers(descA, params, m, k);
+    hicma_host_operand_entry_t *e = s->e;
+    if( NULL != e ) {
+        /* An unpinned copy is idle; one being converted is pinned by its converter */
+        if( 0 == e->pins++ ) hicma_host_operand_idle_remove(c, e);
+        while( !e->ready ) pthread_cond_wait(&c->ready, &c->lock);
+        c->reuses++;
+        pthread_mutex_unlock(&c->lock);
+        *handle = e;
+        return e->buf;
+    }
+    e = hicma_host_operand_take(c);
+    if( NULL == e ) {
+        c->fallbacks++;
+        pthread_mutex_unlock(&c->lock);
+        return NULL;
+    }
+    e->slot = s;
+    e->ready = 0;
+    e->pins = 1;
+    e->idle = -1;
+    s->e = e;
+    pthread_mutex_unlock(&c->lock);
+
+    /* The other GEMMs asking for this copy wait for it */
+    hicma_host_operand_convert(S, e->buf, descA->mb, descA->nb);
+
+    pthread_mutex_lock(&c->lock);
+    e->ready = 1;
+    c->conversions++;
+    pthread_cond_broadcast(&c->ready);
+    pthread_mutex_unlock(&c->lock);
+    *converted = 1;
+    *handle = e;
+    return e->buf;
+}
+
+void hicma_host_operand_cache_release(hicma_host_operand_cache_t *c, parsec_tiled_matrix_t *descA,
+        const hicma_parsec_params_t *params, int m, int k, void *handle)
+{
+    if( NULL == c ) return;
+    hicma_host_operand_slot_t *s = hicma_host_operand_slot(c, m, k);
+    pthread_mutex_lock(&c->lock);
+    if( s->readers < 0 ) s->readers = hicma_host_operand_readers(descA, params, m, k);
+    s->reads++;
+    hicma_host_operand_entry_t *e = s->e;
+    if( NULL != handle ) {
+        assert(handle == (void *)e && e->pins > 0);
+        e->pins--;
+    }
+    /* One reader less: an idle copy moves to the idle list of its readers
+     * left, or is freed after the last GEMM of the process that reads the tile */
+    if( NULL != e && 0 == e->pins ) {
+        if( e->idle >= 0 ) hicma_host_operand_idle_remove(c, e);
+        if( s->reads >= s->readers ) {
+            hicma_host_operand_detach(e);
+            e->next = c->free;
+            c->free = e;
+        } else {
+            hicma_host_operand_idle_append(c, e);
+        }
+    }
+    pthread_mutex_unlock(&c->lock);
+}
+
+void hicma_host_operand_cache_stats(hicma_host_operand_cache_t *c, uint64_t stats[7], int reset)
+{
+    memset(stats, 0, 7 * sizeof(uint64_t));
+    if( NULL == c ) return;
+    pthread_mutex_lock(&c->lock);
+    stats[0] = c->conversions;
+    stats[1] = c->reuses;
+    stats[2] = c->fallbacks;
+    stats[3] = c->evictions;
+    stats[4] = (uint64_t)c->count;
+    stats[5] = (uint64_t)c->count * c->bytes;
+    for( int j = 0; j < c->count; j++ ) {
+        if( NULL != c->entries[j].slot ) stats[6]++;
+    }
+    if( reset ) c->conversions = c->reuses = c->fallbacks = c->evictions = 0;
+    pthread_mutex_unlock(&c->lock);
+}
+
 
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
 int convert_datatype_adaptive_unary_GPU(void *A, int mb, int nb, int lda,
