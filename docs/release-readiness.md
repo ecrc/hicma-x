@@ -302,9 +302,10 @@ multi-GPU measurement was possible on this machine.
 - HIP on AMD GPUs other than gfx90a (MI210 and MI250X ran, section 5.15), and
   more than one MI250X node. The changes of sections 5.17 and 5.18 (shared
   low-rank CPU GEMM, placement rule, kinds 8 and 9 on their own kernels
-  again) compile for gfx90a but were not run on AMD GPUs.
+  again) compile for gfx90a but were not run on AMD GPUs. (Later: gfx906,
+  one and two Radeon VIIs per node and two nodes, sections 5.20 and 5.21.)
 - More than one node. (Several GPUs per node: guyot, section 5.6; FP8 on an
-  H100: section 5.13.)
+  H100: section 5.13. Later: two nodes with Radeon VIIs, section 5.21.)
 - The climate emulator driver (`testing_climate_emulator`): compiled in every
   configuration, not run (needs the external data set).
 - The genomics drivers: see section 4; not run (data files).
@@ -1349,8 +1350,143 @@ PaRSEC ran one worker thread.
 - The start-up warm-up runs 8 BF16 GEMMs of 84 ms each on this GPU: 0.67 s
   per process, outside the timed factorization.
 
-Not covered: gfx90a and newer AMD GPUs at run time since the ninth pass,
-several AMD GPUs, and multi-node runs.
+Not covered here: gfx90a and newer AMD GPUs at run time since the ninth
+pass. Several AMD GPUs and two nodes: section 5.21.
+
+### 5.21 Two nodes and two GPUs per process (histamine, 2026-11-22)
+
+**Why.** Section 5.20 ran one Radeon VII. histamine2 and histamine3 have two
+each (PCIe, peer access between them) and InfiniBand (mlx5), which allows
+multi-node runs and several AMD GPUs per process.
+
+**Setup.** Open MPI 5.0.5 over UCX 1.15.0, neither built with ROCm
+(`MPIX_Query_rocm_support` returns 0); `srun --mpi=pmix`, one rank per node
+with 2 cores (other jobs held the rest), so one PaRSEC worker thread; the
+ROCm 6.3.2 user space of section 5.20; the tree `f0ec341` (`fe302b7`, with
+the OmniCast checkout of the day, for the final runs) plus the changes
+below. Three layouts: two nodes with one GPU each, two nodes with two GPUs
+each (P=2, Q=1), and one node with two GPUs. Cases: the 7 two-rank CTest
+cases (CPU, two nodes with one GPU each only), the 14 GPU CTest cases with
+`--gpus` set to the layout's count, and the operand cache in 6
+configurations at N=16384, NB=1024 (kind 5 adaptive at 1e-4 with FP16 and
+with stochastic rounding, static bands with BF16 operands, kinds 8 and 10
+at 1e-3, runtime decisions), each with the cache on, off and at 4 slots.
+
+**First failure: tiles sent from GPU memory.** The first GPU case on two
+nodes aborted at its first transfer (`ibv_reg_mr(..., length=8388608) failed:
+Bad address`, then an assertion in UCX's rendezvous), and the other rank
+waited until it was killed. An `ibv_reg_mr` probe registers `malloc`,
+`hipHostMalloc` and `hipHostRegister` memory but not `hipMalloc` memory, and
+an `LD_PRELOAD` wrapper of the MPI sends showed four 8 MB sends from device
+memory per run, with `mpi_gpu_aware` set to 2 by HiCMA-X and also with 0.
+- HiCMA-X now asks the MPI library whether it reads GPU memory (Open MPI's
+  `MPIX_Query_rocm_support` and `MPIX_Query_cuda_support`, MPICH's
+  `MPIX_GPU_query_support`; Cray MPICH as before) and sets `mpi_gpu_aware`
+  to 0 when it does not, with a start-up note. A user-set
+  `PARSEC_MCA_mpi_gpu_aware` still wins.
+- PaRSEC sent the GPU copy of a flow that a GPU task only reads and
+  forwards: the `potrf_dpotrf_send` and `potrf_dtrsm_send` tasks forward the
+  POTRF and TRSM results that way, and `parsec_device_data_copy_pin_value()`
+  returned the copy it was given whatever `mpi_gpu_aware` said. It now
+  returns the host copy of the same version when the engine may not read
+  accelerator memory, and the producer of such a flow writes the host copy
+  back when a local GPU successor forwards it read-only and there are other
+  ranks (PaRSEC fork, `device_gpu.c`).
+- After the fix no tile leaves from device memory (same wrapper), on two
+  V100 ranks (leconte) as well with `mpi_gpu_aware` 0, where the residuals
+  are those of the default mode (4.869234e-16 dense, 2.231640e-07 adaptive).
+  Open MPI reports CUDA support there, so the default stays at sending from
+  GPU memory.
+
+**Second failure: GPU faults on host pages with two GPUs per process.**
+"Memory access fault by GPU node-2 ... Page not present", then the job
+waited until the 300 s timeout: on two nodes with two GPUs 11 of the 32
+runs (both runtime-decision CTest cases, kind 10 and runtime decisions in
+all three cache settings, one kind-5 run), on one node with two GPUs 2 of 32
+(and 0 of 64 repeats of four of the configurations). The kernel log
+(`dmesg`) names a DMA client (XDMA) walking consecutive host pages; with
+`HSA_ENABLE_SDMA=0` the copy kernels fault instead (TCP and CB clients).
+- On the faulting configuration (runtime decisions, two nodes with two
+  GPUs): no peer copies (`PARSEC_MCA_device_hip_nvlink_mask=0`) and pinned
+  HiCMA-X arenas (`--arena_pinned_memory 1`) both pass 3 of 3; SDMA off
+  faults 3 of 3.
+- `rocgdb` stopped the faulting rank inside a stage-in: `hipMemcpyAsync`,
+  host to device, in HIP's pinning of the pageable source
+  (`KernelBlitManager::writeBuffer`, `addPinnedMem`). A wrapper of
+  `hipMemcpyAsync` found no copy whose direction disagrees with the memory
+  types.
+- The pageable sources were PaRSEC's arena buffers: received tiles, new and
+  temporary tiles, host copies. The matrix tiles are pinned already
+  (`hipHostMalloc`), and PaRSEC registers the other matrices it reads (see
+  the third failure). PaRSEC
+  (fork, `arena.c`) now lets an application choose the allocator of arena
+  memory (`parsec_arena_data_allocate` and `parsec_arena_data_free`), and
+  HiCMA-X makes it pinned memory on HIP with more than one GPU per process,
+  for its own taskpools and DPLASMA's (the `--check`). The tracer then sees
+  no copy from or to pageable memory (1248 copies in a one-node run).
+  Pinning the matrices through `parsec_data_allocate` instead was tried and
+  dropped: PaRSEC cannot register memory that is pinned already
+  (`hipHostRegister ... invalid argument`), and its tasks then found no
+  device.
+
+**Third failure: the `--check`'s LL^T on one of the nodes.** After the arena
+change one run of the 32 on one node with two GPUs still faulted, in the
+`--check` (DPLASMA's LL^T) after the factorization. Repeats of three
+configurations (kind 5 with stochastic rounding, BF16 operands, kind 10)
+with an `LD_PRELOAD` log of every `hipHostMalloc`, `hipHostRegister` and
+pageable copy:
+- histamine3: 0 faults in 36 runs; histamine2: 17 in 132 (3 of 36, 3 of
+  48, 11 of 48, the last in a burst of 21 runs, then 25 clean ones).
+- Every fault was in the 2 GB LL^T: a `malloc` buffer that PaRSEC registers
+  (`hipHostRegister`, portable) when DPLASMA's TRMM first uses it, and
+  almost always within its first tile, right after that registration.
+  `dcAd`, which HiCMA-X registers at allocation after the CPU has written
+  it, never faulted; the `hipHostMalloc` buffers never did either.
+- Waiting 0.5 s after the registration (3 of 48) or touching the pages
+  before it (11 of 48) does not help. histamine2's kernel was compacting
+  memory during the runs (83,800 pages migrated in 100 s, `compact_success`
+  483; histamine3 0), and a registered `malloc` buffer's pages are the
+  kind the kernel moves; the mechanism was not established further.
+- The LL^T is now allocated like the tiles (`hipHostMalloc`, or
+  `cudaMallocHost` on CUDA, when GPUs are enabled) and given a
+  registration hook that does nothing (PaRSEC cannot register pinned
+  memory; DPLASMA's LAPACK-layout wrapper calls the hook without checking
+  for NULL, which a first attempt with NULL found). histamine2 then passed
+  48 of 48 runs of the same three configurations, with the same residuals.
+
+**Results after the three fixes.**
+
+| layout | cases | before the fixes | after |
+|---|---|---|---|
+| two nodes, one GPU each | 7 two-rank CTest, 14 GPU, 18 cache | first GPU case aborted | 39 / 39 |
+| two nodes, two GPUs each | 14 GPU, 18 cache | 21 / 32 (after the first fix) | 32 / 32 |
+| one node, two GPUs | 14 GPU, 18 cache | 30 / 32 | 32 / 32 |
+
+The "after" column is one run of the three layouts on the final code;
+the 6 repeats of runtime decisions and kind 10 on two nodes with two GPUs
+and the 48 repeats on histamine2 above passed too.
+
+- The residuals of the dense and cache cases are the same in every layout
+  and are those of one GPU (section 5.20): 2.418978e-07 (kind 5 at 1e-4),
+  3.092794e-07 (stochastic rounding), 2.865805e-05 (BF16), 8.343982e-06
+  (kind 8), 7.995640e-06 (kind 10), 1.069236e-08 (runtime decisions). The
+  cache on, off and at 4 slots gives the same residual in each, and the
+  ten dense GPU cases give the same residual in the three layouts. The three
+  tile low-rank GPU cases differ in the third digit from run to run
+  (3.204e-5 to 3.224e-5 for the adaptive one, 4.27e-5 to 4.29e-5 for the
+  half-precision band), since the order of their low-rank updates varies;
+  they pass their bound.
+- The cache took 67-176 MB per GPU (its counters are summed over the run's
+  GPUs: 134-352 MB on one node with two GPUs, 268-608 MB on two nodes), 67 MB
+  for kind 5 as with one GPU, with no fallbacks.
+- Pinned arenas leave the factorization time unchanged: the 18 cache runs
+  on one node with two GPUs are within 1 % of the runs before the change
+  (0.70-2.90 s).
+- With all the changes: CTest 46 / 46 on one Radeon VII, 55 / 55 on one
+  H100 (hexane, CUDA tree) and 30 / 30 on the CPU tree (methane).
+
+Not covered: more than two nodes, NVIDIA GPUs on more than one node, and
+gfx90a and newer AMD GPUs at run time since the ninth pass.
 
 
 ## 6. Release checklist
@@ -1397,10 +1533,11 @@ several AMD GPUs, and multi-node runs.
    effectively checked; binding it would need a second, looser bound).
 4. **CI**: both jobs (CPU build, tests and install; CUDA compile) pass on every
    push since section 5.10 (one run per push, listed in ecrc/hicma-x#13).
-5. **Hardware not available here**: multi-node runs, and gfx90a and newer AMD
-   GPUs since the ninth pass. The GPU validation matrix ran on an H100
-   (section 5.13) and on an MI250X node (section 5.15); the current code ran
-   on a Radeon VII (gfx906, section 5.20).
+5. **Hardware not available here**: more than two nodes, NVIDIA GPUs on more
+   than one node, and gfx90a and newer AMD GPUs since the ninth pass. The GPU
+   validation matrix ran on an H100 (section 5.13) and on an MI250X node
+   (section 5.15); the current code ran on one and two Radeon VIIs per
+   process and on two nodes (gfx906, sections 5.20 and 5.21).
 6. **Defaults that cost performance** (section 5.11): a GPU build runs on the
    CPU unless `--gpus` is given, and kinds 1 and 2 (tile low-rank) are fully
    dense unless `--band_dense` is given. Both now print a note. Making

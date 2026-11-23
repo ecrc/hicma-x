@@ -469,6 +469,46 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   the GPU kernel time there, so halving them leaves the factorization within
   noise (0.997-1.014x).
 
+### Multi-node and multi-GPU pass (two Radeon VII nodes)
+
+- Multi-rank GPU runs aborted at the first tile a GPU sent when the MPI
+  library cannot read GPU memory (Open MPI 5.0.5 and UCX 1.15 built without
+  ROCm: `ibv_reg_mr ... Bad address`, then the other rank waited forever).
+  Two causes:
+  - HiCMA-X told PaRSEC to send from GPU memory (`mpi_gpu_aware` 2) whatever
+    the library. It now asks it (Open MPI's `MPIX_Query_rocm_support` and
+    `MPIX_Query_cuda_support`, MPICH's `MPIX_GPU_query_support`) and keeps
+    remote transfers in host memory when the answer is no, with a start-up
+    note. Cray MPICH is handled as before, and a user-set
+    `PARSEC_MCA_mpi_gpu_aware` still wins. On NVIDIA nodes Open MPI reports
+    CUDA support and nothing changes.
+  - PaRSEC sent from GPU memory even with `mpi_gpu_aware` 0. A GPU task
+    forwards a flow it only reads in the GPU copy it read (the
+    `potrf_*_send` tasks forward the POTRF and TRSM results that way), and
+    the engine was handed that copy. PaRSEC (fork) now sends the host copy,
+    and a task whose output a local GPU task forwards read-only writes the
+    host copy back when there are other ranks. Two V100 ranks with
+    `mpi_gpu_aware` 0 now send no tile from GPU memory, with the same
+    residuals.
+- With two GPUs in a process, GPUs faulted on host pages ("Memory access
+  fault ... Page not present"): at nearly every run of the runtime decisions
+  and of kind 10 on two nodes, and rarely on one. HIP pins pageable host
+  memory for each copy from it, and the pageable sources were PaRSEC's arena
+  buffers (received tiles, new and temporary tiles, host copies). PaRSEC
+  (fork) lets an application choose the allocator of arena memory
+  (`parsec_arena_data_allocate`), and HiCMA-X makes it pinned on HIP with
+  more than one GPU per process. The matrix tiles are pinned already.
+- One of the two nodes still faulted now and then (17 of 132 runs) in the
+  `--check`, always in its LL^T: a `malloc` buffer that PaRSEC registers
+  (`hipHostRegister`) at its first GPU use. The LL^T is now allocated like
+  the tiles (pinned when GPUs are enabled, on CUDA as well) and given a
+  registration hook that does nothing; that node then passed 48 of 48.
+- Validated on histamine2 and histamine3 (two Radeon VIIs each, InfiniBand),
+  one rank per node: the two-rank CTest cases, the 14 GPU cases and the
+  operand cache on two nodes with one GPU each, and the GPU cases and the
+  cache on two nodes with two GPUs each and on one node with two GPUs
+  (`docs/release-readiness.md`, section 5.21).
+
 ### Documentation
 
 - `TESTS.md` regenerated from the option table; `BUILD.md`, `README.md` and

@@ -27,7 +27,7 @@ and the genomics (kernel ridge regression) applications.
 | Linux x86_64, CPU only (OpenBLAS or MKL, LAPACKE, Open MPI or MPICH) | tested (CI, 1 and 2 ranks) |
 | Linux x86_64 + CUDA 12 (A100, V100; H100 for FP8) | tested on one A100 (1 and 2 ranks sharing it), one 8-A100 node (1 to 8 ranks), one H100 (FP8; 1 and 2 ranks) and one 8-V100 node (1 to 8 GPUs in one process, 2 and 8 ranks) |
 | Linux + ROCm 6 (HIP, gfx90a) | tested on Frontier: one MI210 (CTest 35 / 35) and one MI250X node (CTest 42 / 42 with the two-rank cases, `test_CI.sh`, the GPU validation matrix; 1 to 8 GCDs in one process, two ranks with one GCD each or sharing one); kinds 1 to 4 run on the CPU |
-| Linux + ROCm 6.3 (HIP, gfx906: Radeon VII, MI50/60) | tested on one Radeon VII with ROCm 6.3.2 (CTest 46 / 46 with the two-rank cases). ROCm 6.4 and later ship no rocBLAS kernels for gfx906 |
+| Linux + ROCm 6.3 (HIP, gfx906: Radeon VII, MI50/60) | tested on one Radeon VII with ROCm 6.3.2 (CTest 46 / 46 with the two-rank cases), and on two nodes with one or two Radeon VIIs per process over InfiniBand (the GPU cases and the operand cache, `docs/release-readiness.md` section 5.21). ROCm 6.4 and later ship no rocBLAS kernels for gfx906 |
 | Fugaku (`ON_FUGAKU`), macOS, Windows | not supported |
 
 Requirements: CMake 3.21, a C11/C++17 compiler, a Fortran compiler (BLAS/LAPACK

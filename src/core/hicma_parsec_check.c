@@ -130,6 +130,13 @@ int starsh_generate_map(parsec_context_t *parsec, int uplo,
  * Cholesky factorization checking functions
  * ============================================================================ */
 
+/* Registration hook of a matrix whose memory is pinned already */
+static int hicma_parsec_memory_pinned_already(parsec_data_collection_t *dc, parsec_device_module_t *device)
+{
+    (void)dc; (void)device;
+    return PARSEC_SUCCESS;
+}
+
 /**
  * @brief Check Cholesky factorization correctness via ||L*L'-A||
  * 
@@ -174,10 +181,28 @@ int check_dpotrf2( parsec_context_t *parsec, int verbose,
             twodA->grid.krows, twodA->grid.kcols,
             twodA->grid.ip, twodA->grid.jq);
 
-    /* Allocate memory for the temporary matrix */
-    LLt.mat = parsec_data_allocate((size_t)LLt.super.nb_local_tiles *
-            (size_t)LLt.super.bsiz *
-            (size_t)parsec_datadist_getsizeoftype(LLt.super.mtype));
+    /* Allocate memory for the temporary matrix: pinned when GPUs are enabled,
+     * like the tiles, instead of the malloc buffer PaRSEC registers at its
+     * first GPU use (hipHostRegister). With two Radeon VIIs in a process the
+     * first DMA into that registered 2 GB buffer made the second GPU fault
+     * on its first tile ("Page not present"), in about 6 % of the runs on one
+     * node of histamine and in none on the other; a hipHostMalloc buffer has
+     * driver-owned pages and never did. */
+    size_t LLt_bytes = 0;
+    int LLt_core = 1;  /* from hicma_parsec_core_memory_allocation */
+    LLt.mat = NULL;
+    hicma_parsec_core_memory_allocation(&LLt.mat, (size_t)LLt.super.nb_local_tiles * (size_t)LLt.super.bsiz,
+                                        "double", &LLt_bytes);
+    if( NULL == LLt.mat ) {
+        LLt.mat = parsec_data_allocate(LLt_bytes);  /* pageable: PaRSEC registers it */
+        LLt_core = 0;
+    } else {
+        /* PaRSEC cannot register memory that is pinned already. A hook that
+         * does nothing rather than NULL: DPLASMA's LAPACK-layout wrapper calls
+         * it without checking. */
+        LLt.super.super.register_memory = hicma_parsec_memory_pinned_already;
+        LLt.super.super.unregister_memory = hicma_parsec_memory_pinned_already;
+    }
 
     /* Initialize LLt to zero and copy A into it */
     dplasma_dlaset( parsec, PlasmaUpperLower, 0., 0.,(parsec_tiled_matrix_t *)&LLt );
@@ -232,7 +257,8 @@ int check_dpotrf2( parsec_context_t *parsec, int verbose,
     }
 
     /* Clean up temporary matrix memory */
-    parsec_data_free(LLt.mat); 
+    if( LLt_core ) hicma_parsec_core_memory_free(LLt.mat);
+    else parsec_data_free(LLt.mat);
     LLt.mat = NULL;
     parsec_tiled_matrix_destroy( (parsec_tiled_matrix_t*)&LLt);
 

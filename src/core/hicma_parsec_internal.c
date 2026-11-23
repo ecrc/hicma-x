@@ -31,6 +31,32 @@
 #if defined(PARSEC_HAVE_HWLOC)
 #include <hwloc.h>
 #endif
+#if defined(PARSEC_HAVE_MPI) && defined(OPEN_MPI) && OPEN_MPI
+#include <mpi-ext.h>  /* MPIX_Query_rocm_support, MPIX_Query_cuda_support */
+#endif
+
+#if defined(PARSEC_MPI_IS_GPU_AWARE)
+/* Whether the MPI library reads GPU memory of this build's kind: 1 or 0 when
+ * it says (Open MPI's extensions, MPICH 4), -1 when it cannot be asked. */
+static int hicma_parsec_mpi_reads_gpu_memory(void)
+{
+#if defined(OPEN_MPI) && OPEN_MPI
+#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT) && defined(OMPI_HAVE_MPI_EXT_ROCM) && OMPI_HAVE_MPI_EXT_ROCM
+    return MPIX_Query_rocm_support();
+#elif defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) && defined(OMPI_HAVE_MPI_EXT_CUDA) && OMPI_HAVE_MPI_EXT_CUDA
+    return MPIX_Query_cuda_support();
+#endif
+#elif defined(MPIX_GPU_SUPPORT_HIP) || defined(MPIX_GPU_SUPPORT_CUDA)
+    int supported = 0;
+#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT) && defined(MPIX_GPU_SUPPORT_HIP)
+    if( MPI_SUCCESS == MPIX_GPU_query_support(MPIX_GPU_SUPPORT_HIP, &supported) ) return supported;
+#elif defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) && defined(MPIX_GPU_SUPPORT_CUDA)
+    if( MPI_SUCCESS == MPIX_GPU_query_support(MPIX_GPU_SUPPORT_CUDA, &supported) ) return supported;
+#endif
+#endif
+    return -1;
+}
+#endif
 
 /*******************************
  * Global Variables and Constants *
@@ -868,13 +894,21 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
          * buffer aborts (process_vm_readv: Bad address) at the first transfer
          * of a multi-rank GPU run on Frontier. Keep every transfer in host
          * memory there. */
+        /* Elsewhere, ask the library: an Open MPI without ROCm support over a
+         * UCX without it (histamine) treats a HIP pointer as host memory, and
+         * the InfiniBand registration of the first tile sent from a GPU fails
+         * (ibv_reg_mr: Bad address) and aborts the rank. */
         char gpu_aware[] = "2";
         const char *mpich_gpu = getenv("MPICH_GPU_SUPPORT_ENABLED");
         char mpi_lib[MPI_MAX_LIBRARY_VERSION_STRING];
         int mpi_lib_len = 0;
-        if( MPI_SUCCESS == MPI_Get_library_version(mpi_lib, &mpi_lib_len) && NULL != strstr(mpi_lib, "CRAY MPICH")
-            && (NULL == mpich_gpu || 0 != strcmp(mpich_gpu, "1")) ) {
+        if( MPI_SUCCESS == MPI_Get_library_version(mpi_lib, &mpi_lib_len) && NULL != strstr(mpi_lib, "CRAY MPICH") ) {
+            if( NULL == mpich_gpu || 0 != strcmp(mpich_gpu, "1") )
+                gpu_aware[0] = '0';
+        } else if( 0 == hicma_parsec_mpi_reads_gpu_memory() ) {
             gpu_aware[0] = '0';
+            if( 0 == params->rank && params->gpus > 0 && params->nodes > 1 )
+                fprintf(stderr, YEL "The MPI library does not read GPU memory: remote transfers go through host memory\n" RESET);
         }
         parsec_setenv_mca_param( "mpi_gpu_aware", gpu_aware, &environ );
     }
@@ -1266,6 +1300,19 @@ parsec_context_t* hicma_parsec_setup_parsec(int argc, char **argv, hicma_parsec_
             exit(1);
         }
     }
+
+#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    /* A hipMemcpyAsync from pageable host memory has the HIP runtime pin the
+     * pages for the copy (KernelBlitManager::writeBuffer, addPinnedMem). With
+     * two GPUs in a process such copies made a GPU fault on the host pages
+     * ("Memory access fault ... Page not present"; ROCm 6.3.2, two Radeon
+     * VIIs): at nearly every run of the runtime decisions on two nodes, and
+     * rarely on one. The pageable sources are arena buffers: received tiles,
+     * new and temporary tiles, host copies. The tiles are pinned already and
+     * PaRSEC pins the matrices it registers, so pin the arenas too. */
+    if( params->gpus > 1 )
+        hicma_parsec_arenas_pin_all();
+#endif
 
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
     /* A GPU build runs on the CPU unless --gpus is given: say so when devices are visible */

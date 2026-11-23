@@ -173,6 +173,12 @@ CUDA build; see `BUILD.md`.
 - One process per node is the fastest layout; several ranks per GPU work but
   need `-- --mca device_cuda_memory_use <percent>` (`device_hip_memory_use`
   on AMD GPUs) so that each rank reserves only a share of the device memory.
+- Multi-rank GPU runs send tiles straight from GPU memory only when the MPI
+  library says it reads GPU memory (Open MPI's `MPIX_Query_rocm_support` or
+  `MPIX_Query_cuda_support`, MPICH's `MPIX_GPU_query_support`); otherwise
+  they go through host memory and a start-up note says so. An Open MPI or a
+  UCX built without ROCm cannot read HIP memory. `PARSEC_MCA_mpi_gpu_aware`
+  (0, 1, 2 or 3) overrides the choice.
 
 ## Cholesky kinds (`--kind_of_cholesky`)
 

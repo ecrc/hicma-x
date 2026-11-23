@@ -178,6 +178,30 @@ void hicma_parsec_host_tile_free(void *ptr, int gpus)
     free(ptr);
 }
 
+#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+static void *hicma_parsec_data_allocate_pinned(size_t size)
+{
+    void *ptr = hicma_parsec_pinned_memory_allocate(size);
+    return (NULL != ptr) ? ptr : malloc(size);  /* pageable rather than nothing */
+}
+
+static void hicma_parsec_data_free_pinned(void *ptr)
+{
+    hicma_parsec_host_tile_free(ptr, 1);  /* pinned or pageable, whichever it is */
+}
+#endif
+
+void hicma_parsec_arenas_pin_all(void)
+{
+#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    /* Arenas constructed before this keep the malloc/free pair they were
+     * built with. The data collections are not concerned: PaRSEC registers
+     * (pins) those itself, and cannot register memory that is already pinned. */
+    parsec_arena_data_allocate = hicma_parsec_data_allocate_pinned;
+    parsec_arena_data_free = hicma_parsec_data_free_pinned;
+#endif
+}
+
 void hicma_parsec_arenas_use_pinned_memory(parsec_arena_datatype_t *arenas,
                                            int arena_count)
 {
@@ -638,6 +662,22 @@ static int hicma_reallocate_tile_on_cpu(hicma_parsec_params_t *params_tlr,
  * @param[in] allocate_type Data type string (e.g., "double", "float", "int")
  * @param[out] data_size Total size of allocated memory in bytes
  */
+void hicma_parsec_core_memory_free(void *A)
+{
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+    if( parsec_device_cuda_enabled > 0 ) {
+        cudaFreeHost(A);
+        return;
+    }
+#elif defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    if( parsec_device_hip_enabled > 0 ) {
+        hipHostFree(A);
+        return;
+    }
+#endif
+    free(A);
+}
+
 void hicma_parsec_core_memory_allocation(void **A, size_t nb_elements, char *allocate_type, size_t *data_size) {
     // Calculate total memory size based on data type and element count
     *data_size = nb_elements * get_datatype_size(allocate_type);  

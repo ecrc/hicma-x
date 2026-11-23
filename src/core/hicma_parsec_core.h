@@ -54,6 +54,12 @@ extern "C" {
 void hicma_parsec_core_memory_allocation(void **A, size_t nb_elements, char *allocate_type, size_t *data_size);
 
 /**
+ * @brief Release memory from hicma_parsec_core_memory_allocation (pinned
+ * when GPUs are enabled, malloc otherwise).
+ */
+void hicma_parsec_core_memory_free(void *A);
+
+/**
  * @brief Configure initialized taskpool arenas to allocate pinned host memory.
  *
  * Uninitialized entries are ignored. This must be called before an arena makes
@@ -61,6 +67,13 @@ void hicma_parsec_core_memory_allocation(void **A, size_t nb_elements, char *all
  */
 void hicma_parsec_arenas_use_pinned_memory(parsec_arena_datatype_t *arenas,
                                            int arena_count);
+
+/**
+ * @brief Make every arena constructed from now on, those of DPLASMA's
+ * taskpools included, allocate pinned host memory on HIP (pageable memory if
+ * that fails; the free releases either). No effect in other builds.
+ */
+void hicma_parsec_arenas_pin_all(void);
 
 /**
  * @brief Release one host tile buffer with the deallocator matching its allocator.
