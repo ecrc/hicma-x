@@ -305,7 +305,8 @@ multi-GPU measurement was possible on this machine.
   again) compile for gfx90a but were not run on AMD GPUs. (Later: gfx906,
   one and two Radeon VIIs per node and two nodes, sections 5.20 and 5.21.)
 - More than one node. (Several GPUs per node: guyot, section 5.6; FP8 on an
-  H100: section 5.13. Later: two nodes with Radeon VIIs, section 5.21.)
+  H100: section 5.13. Later: two nodes with Radeon VIIs, section 5.21, and
+  with a V100 and an A100, section 5.22.)
 - The climate emulator driver (`testing_climate_emulator`): compiled in every
   configuration, not run (needs the external data set).
 - The genomics drivers: see section 4; not run (data files).
@@ -1485,8 +1486,97 @@ and the 48 repeats on histamine2 above passed too.
 - With all the changes: CTest 46 / 46 on one Radeon VII, 55 / 55 on one
   H100 (hexane, CUDA tree) and 30 / 30 on the CPU tree (methane).
 
-Not covered: more than two nodes, NVIDIA GPUs on more than one node, and
-gfx90a and newer AMD GPUs at run time since the ninth pass.
+Not covered here: more than two nodes, and gfx90a and newer AMD GPUs at run
+time since the ninth pass. NVIDIA GPUs on two nodes: section 5.22.
+
+### 5.22 NVIDIA GPUs on two nodes (leconte and methane, 2026-11-24)
+
+**Why.** In section 5.21 the MPI library could not read GPU memory, so every
+tile went through host memory. With NVIDIA GPUs Open MPI reports CUDA
+support, and HiCMA-X keeps PaRSEC's default of sending tiles from GPU
+memory. That path had only run between two ranks on one node.
+
+**Setup.** One rank on a V100 (leconte) and one on the A100 (methane),
+`srun --mpi=pmix`, 4 hardware threads per rank. The tree is `8e8fde8`, built
+with CUDA 12.6 for sm 70, 80 and 90. Open MPI 5.0.5 runs over UCX 1.15.0,
+both built with CUDA (UCX transports tcp, cuda_copy and cuda_ipc).
+leconte's InfiniBand ports are down and methane has none, so the two nodes
+communicate over Ethernet (TCP). Cases:
+- the 7 two-rank CTest cases;
+- the 22 GPU CTest cases;
+- the operand cache in the 6 configurations of section 5.21 (FP16 operands
+  in place of BF16 for the static bands), with the cache on, off and at
+  4 slots.
+
+The GPU cases ran with HiCMA-X's default (tiles sent from GPU memory) and
+with `PARSEC_MCA_mpi_gpu_aware=0` (host memory).
+
+**Results.**
+
+| set | tiles sent from GPU memory | through host memory |
+|---|---|---|
+| two-rank CTest cases (CPU) | 7 / 7 | |
+| GPU CTest cases | 22 / 22 | 22 / 22 |
+| operand cache, first round | 16 / 18 | |
+| operand cache, second round | 18 / 18 | 18 / 18 |
+| repeats of the two configurations that failed | 10 / 10, then 51 / 60 | 10 / 10 |
+| PaRSEC limited to 3 % and 6 % of each GPU | 6 / 6 | 6 / 6 |
+
+- A wrapper of the MPI calls shows where the tiles leave from. In the dense
+  case at N=8192, the default sends 28 tiles from GPU memory and 63 from
+  host memory, and `mpi_gpu_aware` 0 sends none from GPU memory. Receives
+  land in host memory in both modes.
+- The residuals are the same with GPU sends and with host sends in every
+  case, including the tile low-rank ones, and the same with the cache on,
+  off and at 4 slots:
+  - 2.184723e-07 (kind 5 at 1e-4);
+  - 2.925121e-07 (stochastic rounding);
+  - 3.571553e-06 (FP16 bands);
+  - 8.469258e-06 (kind 8);
+  - 8.148881e-06 (kind 10);
+  - 2.580552e-08 (runtime decisions).
+- The cache took 67-176 MB per GPU (134-352 MB summed over the two), with
+  no fallbacks.
+
+**Failures.**
+- **First round.** Two cache runs failed back to back:
+  - runtime decisions with the cache on: "OmniCast: device runtime error"
+    on the A100's rank;
+  - then kind 5 adaptive with the cache off: "not positive definite" at
+    row 4609, residual 1.7e+02.
+
+  Neither node logged a GPU driver error (Xid). Other processes used GPUs
+  on both nodes at the time: 31 GB on two other V100s, and the A100 at
+  100 % load. methane's `docker0` interface also disappeared about two
+  minutes before. Neither failure came back in 20 repeats of the two
+  configurations (both modes) or in the 36 runs of the second cache round.
+- **60 more runs of the two configurations with GPU sends.** 51 passed.
+  The other 9 failed back to back, while a process outside the job held
+  28-31 GB of the V100 Slurm had given us: Slurm does not confine GPUs on
+  these nodes, and another user's job requested none. All 9 stopped
+  cleanly when they created a cuBLAS or cuSOLVER handle ("cublasCreate
+  failed", DPLASMA's "Unable to create CUBLAS Handle"), with no wrong
+  residual.
+- **GPU memory filled after the start.** A helper took all but 63 MB of the
+  A100's, the V100's or both GPUs' free memory once HiCMA-X had started
+  (11 runs). The factor stayed the same as without the helper (identical
+  forward error), and each run stopped cleanly in the `--check`, when
+  DPLASMA created a handle.
+- **A small share of each GPU.** With PaRSEC limited to 3 % and 6 % of each
+  GPU (`device_cuda_memory_use`), so that tiles are evicted, the residuals
+  and forward errors were those of the full GPU, in both modes.
+- **Still unexplained.** The wrong factor of the first round is one run in
+  144 with GPU sends. The same configuration then passed 33 times and
+  stopped cleanly 5 times while the other process held its GPU.
+- **Two weaknesses found along the way**, neither shown to cause it:
+  - Most of HiCMA-X's static GPU kernels store cuBLAS's return status
+    without checking it, so a failed cuBLAS call would go unnoticed.
+  - OmniCast's launch check reads `cudaGetLastError()`, which also returns
+    an earlier error of the same thread, and its message does not name the
+    CUDA error.
+
+Not covered: two GPUs per process on two NVIDIA nodes, InfiniBand (or
+GPUDirect RDMA) between NVIDIA nodes, and more than two nodes.
 
 
 ## 6. Release checklist
@@ -1533,11 +1623,13 @@ gfx90a and newer AMD GPUs at run time since the ninth pass.
    effectively checked; binding it would need a second, looser bound).
 4. **CI**: both jobs (CPU build, tests and install; CUDA compile) pass on every
    push since section 5.10 (one run per push, listed in ecrc/hicma-x#13).
-5. **Hardware not available here**: more than two nodes, NVIDIA GPUs on more
-   than one node, and gfx90a and newer AMD GPUs since the ninth pass. The GPU
+5. **Hardware not available here**: more than two nodes, InfiniBand between
+   NVIDIA nodes, and gfx90a and newer AMD GPUs since the ninth pass. The GPU
    validation matrix ran on an H100 (section 5.13) and on an MI250X node
-   (section 5.15); the current code ran on one and two Radeon VIIs per
-   process and on two nodes (gfx906, sections 5.20 and 5.21).
+   (section 5.15). The current code ran on one and two Radeon VIIs per
+   process and on two nodes (gfx906, sections 5.20 and 5.21), and on two
+   NVIDIA nodes over Ethernet, sending tiles from GPU memory (section 5.22).
+   One wrong factor in 144 runs there stays unexplained (section 5.22).
 6. **Defaults that cost performance** (section 5.11): a GPU build runs on the
    CPU unless `--gpus` is given, and kinds 1 and 2 (tile low-rank) are fully
    dense unless `--band_dense` is given. Both now print a note. Making

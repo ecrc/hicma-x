@@ -540,6 +540,13 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   operand cache on two nodes with one GPU each, and the GPU cases and the
   cache on two nodes with two GPUs each and on one node with two GPUs
   (`docs/release-readiness.md`, section 5.21).
+- Also run on two NVIDIA nodes, a V100 (leconte) and an A100 (methane), one
+  rank each, over Ethernet with Open MPI and UCX built with CUDA, so tiles
+  leave from GPU memory. The two-rank CTest cases, the 22 GPU cases and the
+  operand cache pass, and sending from GPU memory and through host memory
+  give the same residuals. One run in 144 gave a wrong factor and was not
+  reproduced; other failures were clean aborts while another job used the
+  same GPU (`docs/release-readiness.md`, section 5.22).
 
 ### Documentation
 
