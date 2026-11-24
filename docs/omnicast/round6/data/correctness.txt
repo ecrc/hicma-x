@@ -1,0 +1,21 @@
+# caffeine 2026-11-24T03:06:44+00:00 X=/home/qcao3/hicma-x/.claude/worktrees/optimistic-shaw-05ec60/build_cpu/tests/testing_potrf_tlr B=/home/qcao3/hicma-x-acc-base/build_cpu/tests/testing_potrf_tlr
+k10_runtime np=1 base rc=0: DENSE_DP= 289 DENSE_SP= 4671 FACTOR_HASH rank 0 f68c2e050b29dfcc ||L-L0||_F/||L||_F = 1.332925e-07 
+k10_1e-3 np=1 base rc=0: DENSE_DP= 0 DENSE_SP= 4960 FACTOR_HASH rank 0 84f913aa96c45f8b ||L-L0||_F/||L||_F = 2.615460e-06 
+k10_runtime np=1 new rc=0: DENSE_DP= 289 DENSE_SP= 4671 FACTOR_HASH rank 0 f68c2e050b29dfcc ||L-L0||_F/||L||_F = 1.332925e-07 
+k10_1e-3 np=1 new rc=0: DENSE_DP= 0 DENSE_SP= 4960 FACTOR_HASH rank 0 84f913aa96c45f8b ||L-L0||_F/||L||_F = 2.615460e-06 
+k10_runtime np=2 base rc=0: DENSE_DP= 81 DENSE_SP= 479 FACTOR_HASH rank 0 0ee8ed2aa93f7cc7 FACTOR_HASH rank 1 c605807fbf03a315 ||L-L0||_F/||L||_F = 2.668690e-07 
+k10_1e-3 np=2 base rc=0: DENSE_DP= 0 DENSE_SP= 560 FACTOR_HASH rank 0 c565c6b201a7872e FACTOR_HASH rank 1 8ad2d5d6df583d95 ||L-L0||_F/||L||_F = 1.787543e-06 
+k10_runtime np=2 new rc=0: DENSE_DP= 81 DENSE_SP= 479 FACTOR_HASH rank 0 0ee8ed2aa93f7cc7 FACTOR_HASH rank 1 c605807fbf03a315 ||L-L0||_F/||L||_F = 2.668690e-07 
+k10_1e-3 np=2 new rc=0: DENSE_DP= 0 DENSE_SP= 560 FACTOR_HASH rank 1 8ad2d5d6df583d95 FACTOR_HASH rank 0 c565c6b201a7872e ||L-L0||_F/||L||_F = 1.787543e-06 
+k10_runtime np=4 base rc=0: DENSE_DP= 81 DENSE_SP= 479 FACTOR_HASH rank 0 a3e8f27ea12918d1 FACTOR_HASH rank 3 153149e2f68d1696 FACTOR_HASH rank 1 929fbc2d80139d01 FACTOR_HASH rank 2 42a9936a19d4fda4 ||L-L0||_F/||L||_F = 2.668690e-07 
+k10_1e-3 np=4 base rc=0: DENSE_DP= 0 DENSE_SP= 560 FACTOR_HASH rank 0 a0c78565ac2db360 FACTOR_HASH rank 1 2227db90370e7a39 FACTOR_HASH rank 2 685c440e5641b1e5 FACTOR_HASH rank 3 8b0ec432c863d643 ||L-L0||_F/||L||_F = 1.787543e-06 
+k10_runtime np=4 new rc=0: DENSE_DP= 81 DENSE_SP= 479 FACTOR_HASH rank 0 a3e8f27ea12918d1 FACTOR_HASH rank 1 929fbc2d80139d01 FACTOR_HASH rank 3 153149e2f68d1696 FACTOR_HASH rank 2 42a9936a19d4fda4 ||L-L0||_F/||L||_F = 2.668690e-07 
+k10_1e-3 np=4 new rc=0: DENSE_DP= 0 DENSE_SP= 560 FACTOR_HASH rank 3 8b0ec432c863d643 FACTOR_HASH rank 2 685c440e5641b1e5 FACTOR_HASH rank 1 2227db90370e7a39 FACTOR_HASH rank 0 a0c78565ac2db360 ||L-L0||_F/||L||_F = 1.787543e-06 
+k10_runtime_N16000 np=1 base.1 rc=1: 
+k10_1e-3_N16000 np=1 base.1 rc=1: 
+k10_runtime_N16000 np=1 new.1 rc=1: 
+k10_1e-3_N16000 np=1 new.1 rc=1: 
+k10_runtime_N16000 np=1 base.2 rc=1: 
+k10_1e-3_N16000 np=1 base.2 rc=1: 
+k10_runtime_N16000 np=1 new.2 rc=1: 
+k10_1e-3_N16000 np=1 new.2 rc=1: 

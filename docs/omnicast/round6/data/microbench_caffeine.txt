@@ -1,0 +1,122 @@
+# accbench on caffeine (14 threads, OMP_PLACES=cores), first run: MKL panel bit check + timings
+# caffeine 2026-11-24T02:29:46+00:00
+seed 0 scale 1 w   8: column panels DIFFER (64 differ), row panels DIFFER
+seed 0 scale 1 w  16: column panels DIFFER (32 differ), row panels DIFFER
+seed 0 scale 1 w  32: column panels DIFFER (16 differ), row panels DIFFER
+seed 0 scale 1 w  48: column panels DIFFER (11 differ), row panels DIFFER
+seed 0 scale 1 w  64: column panels DIFFER (8 differ), row panels DIFFER
+seed 0 scale 1 w  96: column panels DIFFER (1 differ), row panels DIFFER
+seed 0 scale 1 w 128: column panels identical (0 differ), row panels DIFFER
+seed 0 scale 1 w 256: column panels identical (0 differ), row panels DIFFER
+seed 1 scale 0.001 w   8: column panels DIFFER (64 differ), row panels DIFFER
+seed 1 scale 0.001 w  16: column panels DIFFER (32 differ), row panels DIFFER
+seed 1 scale 0.001 w  32: column panels DIFFER (16 differ), row panels DIFFER
+seed 1 scale 0.001 w  48: column panels DIFFER (11 differ), row panels DIFFER
+seed 1 scale 0.001 w  64: column panels DIFFER (8 differ), row panels DIFFER
+seed 1 scale 0.001 w  96: column panels DIFFER (1 differ), row panels DIFFER
+seed 1 scale 0.001 w 128: column panels identical (0 differ), row panels DIFFER
+seed 1 scale 0.001 w 256: column panels identical (0 differ), row panels DIFFER
+seed 2 scale 37 w   8: column panels DIFFER (64 differ), row panels DIFFER
+seed 2 scale 37 w  16: column panels DIFFER (32 differ), row panels DIFFER
+seed 2 scale 37 w  32: column panels DIFFER (16 differ), row panels DIFFER
+seed 2 scale 37 w  48: column panels DIFFER (11 differ), row panels DIFFER
+seed 2 scale 37 w  64: column panels DIFFER (8 differ), row panels DIFFER
+seed 2 scale 37 w  96: column panels DIFFER (1 differ), row panels DIFFER
+seed 2 scale 37 w 128: column panels identical (0 differ), row panels DIFFER
+seed 2 scale 37 w 256: column panels identical (0 differ), row panels DIFFER
+seed 3 scale 1 w   8: column panels DIFFER (64 differ), row panels DIFFER
+seed 3 scale 1 w  16: column panels DIFFER (32 differ), row panels DIFFER
+seed 3 scale 1 w  32: column panels DIFFER (16 differ), row panels DIFFER
+seed 3 scale 1 w  48: column panels DIFFER (11 differ), row panels DIFFER
+seed 3 scale 1 w  64: column panels DIFFER (8 differ), row panels DIFFER
+seed 3 scale 1 w  96: column panels DIFFER (1 differ), row panels DIFFER
+seed 3 scale 1 w 128: column panels identical (0 differ), row panels DIFFER
+seed 3 scale 1 w 256: column panels identical (0 differ), row panels DIFFER
+seed 4 scale 0.001 w   8: column panels DIFFER (64 differ), row panels DIFFER
+seed 4 scale 0.001 w  16: column panels DIFFER (32 differ), row panels DIFFER
+seed 4 scale 0.001 w  32: column panels DIFFER (16 differ), row panels DIFFER
+seed 4 scale 0.001 w  48: column panels DIFFER (11 differ), row panels DIFFER
+seed 4 scale 0.001 w  64: column panels DIFFER (8 differ), row panels DIFFER
+seed 4 scale 0.001 w  96: column panels DIFFER (1 differ), row panels DIFFER
+seed 4 scale 0.001 w 128: column panels identical (0 differ), row panels DIFFER
+seed 4 scale 0.001 w 256: column panels identical (0 differ), row panels DIFFER
+seed 5 scale 37 w   8: column panels DIFFER (64 differ), row panels DIFFER
+seed 5 scale 37 w  16: column panels DIFFER (32 differ), row panels DIFFER
+seed 5 scale 37 w  32: column panels DIFFER (16 differ), row panels DIFFER
+seed 5 scale 37 w  48: column panels DIFFER (11 differ), row panels DIFFER
+seed 5 scale 37 w  64: column panels DIFFER (8 differ), row panels DIFFER
+seed 5 scale 37 w  96: column panels DIFFER (1 differ), row panels DIFFER
+seed 5 scale 37 w 128: column panels identical (0 differ), row panels DIFFER
+seed 5 scale 37 w 256: column panels identical (0 differ), row panels DIFFER
+bitcheck: DIFFERENCES (mkl cbwr branch 10)
+ref      thr 14 NB 512 iters 60 pool 6: per GEMM 4.666 ms (sgemm 4.298 + loop 0.368) wall 0.283 s  hash a1b44e037c2838b3
+avx      thr 14 NB 512 iters 60 pool 6: per GEMM 4.691 ms (sgemm 4.309 + loop 0.381) wall 0.284 s  hash a1b44e037c2838b3
+p256     thr 14 NB 512 iters 60 pool 6: per GEMM 4.651 ms (sgemm 4.651 + loop 0.000) wall 0.281 s  hash a1b44e037c2838b3
+p128     thr 14 NB 512 iters 60 pool 6: per GEMM 4.729 ms (sgemm 4.729 + loop 0.000) wall 0.286 s  hash a1b44e037c2838b3
+p64      thr 14 NB 512 iters 60 pool 6: per GEMM 7.066 ms (sgemm 7.066 + loop 0.000) wall 0.451 s  hash 97c52679396c6160
+p32      thr 14 NB 512 iters 60 pool 6: per GEMM 7.577 ms (sgemm 7.577 + loop 0.000) wall 0.471 s  hash 3c4a700f21bec350
+pf512    thr 14 NB 512 iters 60 pool 6: per GEMM 4.692 ms (sgemm 4.311 + loop 0.381) wall 0.284 s  hash a1b44e037c2838b3
+pf2048   thr 14 NB 512 iters 60 pool 6: per GEMM 4.693 ms (sgemm 4.315 + loop 0.378) wall 0.284 s  hash a1b44e037c2838b3
+loopref  thr 14 NB 512 iters 60 pool 6: per GEMM 1.101 ms (sgemm 0.000 + loop 1.101) wall 0.068 s  hash a1b44e037c2838b3
+loopavx  thr 14 NB 512 iters 60 pool 6: per GEMM 1.115 ms (sgemm 0.000 + loop 1.114) wall 0.068 s  hash a1b44e037c2838b3
+ref      thr 14 NB 512 iters 60 pool 6: per GEMM 4.664 ms (sgemm 4.304 + loop 0.360) wall 0.283 s  hash a1b44e037c2838b3
+avx      thr 14 NB 512 iters 60 pool 6: per GEMM 4.684 ms (sgemm 4.313 + loop 0.370) wall 0.285 s  hash a1b44e037c2838b3
+p256     thr 14 NB 512 iters 60 pool 6: per GEMM 4.655 ms (sgemm 4.655 + loop 0.000) wall 0.281 s  hash a1b44e037c2838b3
+p128     thr 14 NB 512 iters 60 pool 6: per GEMM 4.717 ms (sgemm 4.717 + loop 0.000) wall 0.285 s  hash a1b44e037c2838b3
+p64      thr 14 NB 512 iters 60 pool 6: per GEMM 7.000 ms (sgemm 7.000 + loop 0.000) wall 0.447 s  hash 97c52679396c6160
+p32      thr 14 NB 512 iters 60 pool 6: per GEMM 7.179 ms (sgemm 7.179 + loop 0.000) wall 0.467 s  hash 3c4a700f21bec350
+pf512    thr 14 NB 512 iters 60 pool 6: per GEMM 4.684 ms (sgemm 4.309 + loop 0.376) wall 0.285 s  hash a1b44e037c2838b3
+pf2048   thr 14 NB 512 iters 60 pool 6: per GEMM 4.704 ms (sgemm 4.325 + loop 0.380) wall 0.286 s  hash a1b44e037c2838b3
+loopref  thr 14 NB 512 iters 60 pool 6: per GEMM 1.098 ms (sgemm 0.000 + loop 1.098) wall 0.068 s  hash a1b44e037c2838b3
+loopavx  thr 14 NB 512 iters 60 pool 6: per GEMM 1.112 ms (sgemm 0.000 + loop 1.112) wall 0.068 s  hash a1b44e037c2838b3
+# warm C (pool 1)
+ref      thr 14 NB 512 iters 60 pool 1: per GEMM 4.664 ms (sgemm 4.295 + loop 0.368) wall 0.283 s  hash 9fe72c65d7924ed9
+avx      thr 14 NB 512 iters 60 pool 1: per GEMM 4.662 ms (sgemm 4.299 + loop 0.363) wall 0.283 s  hash 9fe72c65d7924ed9
+loopref  thr 14 NB 512 iters 60 pool 1: per GEMM 0.523 ms (sgemm 0.000 + loop 0.523) wall 0.033 s  hash 9fe72c65d7924ed9
+loopavx  thr 14 NB 512 iters 60 pool 1: per GEMM 0.551 ms (sgemm 0.000 + loop 0.551) wall 0.034 s  hash 9fe72c65d7924ed9
+# 1 thread
+ref      thr  1 NB 512 iters 60 pool 24: per GEMM 3.253 ms (sgemm 3.006 + loop 0.246) wall 0.195 s  hash 0dab4828e1ed1c40
+avx      thr  1 NB 512 iters 60 pool 24: per GEMM 3.275 ms (sgemm 3.024 + loop 0.250) wall 0.196 s  hash 0dab4828e1ed1c40
+p128     thr  1 NB 512 iters 60 pool 24: per GEMM 3.400 ms (sgemm 3.400 + loop 0.000) wall 0.204 s  hash 0dab4828e1ed1c40
+p64      thr  1 NB 512 iters 60 pool 24: per GEMM 5.734 ms (sgemm 5.734 + loop 0.000) wall 0.344 s  hash ea4c9f8ba9e92df1
+loopref  thr  1 NB 512 iters 60 pool 24: per GEMM 0.245 ms (sgemm 0.000 + loop 0.245) wall 0.015 s  hash 0dab4828e1ed1c40
+loopavx  thr  1 NB 512 iters 60 pool 24: per GEMM 0.248 ms (sgemm 0.000 + loop 0.248) wall 0.015 s  hash 0dab4828e1ed1c40
+
+# second run: non-temporal stores, prefetchnta, C tiles offset by 16 bytes (COFF=16) as glibc's mmap chunks
+# caffeine 2026-11-24T02:31:16+00:00 THP: [always] madvise never defrag: always defer defer+madvise [madvise] never
+ref      thr 14 NB 512 iters 80 pool 6: per GEMM 4.764 ms (sgemm 4.409 + loop 0.355) wall 0.419 s  hash 5d35e4e91b575f37
+avx      thr 14 NB 512 iters 80 pool 6: per GEMM 4.756 ms (sgemm 4.408 + loop 0.348) wall 0.412 s  hash 5d35e4e91b575f37
+nt       thr 14 NB 512 iters 80 pool 6: per GEMM 4.798 ms (sgemm 4.349 + loop 0.450) wall 0.409 s  hash 5d35e4e91b575f37
+ntpf1024 thr 14 NB 512 iters 80 pool 6: per GEMM 4.798 ms (sgemm 4.351 + loop 0.447) wall 0.408 s  hash 5d35e4e91b575f37
+nta1024  thr 14 NB 512 iters 80 pool 6: per GEMM 4.744 ms (sgemm 4.401 + loop 0.343) wall 0.401 s  hash 5d35e4e91b575f37
+nta4096  thr 14 NB 512 iters 80 pool 6: per GEMM 4.760 ms (sgemm 4.415 + loop 0.345) wall 0.394 s  hash 5d35e4e91b575f37
+p256     thr 14 NB 512 iters 80 pool 6: per GEMM 4.758 ms (sgemm 4.758 + loop 0.000) wall 0.398 s  hash 5d35e4e91b575f37
+p256nt   thr 14 NB 512 iters 80 pool 6: per GEMM 4.741 ms (sgemm 4.741 + loop 0.000) wall 0.401 s  hash 5d35e4e91b575f37
+loopref  thr 14 NB 512 iters 80 pool 6: per GEMM 1.115 ms (sgemm 0.000 + loop 1.115) wall 0.094 s  hash 5d35e4e91b575f37
+loopnt   thr 14 NB 512 iters 80 pool 6: per GEMM 1.047 ms (sgemm 0.001 + loop 1.046) wall 0.086 s  hash 5d35e4e91b575f37
+ref      thr 14 NB 512 iters 80 pool 6: per GEMM 4.756 ms (sgemm 4.406 + loop 0.350) wall 0.397 s  hash 5d35e4e91b575f37
+avx      thr 14 NB 512 iters 80 pool 6: per GEMM 4.758 ms (sgemm 4.405 + loop 0.353) wall 0.400 s  hash 5d35e4e91b575f37
+nt       thr 14 NB 512 iters 80 pool 6: per GEMM 4.790 ms (sgemm 4.337 + loop 0.453) wall 0.399 s  hash 5d35e4e91b575f37
+ntpf1024 thr 14 NB 512 iters 80 pool 6: per GEMM 4.780 ms (sgemm 4.344 + loop 0.436) wall 0.413 s  hash 5d35e4e91b575f37
+nta1024  thr 14 NB 512 iters 80 pool 6: per GEMM 4.752 ms (sgemm 4.407 + loop 0.346) wall 0.395 s  hash 5d35e4e91b575f37
+nta4096  thr 14 NB 512 iters 80 pool 6: per GEMM 4.768 ms (sgemm 4.417 + loop 0.351) wall 0.399 s  hash 5d35e4e91b575f37
+p256     thr 14 NB 512 iters 80 pool 6: per GEMM 4.755 ms (sgemm 4.755 + loop 0.000) wall 0.402 s  hash 5d35e4e91b575f37
+p256nt   thr 14 NB 512 iters 80 pool 6: per GEMM 4.738 ms (sgemm 4.738 + loop 0.000) wall 0.400 s  hash 5d35e4e91b575f37
+loopref  thr 14 NB 512 iters 80 pool 6: per GEMM 1.127 ms (sgemm 0.000 + loop 1.126) wall 0.093 s  hash 5d35e4e91b575f37
+loopnt   thr 14 NB 512 iters 80 pool 6: per GEMM 1.048 ms (sgemm 0.001 + loop 1.048) wall 0.086 s  hash 5d35e4e91b575f37
+ref      thr 14 NB 512 iters 80 pool 6: per GEMM 4.774 ms (sgemm 4.412 + loop 0.362) wall 0.403 s  hash 5d35e4e91b575f37
+avx      thr 14 NB 512 iters 80 pool 6: per GEMM 4.763 ms (sgemm 4.412 + loop 0.351) wall 0.406 s  hash 5d35e4e91b575f37
+nt       thr 14 NB 512 iters 80 pool 6: per GEMM 4.778 ms (sgemm 4.341 + loop 0.437) wall 0.394 s  hash 5d35e4e91b575f37
+ntpf1024 thr 14 NB 512 iters 80 pool 6: per GEMM 4.789 ms (sgemm 4.354 + loop 0.435) wall 0.396 s  hash 5d35e4e91b575f37
+nta1024  thr 14 NB 512 iters 80 pool 6: per GEMM 4.739 ms (sgemm 4.398 + loop 0.342) wall 0.410 s  hash 5d35e4e91b575f37
+nta4096  thr 14 NB 512 iters 80 pool 6: per GEMM 4.756 ms (sgemm 4.407 + loop 0.349) wall 0.398 s  hash 5d35e4e91b575f37
+p256     thr 14 NB 512 iters 80 pool 6: per GEMM 4.753 ms (sgemm 4.753 + loop 0.000) wall 0.402 s  hash 5d35e4e91b575f37
+p256nt   thr 14 NB 512 iters 80 pool 6: per GEMM 4.743 ms (sgemm 4.743 + loop 0.000) wall 0.408 s  hash 5d35e4e91b575f37
+loopref  thr 14 NB 512 iters 80 pool 6: per GEMM 1.127 ms (sgemm 0.000 + loop 1.127) wall 0.093 s  hash 5d35e4e91b575f37
+loopnt   thr 14 NB 512 iters 80 pool 6: per GEMM 1.049 ms (sgemm 0.001 + loop 1.048) wall 0.086 s  hash 5d35e4e91b575f37
+# 1 thread
+ref      thr  1 NB 512 iters 60 pool 24: per GEMM 4.289 ms (sgemm 3.991 + loop 0.297) wall 0.257 s  hash 0dab4828e1ed1c40
+nt       thr  1 NB 512 iters 60 pool 24: per GEMM 4.346 ms (sgemm 3.958 + loop 0.387) wall 0.261 s  hash 0dab4828e1ed1c40
+nta1024  thr  1 NB 512 iters 60 pool 24: per GEMM 4.264 ms (sgemm 3.969 + loop 0.295) wall 0.256 s  hash 0dab4828e1ed1c40
+loopref  thr  1 NB 512 iters 60 pool 24: per GEMM 0.286 ms (sgemm 0.000 + loop 0.286) wall 0.017 s  hash 0dab4828e1ed1c40
+loopnt   thr  1 NB 512 iters 60 pool 24: per GEMM 0.381 ms (sgemm 0.000 + loop 0.381) wall 0.023 s  hash 0dab4828e1ed1c40

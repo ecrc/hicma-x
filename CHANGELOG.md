@@ -95,6 +95,14 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   Results are bit-identical. On a Broadwell node: 1.13-1.15x at N = 16384
   (2454 conversions left instead of 9342, 130 MB) and 1.16x at N = 32768. Report
   in `docs/omnicast/round5/REPORT.md`.
+- Kind 10 runtime CPU GEMMs, `ACC_DP`: with MKL, the FP32 GEMM whose
+  product is subtracted from an FP64 tile runs in 256-column panels, each
+  subtracted right after it is computed (`ACC_DP_PANEL`; CMake passes
+  `HICMA_PARSEC_BLAS_MKL` when the BLAS is MKL). Bit-identical; about 1 %
+  faster at N = 16384 on a Broadwell node, no measurable change at
+  N = 32768. The loop is bound by the memory bandwidth of the core; AVX,
+  prefetching and non-temporal stores did not help enough to keep. Report in
+  `docs/omnicast/round6/REPORT.md`.
 
 ### Correctness
 

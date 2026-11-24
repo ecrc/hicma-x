@@ -1,0 +1,46 @@
+# caffeine 2026-11-24T03:10:15+00:00
+13/30 Test #296: potrf_runtime_decision ...........   Passed    0.34 sec
+      Start 297: potrf_sparse_general
+14/30 Test #297: potrf_sparse_general .............   Passed    0.44 sec
+      Start 298: potrf_sparse_balance
+15/30 Test #298: potrf_sparse_balance .............   Passed    0.45 sec
+      Start 299: potrf_autoband_3d
+16/30 Test #299: potrf_autoband_3d ................   Passed    1.89 sec
+      Start 300: trmm_fp64
+17/30 Test #300: trmm_fp64 ........................   Passed    0.37 sec
+      Start 301: trmm_adaptive
+18/30 Test #301: trmm_adaptive ....................   Passed    0.30 sec
+      Start 302: trmm_adaptive_sr
+19/30 Test #302: trmm_adaptive_sr .................   Passed    0.30 sec
+      Start 303: lapack_tile_convert
+20/30 Test #303: lapack_tile_convert ..............   Passed    0.15 sec
+      Start 304: matrix_sum
+21/30 Test #304: matrix_sum .......................   Passed    0.14 sec
+      Start 305: tensor_gemm_invalid
+22/30 Test #305: tensor_gemm_invalid ..............   Passed    0.12 sec
+      Start 306: potrf_dense_fp64_np2
+23/30 Test #306: potrf_dense_fp64_np2 .............   Passed    1.07 sec
+      Start 307: potrf_tlr_dp_band2_np2
+24/30 Test #307: potrf_tlr_dp_band2_np2 ...........   Passed    1.33 sec
+      Start 308: potrf_runtime_np2
+25/30 Test #308: potrf_runtime_np2 ................   Passed    1.07 sec
+      Start 309: potrf_sparse_np2
+26/30 Test #309: potrf_sparse_np2 .................   Passed    1.45 sec
+      Start 310: trmm_adaptive_np2
+27/30 Test #310: trmm_adaptive_np2 ................   Passed    0.74 sec
+      Start 311: lapack_tile_convert_np2
+28/30 Test #311: lapack_tile_convert_np2 ..........   Passed    0.28 sec
+      Start 312: matrix_sum_np2
+29/30 Test #312: matrix_sum_np2 ...................   Passed    0.28 sec
+      Start 313: potrf_mesh_sparse
+30/30 Test #313: potrf_mesh_sparse ................   Passed    6.45 sec
+
+100% tests passed, 0 tests failed out of 30
+
+Label Time Summary:
+dplasma     =   0.44 sec*proc (1 test)
+hicma       =  91.91 sec*proc (29 tests)
+mpi         =   6.23 sec*proc (7 tests)
+omnicast    =  71.28 sec*proc (2 tests)
+
+Total Test time (real) =  92.63 sec

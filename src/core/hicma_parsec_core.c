@@ -16,13 +16,55 @@
  * CALL_HCORE_DSYRK  1: low-rank SYRK update T -= U (V^T V) U^T with HCORE_dsyrk;
  *                   0: with three GEMMs (needs the mbr and rr work pools).
  * ACC_DP            1: in runtime-decision mode an FP64 CPU GEMM leaves C in
- *                   FP64; 0: C's precision is decided again from its norm. */
+ *                   FP64; 0: C's precision is decided again from its norm.
+ * ACC_DP_PANEL      with ACC_DP, an FP32 CPU GEMM into an FP64 C runs in
+ *                   panels of this many columns of C (see
+ *                   hicma_parsec_sgemm_sub_dp); 0: one GEMM over the tile.
+ *                   Default 256 with MKL, 0 with other BLAS. */
 #ifndef CALL_HCORE_DSYRK
 #define CALL_HCORE_DSYRK 1
 #endif
 #ifndef ACC_DP
 #define ACC_DP 1
 #endif
+#ifndef ACC_DP_PANEL
+#if defined(HICMA_PARSEC_BLAS_MKL)
+#define ACC_DP_PANEL 256
+#else
+#define ACC_DP_PANEL 0
+#endif
+#endif
+
+/* ACC_DP: C(FP64) -= (double)(A * B^T), the product computed by an FP32 GEMM
+ * (beta = 0) into the work tile W, then subtracted from C element by element
+ * (the conversion is exact, one rounding per element). The subtraction
+ * streams the FP64 C tile through memory and is bound by the memory bandwidth
+ * of the core. With ACC_DP_PANEL, the GEMM runs in panels of that many
+ * columns and each panel is subtracted right after it is computed, while it
+ * is still in cache: about 1 % faster at N = 16384 on a Broadwell node.
+ * The panels must give the same FP32 sums as one GEMM. MKL 2024.2 does for
+ * panels of 128 or 256 columns on Broadwell, Ice Lake, Zen 2 and Zen 4
+ * (narrower ones differ on Broadwell); OpenBLAS 0.3.28 does not, nor BLIS
+ * 5.0 for 128 columns, hence ACC_DP_PANEL 0 without MKL. As before, all ldc
+ * rows of W are subtracted (m = ldc: runtime decisions need N to be a
+ * multiple of NB). docs/omnicast/round6/REPORT.md has the measurements. */
+static void hicma_parsec_sgemm_sub_dp(int m, int n, int k,
+        const float *A, int lda, const float *B, int ldb,
+        float *W, double *C, int ldc)
+{
+    int panel = (ACC_DP_PANEL > 0 && ACC_DP_PANEL < n) ? ACC_DP_PANEL : n;
+    for( int j0 = 0; j0 < n; j0 += panel ) {
+        int nj = n - j0 < panel ? n - j0 : panel;
+        CORE_sgemm(PlasmaNoTrans, PlasmaTrans, m, nj, k,
+                (float)1.0, A, lda, B + j0, ldb,
+                (float)0.0, W + (size_t)j0 * ldc, ldc);
+        for( int j = j0; j < j0 + nj; j++ ) {
+            for( int i = 0; i < ldc; i++ ) {
+                C[(size_t)j * ldc + i] -= W[(size_t)j * ldc + i];
+            }
+        }
+    }
+}
 
 /* Count conversions per worker/stream; slot 0 is reduced after execution. */
 void hicma_parsec_count_datatype_conversion(hicma_parsec_params_t *params_tlr,
@@ -2012,17 +2054,9 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
         //}
 
         if( DENSE_DP == params_tlr->decisions[n*descA->lmt+m] ) {
-            CORE_sgemm(PlasmaNoTrans, PlasmaTrans,
-                    tempmm, descA->mb, descA->nb,
-                    (float)1.0, A_use /*A(m, k)*/, ldam,
-                                B_use /*A(n, k)*/, ldan,
-                    //(float)1.0,  C     /*A(m, n)*/, ldam);
-                    (float) 0.0, C_use     /*A(m, n)*/, ldam);
-            for(int j = 0; j < descA->nb; j++) {
-                for(int i = 0; i < descA->mb; i++) {
-                    ((double *)C)[j*descA->mb+i] -= ((float*)C_use)[j*descA->mb+i];
-                }
-            }
+            /* C(m, n) -= A(m, k) * A(n, k)^T, the product in FP32 */
+            hicma_parsec_sgemm_sub_dp(tempmm, descA->mb, descA->nb,
+                    A_use, ldam, B_use, ldan, C_use, C, ldam);
         } else {
             CORE_sgemm(PlasmaNoTrans, PlasmaTrans,
                     tempmm, descA->mb, descA->nb,
@@ -2103,12 +2137,6 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
 
 #if ACC_DP
         void *C_use = parsec_private_memory_pop( p_work_full_dp );
-        CORE_sgemm(PlasmaNoTrans, PlasmaTrans,
-                tempmm, descA->mb, descA->nb,
-                (float)1.0, A_use /*A(m, k)*/, ldam,
-                             B_use /*A(n, k)*/, ldan,
-                //(float)1.0,  C     /*A(m, n)*/, ldam);
-                (float) 0.0, C_use     /*A(m, n)*/, ldam);
 
         /* For the first GEMM */
         if( DENSE_DP != params_tlr->decisions[n*descA->lmt+m] ) {
@@ -2116,11 +2144,9 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
             HICMA_OMC( omc_convert_inplace(OMC_FP32, OMC_FP64, C, (size_t)(descA->mb) * (descA->nb), NULL) );
         }
 
-        for(int j = 0; j < descA->nb; j++) {
-            for(int i = 0; i < descA->mb; i++) {
-                ((double *)C)[j*descA->mb+i] -= ((float*)C_use)[j*descA->mb+i];
-            }
-        }
+        /* C(m, n) -= A(m, k) * A(n, k)^T, the product in FP32 */
+        hicma_parsec_sgemm_sub_dp(tempmm, descA->mb, descA->nb,
+                A_use, ldam, B_use, ldan, C_use, C, ldam);
         parsec_private_memory_push( p_work_full_dp, C_use);
         params_tlr->decisions[n*descA->lmt+m] = DENSE_DP;
 #else

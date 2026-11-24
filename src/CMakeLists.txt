@@ -267,7 +267,8 @@ target_include_directories(hicma_parsec PUBLIC
 
 # Add compile definitions. HICMA_PARSEC_BUILDING lets the public headers
 # include the DPLASMA/PaRSEC internals that are not installed; GENOMICS=1
-# selects the genomics (kernel ridge regression) mode of the library.
+# selects the genomics (kernel ridge regression) mode of the library;
+# HICMA_PARSEC_BLAS_MKL tells that the BLAS is MKL (top-level CMakeLists.txt).
 target_compile_definitions(hicma_parsec
     PRIVATE
     HICMA_PARSEC_BUILDING
@@ -275,6 +276,7 @@ target_compile_definitions(hicma_parsec
     $<$<BOOL:${HICMA_PARSEC_HAVE_HIP}>:HICMA_PARSEC_HAVE_HIP>
     $<$<BOOL:${ON_FUGAKU}>:ON_FUGAKU>
     $<$<BOOL:${ENABLE_SANITIZER}>:ENABLE_SANITIZER>
+    $<$<BOOL:${HICMA_BLAS_IS_MKL}>:HICMA_PARSEC_BLAS_MKL>
     PUBLIC
     $<$<BOOL:${HICMA_PARSEC_GENOMICS}>:GENOMICS=1>
 )

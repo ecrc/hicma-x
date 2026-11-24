@@ -29,6 +29,19 @@ the code before OmniCast (`4256ff9`), built side by side:
 
 Tables, figure, method and scripts: [`final/README.md`](final/README.md).
 
+## The FP64 accumulation on the CPU (round 6)
+
+With runtime decisions, a CPU GEMM that picks FP32 for an FP64 tile
+subtracts its FP32 product from the tile in a separate loop, about 5 % of the time
+after round 5. The loop is bound by the memory bandwidth of the core (it
+streams the 2 MB FP64 tile in and out), so an AVX loop or prefetching does
+not help. With MKL the SGEMM now runs in 256-column panels, each subtracted
+right after it is computed: bit-identical (MKL gives the same FP32 sums for
+these panels; OpenBLAS and BLIS do not, so they keep one GEMM), about 1 %
+faster at N = 16384 and no measurable change at N = 32768 on a Broadwell
+node. Measurements, the BLAS bit checks and the variants that did not help:
+[`round6/REPORT.md`](round6/REPORT.md).
+
 ## Converting once on the CPU (round 5)
 
 With the FP32 GEMMs fast after round 4, the conversions of kind 10 (runtime

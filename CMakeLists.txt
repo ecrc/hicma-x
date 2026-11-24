@@ -237,7 +237,12 @@ unset(_starsh_libs)
 # sets LIBRARY_PATH but not LD_LIBRARY_PATH, every driver and test of a fresh
 # build failed to start ("libmkl_gf_lp64.so.2: cannot open shared object
 # file"). System directories are left out so LD_LIBRARY_PATH keeps working.
+#
+# HICMA_BLAS_IS_MKL: the stack is MKL (mkl_core or mkl_rt among the
+# libraries); src/core/hicma_parsec_core.c relies on how MKL blocks its GEMMs
+# (ACC_DP_PANEL).
 set(HICMA_BLAS_RUNTIME_DIRS)
+set(HICMA_BLAS_IS_MKL OFF)
 foreach(_t LAPACKE::LAPACKE LAPACKE::LAPACK LAPACKE::CBLAS LAPACKE::BLAS)
     if(NOT TARGET ${_t})
         continue()
@@ -250,6 +255,9 @@ foreach(_t LAPACKE::LAPACKE LAPACKE::LAPACK LAPACKE::CBLAS LAPACKE::BLAS)
     endif()
     get_target_property(_ill ${_t} INTERFACE_LINK_LIBRARIES)
     list(APPEND _items ${_ill})
+    if("${_items}" MATCHES "mkl_(core|rt)")
+        set(HICMA_BLAS_IS_MKL ON)
+    endif()
     foreach(_lib IN LISTS _items)
         if(_lib AND IS_ABSOLUTE "${_lib}" AND EXISTS "${_lib}")
             get_filename_component(_dir "${_lib}" DIRECTORY)
@@ -271,6 +279,7 @@ if(HICMA_BLAS_RUNTIME_DIRS)
         set_property(TARGET testing_blas_threadsafety APPEND PROPERTY BUILD_RPATH ${HICMA_BLAS_RUNTIME_DIRS})
     endif()
 endif()
+message(STATUS "BLAS is MKL: ${HICMA_BLAS_IS_MKL}")
 unset(_items)
 unset(_loc)
 unset(_ill)

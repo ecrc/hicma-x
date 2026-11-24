@@ -1,0 +1,17 @@
+# host caffeine: Intel(R) Xeon(R) CPU E5-2660 v4 @ 2.00GHz, 28 cpus, 2026-11-24T03:13:50+00:00, N=32768
+k10_runtime base r1: 17.41299 16.84733 17.25346 | Number_of_Datatype_Conversions= 20501 CPU_operand_cache: conversions= 20501 reuses= 58269 fallbacks= 0 evictions= 18543 tiles= 504 MB= 528.5 held= 0 
+k10_runtime new r1: 16.90047 17.17640 17.42217 | Number_of_Datatype_Conversions= 18115 CPU_operand_cache: conversions= 18115 reuses= 60655 fallbacks= 0 evictions= 16118 tiles= 504 MB= 528.5 held= 0 
+k10_runtime new r2: 17.62712 17.56882 17.38703 | Number_of_Datatype_Conversions= 11675 CPU_operand_cache: conversions= 11675 reuses= 67095 fallbacks= 0 evictions= 9675 tiles= 504 MB= 528.5 held= 0 
+k10_runtime base r2: 17.82639 17.30103 17.26416 | Number_of_Datatype_Conversions= 7848 CPU_operand_cache: conversions= 7848 reuses= 70922 fallbacks= 0 evictions= 5853 tiles= 504 MB= 528.5 held= 0 
+k10_runtime base r3: 17.72938 17.26024 17.08842 | Number_of_Datatype_Conversions= 14017 CPU_operand_cache: conversions= 14017 reuses= 64753 fallbacks= 0 evictions= 12017 tiles= 504 MB= 528.5 held= 0 
+k10_runtime new r3: 16.84929 16.95076 17.05204 | Number_of_Datatype_Conversions= 17859 CPU_operand_cache: conversions= 17859 reuses= 60911 fallbacks= 0 evictions= 15907 tiles= 504 MB= 528.5 held= 0 
+k10_runtime new r4: 17.17056 17.20367 17.13148 | Number_of_Datatype_Conversions= 19736 CPU_operand_cache: conversions= 19736 reuses= 59034 fallbacks= 0 evictions= 17763 tiles= 504 MB= 528.5 held= 0 
+k10_runtime base r4: 17.38532 17.31505 17.03913 | Number_of_Datatype_Conversions= 13815 CPU_operand_cache: conversions= 13815 reuses= 64955 fallbacks= 0 evictions= 11823 tiles= 504 MB= 528.5 held= 0 
+k10_runtime base r5: 17.04345 17.37275 17.04115 | Number_of_Datatype_Conversions= 14963 CPU_operand_cache: conversions= 14963 reuses= 63807 fallbacks= 0 evictions= 12962 tiles= 504 MB= 528.5 held= 0 
+k10_runtime new r5: 17.02032 17.18454 17.06155 | Number_of_Datatype_Conversions= 20166 CPU_operand_cache: conversions= 20166 reuses= 58604 fallbacks= 0 evictions= 18169 tiles= 504 MB= 528.5 held= 0 
+k10_runtime new r6: 17.18747 17.04203 16.87245 | Number_of_Datatype_Conversions= 13669 CPU_operand_cache: conversions= 13669 reuses= 65101 fallbacks= 0 evictions= 11672 tiles= 504 MB= 528.5 held= 0 
+k10_runtime base r6: 17.26523 17.14986 17.03065 | Number_of_Datatype_Conversions= 14524 CPU_operand_cache: conversions= 14524 reuses= 64246 fallbacks= 0 evictions= 12523 tiles= 504 MB= 528.5 held= 0 
+k10_runtime base r7: 16.72840 17.30114 17.29051 | Number_of_Datatype_Conversions= 18729 CPU_operand_cache: conversions= 18729 reuses= 60041 fallbacks= 0 evictions= 16734 tiles= 504 MB= 528.5 held= 0 
+k10_runtime new r7: 17.30314 17.21947 16.70372 | Number_of_Datatype_Conversions= 7118 CPU_operand_cache: conversions= 7118 reuses= 71652 fallbacks= 0 evictions= 5124 tiles= 504 MB= 528.5 held= 0 
+k10_runtime new r8: 17.08388 17.15566 17.14165 | Number_of_Datatype_Conversions= 20212 CPU_operand_cache: conversions= 20212 reuses= 58558 fallbacks= 0 evictions= 18252 tiles= 504 MB= 528.5 held= 0 
+k10_runtime base r8: 17.42179 17.35415 16.84065 | Number_of_Datatype_Conversions= 6754 CPU_operand_cache: conversions= 6754 reuses= 72016 fallbacks= 0 evictions= 4809 tiles= 504 MB= 528.5 held= 0 

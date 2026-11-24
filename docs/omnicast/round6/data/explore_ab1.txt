@@ -1,0 +1,54 @@
+# host caffeine: Intel(R) Xeon(R) CPU E5-2660 v4 @ 2.00GHz, 28 cpus, 2026-11-24T02:41:29+00:00, N=16384
+k10_runtime base r1: 2.36898 2.38666 2.37648 | Number_of_Datatype_Conversions= 3070 CPU_operand_cache: conversions= 3070 reuses= 6272 fallbacks= 0 evictions= 2590 tiles= 124 MB= 130.0 held= 0 
+k10_runtime m0 r1: 2.36914 2.34343 2.33380 | Number_of_Datatype_Conversions= 2745 CPU_operand_cache: conversions= 2745 reuses= 6597 fallbacks= 0 evictions= 2265 tiles= 124 MB= 130.0 held= 0 
+k10_runtime m1 r1: 2.36211 2.35457 2.35195 | Number_of_Datatype_Conversions= 2926 CPU_operand_cache: conversions= 2926 reuses= 6416 fallbacks= 0 evictions= 2440 tiles= 124 MB= 130.0 held= 0 
+k10_runtime m2 r1: 2.36149 2.32830 2.34671 | Number_of_Datatype_Conversions= 2790 CPU_operand_cache: conversions= 2790 reuses= 6552 fallbacks= 0 evictions= 2304 tiles= 124 MB= 130.0 held= 0 
+k10_runtime m3 r1: 2.31462 2.32603 2.34236 | Number_of_Datatype_Conversions= 2936 CPU_operand_cache: conversions= 2936 reuses= 6406 fallbacks= 0 evictions= 2450 tiles= 124 MB= 130.0 held= 0 
+k10_runtime m4 r1: 2.33921 2.33936 2.35234 | Number_of_Datatype_Conversions= 3026 CPU_operand_cache: conversions= 3026 reuses= 6316 fallbacks= 0 evictions= 2540 tiles= 124 MB= 130.0 held= 0 
+k10_1e-3 base r1: 2.28439 2.26733 2.26136 | Number_of_Datatype_Conversions= 2813 CPU_operand_cache: conversions= 2813 reuses= 7107 fallbacks= 0 evictions= 2318 tiles= 124 MB= 130.0 held= 0 
+k10_1e-3 m0 r1: 2.30993 2.29643 2.22380 | Number_of_Datatype_Conversions= 2718 CPU_operand_cache: conversions= 2718 reuses= 7202 fallbacks= 0 evictions= 2223 tiles= 124 MB= 130.0 held= 0 
+k10_1e-3 m1 r1: 2.22804 2.26869 2.26133 | Number_of_Datatype_Conversions= 3093 CPU_operand_cache: conversions= 3093 reuses= 6827 fallbacks= 0 evictions= 2598 tiles= 124 MB= 130.0 held= 0 
+k10_1e-3 m2 r1: 2.25008 2.27565 2.24460 | Number_of_Datatype_Conversions= 3081 CPU_operand_cache: conversions= 3081 reuses= 6839 fallbacks= 0 evictions= 2586 tiles= 124 MB= 130.0 held= 0 
+k10_1e-3 m3 r1: 2.24853 2.23196 2.23996 | Number_of_Datatype_Conversions= 2895 CPU_operand_cache: conversions= 2895 reuses= 7025 fallbacks= 0 evictions= 2400 tiles= 124 MB= 130.0 held= 0 
+k10_1e-3 m4 r1: 2.25861 2.22799 2.26537 | Number_of_Datatype_Conversions= 2933 CPU_operand_cache: conversions= 2933 reuses= 6987 fallbacks= 0 evictions= 2438 tiles= 124 MB= 130.0 held= 0 
+k10_runtime m0 r2: 2.32010 2.34331 2.37369 | Number_of_Datatype_Conversions= 2835 CPU_operand_cache: conversions= 2835 reuses= 6507 fallbacks= 0 evictions= 2349 tiles= 124 MB= 130.0 held= 0 
+k10_runtime m1 r2: 2.39167 2.36910 2.37084 | Number_of_Datatype_Conversions= 2822 CPU_operand_cache: conversions= 2822 reuses= 6520 fallbacks= 0 evictions= 2336 tiles= 124 MB= 130.0 held= 0 
+k10_runtime m2 r2: 2.37243 2.34877 2.33260 | Number_of_Datatype_Conversions= 2418 CPU_operand_cache: conversions= 2418 reuses= 6924 fallbacks= 0 evictions= 1932 tiles= 124 MB= 130.0 held= 0 
+k10_runtime m3 r2: 2.33161 2.30970 2.35550 | Number_of_Datatype_Conversions= 2497 CPU_operand_cache: conversions= 2497 reuses= 6845 fallbacks= 0 evictions= 2011 tiles= 124 MB= 130.0 held= 0 
+k10_runtime m4 r2: 2.37436 2.34269 2.31186 | Number_of_Datatype_Conversions= 2188 CPU_operand_cache: conversions= 2188 reuses= 7154 fallbacks= 0 evictions= 1702 tiles= 124 MB= 130.0 held= 0 
+k10_runtime base r2: 2.38734 2.34006 2.35548 | Number_of_Datatype_Conversions= 2861 CPU_operand_cache: conversions= 2861 reuses= 6481 fallbacks= 0 evictions= 2375 tiles= 124 MB= 130.0 held= 0 
+k10_1e-3 m0 r2: 2.26460 2.23084 2.24221 | Number_of_Datatype_Conversions= 2733 CPU_operand_cache: conversions= 2733 reuses= 7187 fallbacks= 0 evictions= 2238 tiles= 124 MB= 130.0 held= 0 
+k10_1e-3 m1 r2: 2.25585 2.24465 2.27973 | Number_of_Datatype_Conversions= 2838 CPU_operand_cache: conversions= 2838 reuses= 7082 fallbacks= 0 evictions= 2343 tiles= 124 MB= 130.0 held= 0 
+k10_1e-3 m2 r2: 2.26774 2.24353 2.27888 | Number_of_Datatype_Conversions= 2939 CPU_operand_cache: conversions= 2939 reuses= 6981 fallbacks= 0 evictions= 2444 tiles= 124 MB= 130.0 held= 0 
+k10_1e-3 m3 r2: 2.23451 2.22771 2.24067 | Number_of_Datatype_Conversions= 3098 CPU_operand_cache: conversions= 3098 reuses= 6822 fallbacks= 0 evictions= 2603 tiles= 124 MB= 130.0 held= 0 
+k10_1e-3 m4 r2: 2.24612 2.22474 2.21257 | Number_of_Datatype_Conversions= 2840 CPU_operand_cache: conversions= 2840 reuses= 7080 fallbacks= 0 evictions= 2345 tiles= 124 MB= 130.0 held= 0 
+k10_1e-3 base r2: 2.27416 2.24328 2.27760 | Number_of_Datatype_Conversions= 3001 CPU_operand_cache: conversions= 3001 reuses= 6919 fallbacks= 0 evictions= 2506 tiles= 124 MB= 130.0 held= 0 
+k10_runtime m1 r3: 2.39352 2.35030 2.32614 | Number_of_Datatype_Conversions= 1631 CPU_operand_cache: conversions= 1631 reuses= 7711 fallbacks= 0 evictions= 1147 tiles= 124 MB= 130.0 held= 0 
+k10_runtime m2 r3: 2.34848 2.34713 2.36991 | Number_of_Datatype_Conversions= 2890 CPU_operand_cache: conversions= 2890 reuses= 6452 fallbacks= 0 evictions= 2405 tiles= 124 MB= 130.0 held= 0 
+k10_runtime m3 r3: 2.32056 2.30014 2.30298 | Number_of_Datatype_Conversions= 2583 CPU_operand_cache: conversions= 2583 reuses= 6759 fallbacks= 0 evictions= 2097 tiles= 124 MB= 130.0 held= 0 
+k10_runtime m4 r3: 2.28022 2.30230 2.36623 | Number_of_Datatype_Conversions= 2954 CPU_operand_cache: conversions= 2954 reuses= 6388 fallbacks= 0 evictions= 2468 tiles= 124 MB= 130.0 held= 0 
+k10_runtime base r3: 2.36409 2.38498 2.41170 | Number_of_Datatype_Conversions= 2606 CPU_operand_cache: conversions= 2606 reuses= 6736 fallbacks= 0 evictions= 2121 tiles= 124 MB= 130.0 held= 0 
+k10_runtime m0 r3: 2.42992 2.39201 2.39802 | Number_of_Datatype_Conversions= 2187 CPU_operand_cache: conversions= 2187 reuses= 7155 fallbacks= 0 evictions= 1701 tiles= 124 MB= 130.0 held= 0 
+k10_1e-3 m1 r3: 2.30054 2.32604 2.31576 | Number_of_Datatype_Conversions= 2942 CPU_operand_cache: conversions= 2942 reuses= 6978 fallbacks= 0 evictions= 2447 tiles= 124 MB= 130.0 held= 0 
+k10_1e-3 m2 r3: 2.34395 2.29582 2.34958 | Number_of_Datatype_Conversions= 3066 CPU_operand_cache: conversions= 3066 reuses= 6854 fallbacks= 0 evictions= 2571 tiles= 124 MB= 130.0 held= 0 
+k10_1e-3 m3 r3: 2.30441 2.23784 2.28132 | Number_of_Datatype_Conversions= 2900 CPU_operand_cache: conversions= 2900 reuses= 7020 fallbacks= 0 evictions= 2405 tiles= 124 MB= 130.0 held= 0 
+k10_1e-3 m4 r3: 2.30659 2.26490 2.28968 | Number_of_Datatype_Conversions= 3039 CPU_operand_cache: conversions= 3039 reuses= 6881 fallbacks= 0 evictions= 2544 tiles= 124 MB= 130.0 held= 0 
+k10_1e-3 base r3: 2.28808 2.31448 2.28831 | Number_of_Datatype_Conversions= 2806 CPU_operand_cache: conversions= 2806 reuses= 7114 fallbacks= 0 evictions= 2311 tiles= 124 MB= 130.0 held= 0 
+k10_1e-3 m0 r3: 2.24240 2.29784 2.31199 | Number_of_Datatype_Conversions= 2862 CPU_operand_cache: conversions= 2862 reuses= 7058 fallbacks= 0 evictions= 2367 tiles= 124 MB= 130.0 held= 0 
+k10_runtime m2 r4: 2.40546 2.41335 2.39671 | Number_of_Datatype_Conversions= 2561 CPU_operand_cache: conversions= 2561 reuses= 6781 fallbacks= 0 evictions= 2076 tiles= 124 MB= 130.0 held= 0 
+k10_runtime m3 r4: 2.39151 2.36145 2.38102 | Number_of_Datatype_Conversions= 2951 CPU_operand_cache: conversions= 2951 reuses= 6391 fallbacks= 0 evictions= 2466 tiles= 124 MB= 130.0 held= 0 
+k10_runtime m4 r4: 2.40310 2.42745 2.38799 | Number_of_Datatype_Conversions= 2686 CPU_operand_cache: conversions= 2686 reuses= 6656 fallbacks= 0 evictions= 2200 tiles= 124 MB= 130.0 held= 0 
+k10_runtime base r4: 2.37651 2.40346 2.29720 | Number_of_Datatype_Conversions= 1005 CPU_operand_cache: conversions= 1005 reuses= 8337 fallbacks= 0 evictions= 519 tiles= 124 MB= 130.0 held= 0 
+k10_runtime m0 r4: 2.42251 2.43214 2.40247 | Number_of_Datatype_Conversions= 2545 CPU_operand_cache: conversions= 2545 reuses= 6797 fallbacks= 0 evictions= 2061 tiles= 124 MB= 130.0 held= 0 
+k10_runtime m1 r4: 2.42291 2.38499 2.41052 | Number_of_Datatype_Conversions= 3023 CPU_operand_cache: conversions= 3023 reuses= 6319 fallbacks= 0 evictions= 2538 tiles= 124 MB= 130.0 held= 0 
+k10_1e-3 m2 r4: 2.32630 2.30518 2.30383 | Number_of_Datatype_Conversions= 3093 CPU_operand_cache: conversions= 3093 reuses= 6827 fallbacks= 0 evictions= 2598 tiles= 124 MB= 130.0 held= 0 
+k10_1e-3 m3 r4: 2.27081 2.25007 2.26937 | Number_of_Datatype_Conversions= 2844 CPU_operand_cache: conversions= 2844 reuses= 7076 fallbacks= 0 evictions= 2349 tiles= 124 MB= 130.0 held= 0 
+k10_1e-3 m4 r4: 2.27520 2.25952 2.26569 | Number_of_Datatype_Conversions= 2749 CPU_operand_cache: conversions= 2749 reuses= 7171 fallbacks= 0 evictions= 2254 tiles= 124 MB= 130.0 held= 0 
+k10_1e-3 base r4: 2.31737 2.21132 2.30051 | Number_of_Datatype_Conversions= 3061 CPU_operand_cache: conversions= 3061 reuses= 6859 fallbacks= 0 evictions= 2566 tiles= 124 MB= 130.0 held= 0 
+k10_1e-3 m0 r4: 2.32785 2.27908 2.30907 | Number_of_Datatype_Conversions= 2821 CPU_operand_cache: conversions= 2821 reuses= 7099 fallbacks= 0 evictions= 2326 tiles= 124 MB= 130.0 held= 0 
+k10_1e-3 m1 r4: 2.30455 2.30659 2.28741 | Number_of_Datatype_Conversions= 2939 CPU_operand_cache: conversions= 2939 reuses= 6981 fallbacks= 0 evictions= 2444 tiles= 124 MB= 130.0 held= 0 
+# packed-API bit check (caffeine)
+packed sizes: A 7931648 B 7930752 bytes (plain 1048576)
+seed 0: packed A DIFFER, packed B DIFFER, both DIFFER
+seed 1: packed A DIFFER, packed B DIFFER, both DIFFER
+packcheck: DIFFERENCES
