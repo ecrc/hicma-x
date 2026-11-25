@@ -44,7 +44,8 @@ node. Measurements, the BLAS bit checks and the variants that did not help:
 branch on a GPU node, with GEMMs forced onto the CPU, found that widening an
 FP32 tile on the CPU broke the next GPU task on it (wrong span, GPU copies the
 warmup allocated at the FP32 size, FP32-sized host buffers); fixed, section 7
-of that report.
+of that report. In a process with GPUs, a GEMM that a GPU accepts now never
+runs on the CPU (section 8).
 
 ## Converting once on the CPU (round 5)
 

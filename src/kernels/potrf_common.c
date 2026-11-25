@@ -257,6 +257,40 @@ static __parsec_chore_t *hicma_potrf_find_chore(const parsec_task_class_t *tc, u
     return NULL;
 }
 
+/* Evaluate of the CPU and recursive chores of potrf_dgemm in a process with
+ * GPUs: a GEMM that a GPU takes runs on a GPU. PaRSEC runs the evaluates in
+ * chore order, GPU chores first, and drops a chore from the task's chore mask
+ * when its evaluate declines, so a GPU chore still in the mask has accepted
+ * the task. The CPU then declines it if the taskpool has a device of that
+ * type. Without this, PaRSEC picks the CPU for such a GEMM when C has no
+ * preferred GPU (the bind tasks give one to the tiles in the band) and its
+ * load balancing may use the CPU (device_load_balance_allow_cpu). A GEMM that
+ * every GPU evaluate declines (outside the dense band) stays on the CPU. */
+static parsec_hook_return_t hicma_potrf_gemm_cpu_evaluate(const parsec_task_t *task)
+{
+    const parsec_task_class_t *tc = task->task_class;
+    const uint8_t gpu_types = PARSEC_DEV_CUDA | PARSEC_DEV_HIP;
+    uint8_t accepted = 0;
+
+    for( uint32_t c = 0; PARSEC_DEV_NONE != tc->incarnations[c].type; c++ ) {
+        if( (tc->incarnations[c].type & gpu_types) && NULL != tc->incarnations[c].hook
+            && (task->chore_mask & (1U << c)) ) {
+            accepted |= tc->incarnations[c].type & gpu_types;
+        }
+    }
+    if( 0 == accepted ) {
+        return PARSEC_HOOK_RETURN_DONE;
+    }
+    for( int i = 0; i < (int)parsec_mca_device_enabled(); i++ ) {
+        if( !(task->taskpool->devices_index_mask & (1 << i)) ) continue;
+        parsec_device_module_t *dev = parsec_mca_device_get(i);
+        if( NULL != dev && (dev->type & accepted) ) {
+            return PARSEC_HOOK_RETURN_NEXT;
+        }
+    }
+    return PARSEC_HOOK_RETURN_DONE;
+}
+
 int hicma_potrf_install_hooks(parsec_taskpool_t *tp,
                               hicma_parsec_params_t *params,
                               parsec_tiled_matrix_t *descA,
@@ -311,6 +345,17 @@ int hicma_potrf_install_hooks(parsec_taskpool_t *tp,
                 tp->taskpool_name ? tp->taskpool_name : "?");
         return -1;
     }
+    /* The GEMM's CPU chores get hicma_potrf_gemm_cpu_evaluate below; none of
+     * the generated tables has an evaluate there to lose */
+    const uint8_t host_types = PARSEC_DEV_CPU | PARSEC_DEV_RECURSIVE;
+    const int gemm_gpu_only = nb_gpus > 0 && NULL != eval_gpu && NULL != eval_gpu->gemm;
+    for( const __parsec_chore_t *c = tc[3]->incarnations; gemm_gpu_only && PARSEC_DEV_NONE != c->type; c++ ) {
+        if( (c->type & host_types) && NULL != c->evaluate ) {
+            fprintf(stderr, "hicma_potrf_install_hooks: taskpool %s: potrf_dgemm already has a CPU evaluate\n",
+                    tp->taskpool_name ? tp->taskpool_name : "?");
+            return -1;
+        }
+    }
     if( 0 != hicma_potrf_remember(&entry) ) {
         fprintf(stderr, "hicma_potrf_install_hooks: more than %d Cholesky taskpools are live\n",
                 HICMA_POTRF_MAX_TASKPOOLS);
@@ -338,6 +383,15 @@ int hicma_potrf_install_hooks(parsec_taskpool_t *tp,
         }
         *orig_complete[j] = tc[j]->complete_execution;
         tc[j]->complete_execution = completes[j];
+    }
+
+    /* GEMMs a GPU accepts never run on the CPU (hicma_potrf_gemm_cpu_evaluate) */
+    if( gemm_gpu_only ) {
+        for( __parsec_chore_t *c = (__parsec_chore_t *)tc[3]->incarnations; PARSEC_DEV_NONE != c->type; c++ ) {
+            if( c->type & host_types ) {
+                c->evaluate = hicma_potrf_gemm_cpu_evaluate;
+            }
+        }
     }
 
     if( NULL != tc_send && nb_gpus > 0 && NULL != eval_gpu && NULL != eval_gpu->trsm_send ) {

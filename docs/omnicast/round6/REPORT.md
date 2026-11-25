@@ -40,6 +40,12 @@ Scripts and data are next to this file.
   the tile, or overwrote GPU or host memory, in the parent too. PaRSEC's own
   placement never puts such a GEMM on the CPU, so only forced placements
   showed it. Other runs keep their bits.
+- **GEMMs stay on the GPU (section 8).** In a process with GPUs, a GEMM that
+  a GPU accepts now never runs on the CPU. Before, that rested on the
+  preferred GPU the warmup gives each tile: without it, and with the CPU
+  allowed, PaRSEC put every kind-10 GEMM on the CPU (3 to 6 times slower in
+  one process).
+  Default runs keep their bits.
 - **Time: about 1 % at N = 16384, nothing measurable at N = 32768.**
   Interleaved A/B, parent / new, median of paired per-round ratios with a
   bootstrap 95 % interval:
@@ -176,7 +182,7 @@ every GEMM is inside the dense band, so PaRSEC runs it on a GPU (its
 default, `device_load_balance_allow_cpu=0`, takes the CPU only when no GPU
 can run the task). With `device_load_balance_allow_cpu=1` the CPU ran none
 of them either in these runs: PaRSEC picks the GPU that holds or prefers a
-task's C tile before it compares loads.
+task's C tile before it compares loads. (Section 8 makes this a rule.)
 `cpu_gemm_debug.patch` (debug only) fixes the placement instead
 (`HICMA_DEBUG_CPU_GEMM=1`: every GEMM on the CPU; `=2`: the GEMMs of odd
 k; `=3`: those of k = 0) and counts the CPU GEMMs by decision. `verify_gpu.sh` ran on leconte
@@ -215,12 +221,13 @@ a real fault with `--adaptive_decision 1`, fixed in section 7.
 - **MKL's packing (7 % of the samples).** The packed-GEMM API changes the
   bits on Broadwell (section 2).
 - **A GEMM on the CPU after a GPU GEMM on the same tile** would read a stale
-  host copy: the GPU GEMMs do not push C back (section 5). PaRSEC's placement
-  never does this; a placement that did would need the push-back.
+  host copy: the GPU GEMMs do not push C back (section 5). Since section 8
+  no GEMM that a GPU accepts runs on the CPU, so only a forced placement
+  can do this.
 - **FP16 on the CPU and on the GPU.** Under `ACC_DP` the emulated-FP16 CPU
   GEMM widens an FP32 C to FP64, where the GPU FP16 GEMM accumulates it in
   FP32. Both are correct, but a tile's precision then depends on where its
-  GEMMs ran.
+  GEMMs ran. Since section 8 the CPU branch runs only in forced placements.
 
 ## 7. CPU GEMMs on FP32 tiles (fixed)
 
@@ -258,7 +265,9 @@ The fix, in the style of the GPU GEMM's own FP64 promotion:
 In a process with GPUs, default runs never widen a tile on the CPU. Kind
 10 puts every GEMM inside the band on a GPU, and with
 `device_load_balance_allow_cpu=1` PaRSEC put none on the CPU either, up to
-N = 32768. Every GPU stage-in of these tasks pays one size lookup.
+N = 32768. Every GPU stage-in of these tasks pays one size lookup. Section 8
+makes the GPU placement a rule; without the warmup's preferred GPUs PaRSEC
+put every GEMM on the CPU, and those runs were right with this fix.
 
 `verify_widen.sh` on leconte, parent ffcf1cb against 8e8fde8 with the fix,
 both with the hash and debug patches (`data/widen_fix_leconte.txt`):
@@ -275,6 +284,53 @@ runs of section 5. CTest
 `-L hicma` passes 55/55 on leconte (`data/ctest_gpu_leconte.txt`) and 30/30
 in the CPU-only build on caffeine (`data/ctest_caffeine_widen.txt`).
 
+## 8. GEMMs stay on the GPU
+
+2026-11-25, on fa915ce. In a process with GPUs, every GEMM that a GPU
+accepts runs on a GPU. `hicma_potrf_install_hooks`, shared by the Cholesky
+kinds, gives the CPU and recursive chores of `potrf_dgemm` an evaluate,
+`hicma_potrf_gemm_cpu_evaluate`. PaRSEC runs the evaluates in chore order,
+GPU chores first, and drops a chore from the task's chore mask when its
+evaluate declines. So a GPU chore still in the mask has accepted the task,
+and the CPU declines it if the taskpool has a device of that type. The
+hook is installed when the process has GPUs and the kind has a GPU GEMM
+evaluate: kinds 1, 2, 5, 8, 9 and 10. A GEMM that every GPU evaluate
+declines (outside the dense band) still runs on the CPU, and so do the
+GEMMs that `cpu_gemm_debug.patch` forces there, since it makes the GPU
+evaluate decline. POTRF, TRSM and SYRK keep PaRSEC's placement.
+
+Before, the GPU placement came from PaRSEC's device selection: it takes the
+preferred device of the tile a task writes first, and the warmup and
+`potrf_bind_A` give every tile of the band a preferred GPU. The CPU could
+get a GEMM only if it was allowed (`device_load_balance_allow_cpu=1`) and C
+had no preferred GPU.
+
+`verify_gpu_only.sh` on leconte (`data/gpu_only_leconte.txt`): one CUDA
+build of fa915ce with the change, the hash and debug patches, and
+`gpu_only_debug.patch`, two debug switches: `HICMA_DEBUG_NO_GUARD=1` turns
+the new evaluate off (the code before), `HICMA_DEBUG_NO_ADVICE=1` gives no
+tile a preferred GPU. Each configuration ran with the guard off and then
+on, from the same binary: kind 10 1e-3 and runtime decisions,
+`--adaptive_decision` 0 and 1, N = 16384 in one process and N = 8192 in
+two. Every run passed the residual check.
+
+| placement | runs | guard off | guard on |
+|---|---|---|---|
+| default; CPU allowed; one process with two GPUs | 26 | no CPU GEMM | the same hashes |
+| CPU allowed, no preferred GPU | 16 | every GEMM on the CPU (4960 of 4960 at N = 16384, all 560 with two processes, 41664 at N = 32768): 1.8 s at N = 16384, 0.55 s with two processes, 13.5 s at N = 32768 | no CPU GEMM: 0.47 to 0.58 s, 0.27 and 0.44 s, 2.15 s |
+| GEMMs forced onto the CPU (`=1`, `=3`) | 8 | the forced CPU GEMMs | the same hashes and CPU GEMM counts |
+| no GPU | 2 | | the same hashes (those of section 5 on caffeine) |
+
+With no preferred GPU the hashes of the two arms differ, as CPU and GPU
+GEMMs round differently. They also differ from the default placement's,
+probably because PaRSEC then places POTRF, TRSM and SYRK by load. So
+PaRSEC alone could make the CPU-then-GPU placements of section 7; with
+`--adaptive_decision 1` and its fix, those runs were right.
+Skipping the advice in `potrf_bind_A` alone changed nothing, because the
+warmup's advice stays (16 more runs in the data, the same hashes and no
+CPU GEMM in both arms). CTest `-L hicma` passes 55/55 on leconte and 30/30
+in the CPU-only build on caffeine.
+
 ## Files
 
 - `bench/accbench.c`: loop variants, MKL panel and packed-API bit checks.
@@ -290,6 +346,8 @@ in the CPU-only build on caffeine (`data/ctest_caffeine_widen.txt`).
   both revisions with that patch and `../round5/factor_hash.patch`.
 - `verify_widen.sh` (with `run1.sh`, one run): the runs of section 7.
   `data/trace_widen_N2048.txt` comes from a build with extra prints.
+- `verify_gpu_only.sh` and `gpu_only_debug.patch` (the guard and advice
+  switches, on top of `cpu_gemm_debug.patch`): the runs of section 8.
 - `data/`: the outputs quoted above. `ab_pooled_caffeine_N16384.txt` joins
   the 4 rounds of `ab_final4_caffeine_N16384.txt` and the parent/new arms of
   the 8 confirmatory rounds.

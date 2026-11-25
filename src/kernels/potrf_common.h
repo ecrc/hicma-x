@@ -51,8 +51,12 @@ typedef struct hicma_potrf_evaluate_s {
  * one (the chore types are read from the generated table, not assumed). The
  * original hooks are kept in params->wrap_* and params->wrap_*_complete.
  * eval_gpu may be NULL; its entries are installed on the GPU chores only.
+ * When nb_gpus > 0 and eval_gpu->gemm is set, the CPU and recursive chores of
+ * potrf_dgemm decline every GEMM that a GPU chore accepted: in a process with
+ * GPUs, all GEMMs a GPU can run go to a GPU, never to the CPU.
  *
- * @return 0, or -1 if a task class is missing or too many taskpools are live
+ * @return 0, or -1 if a task class is missing, too many taskpools are live,
+ *         or a potrf_dgemm CPU chore already has an evaluate
  */
 int hicma_potrf_install_hooks(parsec_taskpool_t *tp,
                               hicma_parsec_params_t *params,

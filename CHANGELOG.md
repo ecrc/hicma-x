@@ -207,6 +207,16 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   crashed, and is now right (residuals as with every GEMM on the GPU). Other
   runs give the same bits as before. Report in
   `docs/omnicast/round6/REPORT.md`, section 7.
+- Cholesky with GPUs (kinds 1, 2, 5, 8, 9, 10): a GEMM that a GPU accepts
+  now always runs on a GPU. The CPU and recursive chores of `potrf_dgemm`
+  get an evaluate, `hicma_potrf_gemm_cpu_evaluate`, installed by
+  `hicma_potrf_install_hooks` in a process with GPUs, that declines such a
+  GEMM; a GEMM every GPU evaluate declines (outside the dense band) still
+  runs on the CPU. Before, the GPU placement rested on the preferred GPU the
+  warmup and `potrf_bind_A` give each tile: without it and with
+  `device_load_balance_allow_cpu=1`, PaRSEC put every kind-10 GEMM on the
+  CPU (3 to 6 times slower in one process on a V100 node). Default runs give
+  the same bits. Report in `docs/omnicast/round6/REPORT.md`, section 8.
 
 ### Architecture and maintenance
 
