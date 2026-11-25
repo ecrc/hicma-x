@@ -40,7 +40,11 @@ right after it is computed: bit-identical (MKL gives the same FP32 sums for
 these panels; OpenBLAS and BLIS do not, so they keep one GEMM), about 1 %
 faster at N = 16384 and no measurable change at N = 32768 on a Broadwell
 node. Measurements, the BLAS bit checks and the variants that did not help:
-[`round6/REPORT.md`](round6/REPORT.md).
+[`round6/REPORT.md`](round6/REPORT.md). A check of the emulated-FP16 CPU
+branch on a GPU node, with GEMMs forced onto the CPU, found that widening an
+FP32 tile on the CPU broke the next GPU task on it (wrong span, GPU copies the
+warmup allocated at the FP32 size, FP32-sized host buffers); fixed, section 7
+of that report.
 
 ## Converting once on the CPU (round 5)
 

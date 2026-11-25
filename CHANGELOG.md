@@ -192,6 +192,21 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   GEMM are scaled by powers of two from their Frobenius norms and the GEMM's
   alpha divides the scales out (exact): 1.5e-8 and 9.1e-11. CUDA builds are
   unchanged.
+- Kind 10 with GPUs, a runtime CPU GEMM on an FP32 tile: widening the tile
+  to FP64 left its span (the bytes PaRSEC copies) at the FP32 size, so the
+  next GPU task on it got half the tile; restoring the span alone would make
+  PaRSEC copy the FP64 tile into a GPU copy the warmup allocated at the FP32
+  size, over the neighbouring tile; and with `--adaptive_memory` the
+  widening overflowed the FP32-sized host buffer. The CPU GEMM now restores
+  the span and moves C to an FP64-sized host buffer when needed, and the GPU
+  GEMM, TRSM and SYRK grow a GPU copy smaller than the span before PaRSEC's
+  stage-in (`hicma_gpu_stage_in`). PaRSEC's own placement puts no kind-10
+  GEMM on the CPU in a process with GPUs (also with
+  `device_load_balance_allow_cpu=1` in the runs made); with GEMMs forced onto
+  the CPU and `--adaptive_decision 1` the factor was wrong or the run
+  crashed, and is now right (residuals as with every GEMM on the GPU). Other
+  runs give the same bits as before. Report in
+  `docs/omnicast/round6/REPORT.md`, section 7.
 
 ### Architecture and maintenance
 

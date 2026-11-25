@@ -1,0 +1,73 @@
+diff --git a/src/core/hicma_parsec_core.c b/src/core/hicma_parsec_core.c
+index c291e80..430dfa1 100644
+--- a/src/core/hicma_parsec_core.c
++++ b/src/core/hicma_parsec_core.c
+@@ -9,6 +9,7 @@
+ 
+ #include "hicma_parsec.h"
+ #include <pthread.h>
++#include <unistd.h>   /* getpid: debug only, cpu_gemm_debug.patch */
+ #include "hicma_kernel_time.h"
+ #include "potrf_L_dense_mp_gpu_fp8_adaptive.h"
+ 
+@@ -1907,6 +1908,17 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_cpu( parsec_tiled_matrix_t* des
+  * @param[in] Arank Rank of matrix A (unused for dense matrices)
+  * @param[in] Brank Rank of matrix B (unused for dense matrices)
+  */
++/* Debug only (round6/cpu_gemm_debug.patch, not committed): the runtime CPU
++ * GEMMs by decision, printed at exit when HICMA_DEBUG_CPU_GEMM is set */
++static long hicma_dbg_cpu_gemms[8];
++static int hicma_dbg_cpu_gemms_registered;
++static void hicma_dbg_cpu_gemms_print(void)
++{
++    fprintf(stderr, "CPU_RUNTIME_GEMMS pid %d DP %ld SP %ld HP %ld FP8 %ld\n", (int)getpid(),
++            hicma_dbg_cpu_gemms[DENSE_DP], hicma_dbg_cpu_gemms[DENSE_SP],
++            hicma_dbg_cpu_gemms[DENSE_HP], hicma_dbg_cpu_gemms[DENSE_FP8]);
++}
++
+ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_tiled_matrix_t* descA,
+         parsec_tiled_matrix_t* descRank,
+         hicma_parsec_params_t *params_tlr,
+@@ -1953,6 +1965,14 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
+         }
+     }
+ 
++    if( new_decision < 8 ) {
++        __atomic_fetch_add(&hicma_dbg_cpu_gemms[new_decision], 1, __ATOMIC_RELAXED);
++        if( !__atomic_exchange_n(&hicma_dbg_cpu_gemms_registered, 1, __ATOMIC_RELAXED)
++                && NULL != getenv("HICMA_DEBUG_CPU_GEMM") ) {
++            atexit(hicma_dbg_cpu_gemms_print);
++        }
++    }
++
+     if(params_tlr->verbose > 1) {
+         if( DENSE_DP == new_decision ) {
+             params_tlr->nb_gemms[DENSE_DP*counter_stride+tid] += 1;
+diff --git a/src/kernels/potrf_L_dense_mp_gpu_fp8_adaptive_wrapper.c b/src/kernels/potrf_L_dense_mp_gpu_fp8_adaptive_wrapper.c
+index 63bee01..9d078ba 100644
+--- a/src/kernels/potrf_L_dense_mp_gpu_fp8_adaptive_wrapper.c
++++ b/src/kernels/potrf_L_dense_mp_gpu_fp8_adaptive_wrapper.c
+@@ -148,6 +148,23 @@ static parsec_hook_return_t evaluate_gpu_gemm(const parsec_task_t* task) {
+     int band_size_dense = ((__parsec_potrf_L_dense_mp_gpu_fp8_adaptive_potrf_dgemm_task_t *)task)->locals.band_size_dense_local.value;
+     (void)k;
+ 
++    /* Debug only (round6/cpu_gemm_debug.patch, not committed): with
++     * HICMA_DEBUG_CPU_GEMM=1 every GEMM runs on the CPU, with =2 the GEMMs of
++     * odd k, with =3 those of k == 0; a fixed placement, so runs of two builds
++     * compare bit for bit. =2 breaks PaRSEC's rule that a GPU task's output
++     * read by a CPU task is pushed back to the host first (GPU then CPU on one
++     * C), so its factors are wrong; =1 and =3 only go from the CPU to a GPU */
++    {
++        static int dbg_mode = -1;
++        if( dbg_mode < 0 ) {
++            const char *s = getenv("HICMA_DEBUG_CPU_GEMM");
++            dbg_mode = s ? atoi(s) : 0;
++        }
++        if( 1 == dbg_mode || (2 == dbg_mode && (k & 1)) || (3 == dbg_mode && 0 == k) ) {
++            return PARSEC_HOOK_RETURN_NEXT;
++        }
++    }
++
+     // Use GPU for operations within the dense band region
+     if( m-n < band_size_dense ) {
+         __parsec_potrf_L_dense_mp_gpu_fp8_adaptive_potrf_dgemm_task_t *t =

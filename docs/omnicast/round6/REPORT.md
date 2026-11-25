@@ -32,7 +32,14 @@ Scripts and data are next to this file.
   one GEMM, as before.
 - **Correctness.** The factor hash equals the parent's on 1, 2 and 4 MPI
   processes, for runtime decisions and for kind 10 at 1e-3. CTest
-  `-L hicma` passes 30/30 in the CPU-only build.
+  `-L hicma` passes 30/30 in the CPU-only build. On a V100 node, with the
+  GEMMs forced onto the CPU, the emulated-FP16 branch gives the parent's
+  hashes as well.
+- **A bug the GPU check found, fixed (section 7).** In a process with GPUs,
+  a CPU GEMM that widened an FP32 tile to FP64 handed the next GPU task half
+  the tile, or overwrote GPU or host memory, in the parent too. PaRSEC's own
+  placement never puts such a GEMM on the CPU, so only forced placements
+  showed it. Other runs keep their bits.
 - **Time: about 1 % at N = 16384, nothing measurable at N = 32768.**
   Interleaved A/B, parent / new, median of paired per-round ratios with a
   bootstrap 95 % interval:
@@ -129,8 +136,8 @@ in cache between its GEMMs. Not adopted.
   - FP32 GEMMs.
   - Emulated FP16 (`!HAVE_HP_CPU`). Its C conversion for the first GEMM
     now comes before the SGEMM; they touch different memory. The CPU
-    picks FP16 only when the process has GPUs, so the hash check below
-    does not cover this branch.
+    picks FP16 only in a process with GPUs, and only for a GEMM that runs
+    on the CPU: section 5 checks it on a GPU node.
 - `ACC_DP_PANEL` defaults to 256 with MKL and 0 otherwise. The top-level
   `CMakeLists.txt` sets `HICMA_BLAS_IS_MKL` when `mkl_core` or `mkl_rt` is
   among the libraries of the `LAPACKE::` targets; `src/CMakeLists.txt` then
@@ -161,6 +168,43 @@ CTest `-L hicma`: 30/30 in the CPU-only build on caffeine
 (`data/ctest_caffeine.txt`). The file also compiles with the flags of the
 CUDA build, without warnings.
 
+### The emulated-FP16 branch on a GPU node
+
+The runs above never pick FP16. The CPU takes that branch only in a
+process with GPUs, and only for a GEMM that runs on the CPU. In kind 10
+every GEMM is inside the dense band, so PaRSEC runs it on a GPU (its
+default, `device_load_balance_allow_cpu=0`, takes the CPU only when no GPU
+can run the task). With `device_load_balance_allow_cpu=1` the CPU ran none
+of them either in these runs: PaRSEC picks the GPU that holds or prefers a
+task's C tile before it compares loads.
+`cpu_gemm_debug.patch` (debug only) fixes the placement instead
+(`HICMA_DEBUG_CPU_GEMM=1`: every GEMM on the CPU; `=2`: the GEMMs of odd
+k; `=3`: those of k = 0) and counts the CPU GEMMs by decision. `verify_gpu.sh` ran on leconte
+(V100, Broadwell host, MKL, so 256-column panels), both builds with this
+patch and the hash patch, each case twice (`data/gpu_fp16_branch_leconte.txt`).
+With every GEMM on the CPU:
+
+| run | CPU GEMMs: FP16 / FP32 / FP64 | factor hash, parent and new, both runs | residual (all GEMMs on the GPU) |
+|---|---|---|---|
+| kind 10 1e-3, 1 process, N = 16384 | 4928 / 32 / 0 | ec414125a43934cc | 1.03e-5 (1.05e-5) |
+| runtime decisions, 1 process, N = 16384 | 2832 / 1839 / 289 | fff31805ac879fb3 | 3.79e-8 (3.79e-8) |
+| kind 10 1e-3, 2 processes, N = 8192 | 555 / 5 / 0 | 699b4888..., 246d0646... | 1.15e-5 (1.15e-5) |
+| runtime decisions, 2 processes, N = 8192 | 174 / 305 / 81 | f7d1e650..., 4bebd964... | 1.58e-8 (1.46e-8) |
+
+The residuals of runtime decisions are above the tester's default bound
+(`--fixedacc`, 1e-8) with every GEMM on the GPU too; the CTest case uses
+1e-7. The default placement and the load-balanced one also give the same
+hashes in both builds.
+
+With the GEMMs of odd k on the CPU (`=2`), the hashes match as well, but
+the factor is wrong in both builds (residual 89 to 6e74). That placement is
+not a valid test. It hands C from a GPU GEMM to a CPU GEMM, and a CPU task
+reads the host copy, which a GPU task updates only when it pushes its
+output back. Kind 10's GEMMs never push C back, since PaRSEC sends a GEMM to
+the GPU that holds its C, so the CPU GEMM read a stale tile (a trace showed
+it). The valid placements, CPU GEMMs and then GPU tasks (`=1`, `=3`), found
+a real fault with `--adaptive_decision 1`, fixed in section 7.
+
 ## 6. Not done, and follow-ups
 
 - **Fewer passes over C.** C's 4 MB of FP64 traffic per GEMM is the cost.
@@ -170,6 +214,66 @@ CUDA build, without warnings.
   holds 1 MB per tile between GEMMs.
 - **MKL's packing (7 % of the samples).** The packed-GEMM API changes the
   bits on Broadwell (section 2).
+- **A GEMM on the CPU after a GPU GEMM on the same tile** would read a stale
+  host copy: the GPU GEMMs do not push C back (section 5). PaRSEC's placement
+  never does this; a placement that did would need the push-back.
+- **FP16 on the CPU and on the GPU.** Under `ACC_DP` the emulated-FP16 CPU
+  GEMM widens an FP32 C to FP64, where the GPU FP16 GEMM accumulates it in
+  FP32. Both are correct, but a tile's precision then depends on where its
+  GEMMs ran.
+
+## 7. CPU GEMMs on FP32 tiles (fixed)
+
+With `--adaptive_decision 1`, the forced placements that hand C from the
+CPU to a GPU (`=1`, `=3`) failed in the parent ffcf1cb (8e8fde8 has the
+same code there). All three faults are in the step where a runtime CPU GEMM widens an FP32 C to
+FP64: the FP64 GEMM, and the first update of the emulated-FP16 GEMM under
+`ACC_DP`.
+
+- **The span.** `convert_d2s` stores the tiles decided FP32, FP16 or FP8 in
+  FP32 and sets their span, the byte count PaRSEC uses for every copy of a
+  tile, to the FP32 size. The CPU widened C in place but left the span, so
+  the next GPU task on C (a GEMM or the TRSM) got half the FP64 tile.
+- **GPU copies at the FP32 span.** The warmup stages every tile on its GPU
+  after `convert_d2s`, so a GPU holds an FP32-sized copy of these tiles.
+  PaRSEC reuses an existing GPU copy without checking its size. With the
+  span restored, it copied the FP64 tile into that copy and over the next
+  tile in GPU memory. At N = 2048 the stage-in of C(3,2) overwrote the panel
+  tile A(3,1) 1 MB above it (`data/trace_widen_N2048.txt`).
+- **Host buffers.** With `--adaptive_memory` and without `--check`,
+  `convert_d2s` gives these tiles FP32-sized host buffers, and the in-place
+  widening wrote past them (segmentation faults).
+
+The fix, in the style of the GPU GEMM's own FP64 promotion:
+
+- `hicma_cpu_promote_tile_fp64` widens C, moves it to an FP64-sized host
+  buffer when its buffer is FP32-sized, and restores the span. The runtime
+  CPU GEMM gets C's data copy for this.
+- `hicma_gpu_stage_in` is the stage-in of the GPU GEMM, TRSM and SYRK of
+  kind 10, the tasks that read such tiles: C, or a panel operand staged onto
+  another GPU of the process. It grows a GPU copy smaller than the span,
+  then runs PaRSEC's stage-in. It reads the copy's size from PaRSEC's zone
+  allocator.
+
+In a process with GPUs, default runs never widen a tile on the CPU. Kind
+10 puts every GEMM inside the band on a GPU, and with
+`device_load_balance_allow_cpu=1` PaRSEC put none on the CPU either, up to
+N = 32768. Every GPU stage-in of these tasks pays one size lookup.
+
+`verify_widen.sh` on leconte, parent ffcf1cb against 8e8fde8 with the fix,
+both with the hash and debug patches (`data/widen_fix_leconte.txt`):
+
+| runs | parent | fix |
+|---|---|---|
+| `--adaptive_decision 1`, placements 1 and 3, 1 and 2 processes, kind 10 1e-3 and runtime decisions (8) | wrong (residual 78 to 3e53) or aborted | right: 1.03e-5 to 1.14e-5 for kind 10, 1.46e-8 to 3.79e-8 for runtime decisions, as with every GEMM on the GPU |
+| the same, one process with two GPUs (4) | wrong or aborted | right, the same bits as with one GPU |
+| `--adaptive_memory 1`, no `--check`, placements 1 and 3 (4) | segmentation fault | completes |
+| `--adaptive_decision 0` with placements 1 and 3; every GEMM on the GPU; PaRSEC load balancing; no GPU (29 pairs) | | same hashes |
+
+The CPU-only runs with `--adaptive_decision 0` give the hashes of the caffeine
+runs of section 5. CTest
+`-L hicma` passes 55/55 on leconte (`data/ctest_gpu_leconte.txt`) and 30/30
+in the CPU-only build on caffeine (`data/ctest_caffeine_widen.txt`).
 
 ## Files
 
@@ -181,6 +285,11 @@ CUDA build, without warnings.
   `../round5/ab.sh`; statistics with `../round5/ab_stats.py`).
   `verify_acc.sh`, `verify_final.sh`: factor hashes. `prof.sh`: perf
   profiles.
+- `verify_gpu.sh` (with `gpu_of_rank.sh`, one GPU per rank) and
+  `cpu_gemm_debug.patch`: the GPU-node check of section 5, CUDA builds of
+  both revisions with that patch and `../round5/factor_hash.patch`.
+- `verify_widen.sh` (with `run1.sh`, one run): the runs of section 7.
+  `data/trace_widen_N2048.txt` comes from a build with extra prints.
 - `data/`: the outputs quoted above. `ab_pooled_caffeine_N16384.txt` joins
   the 4 rounds of `ab_final4_caffeine_N16384.txt` and the parent/new arms of
   the 8 confirmatory rounds.

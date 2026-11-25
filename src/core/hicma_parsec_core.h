@@ -399,6 +399,8 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_cpu(parsec_tiled_matrix_t* desc
  * @param[in] p_work_uv_sp Memory pool for UV single precision workspace
  * @param[in] p_work_mbr Memory pool for MBR workspace
  * @param[in] p_work_rr Memory pool for RR workspace
+ * @param[in] C_copy The data copy of C: an FP32 C that this GEMM widens to
+ *                   FP64 may move to a larger buffer, and its span is restored
  * @param[in] C Result matrix (dense)
  * @param[in] A Input matrix A (dense)
  * @param[in] B Input matrix B (dense)
@@ -421,6 +423,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu(parsec_til
                                                      parsec_memory_pool_t *p_work_uv_sp,
                                                      parsec_memory_pool_t *p_work_mbr,
                                                      parsec_memory_pool_t *p_work_rr,
+                                                     parsec_data_copy_t *C_copy,
                                                      void *C, void *A, void *B,
                                                      int m, int n, int k,
                                                      int Crank, int Arank, int Brank,
@@ -713,6 +716,19 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu(void *this
                                                                       void *C, void *A, void *B, int m, int n, int k,
                                                                       int Crank, int Arank, int Brank,
                                                                       void *A_norm, void *B_norm);
+
+/**
+ * @brief Stage-in of the kind-10 GPU tasks that read tiles a CPU GEMM may have
+ *        widened to FP64 (potrf_dgemm, potrf_dtrsm and potrf_dsyrk)
+ *
+ * PaRSEC reuses a tile's existing GPU copy without checking its size and
+ * copies span bytes into it. A CPU GEMM that widens an FP32 tile to FP64
+ * grows span after a GPU allocated a copy at the FP32 size (the warmup stages
+ * every tile), so grow such a copy first, then run
+ * parsec_default_gpu_stage_in.
+ */
+int hicma_gpu_stage_in(parsec_gpu_task_t *gtask, uint32_t flow_mask,
+                       parsec_gpu_exec_stream_t *gpu_stream);
 
 /**
  * @brief GPU implementation of GEMM with dense C, low-rank A, dense B

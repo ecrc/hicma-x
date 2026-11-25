@@ -473,7 +473,7 @@ CTL ctl_left  -> (params_tlr->left_looking > 0)? ctl_left potrf_dgemm(m, k+param
 ; (m >= (descA->mt - PRI_CHANGE)) ? (descA->mt - m) * (descA->mt - m) * (descA->mt - m) + 3 * ((2 * descA->mt) - k - m - 1) * (m - k) : PRI_MAX
 
 
-BODY [type=CUDA]
+BODY [type=CUDA stage_in=hicma_gpu_stage_in]
 {
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
     /* Skip GPU execution for low-rank blocks */
@@ -543,7 +543,7 @@ BODY [type=CUDA]
 }
 END
 
-BODY [type=HIP]
+BODY [type=HIP stage_in=hicma_gpu_stage_in]
 {
 #if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
     /* Skip GPU execution for low-rank blocks */
@@ -936,7 +936,7 @@ CTL ctl -> (params_tlr->lookahead == 1 && m == k+1)? ctl potrf_dtrsm(params_tlr-
 ; (m >= (descA->mt - PRI_CHANGE)) ? (descA->mt - m) * (descA->mt - m) * (descA->mt - m) + 3 * (m - k) : PRI_MAX
 
 
-BODY [type=CUDA]
+BODY [type=CUDA stage_in=hicma_gpu_stage_in]
 {
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
     /* Extract rank information for low-rank blocks */
@@ -954,7 +954,7 @@ BODY [type=CUDA]
 }
 END
 
-BODY [type=HIP]
+BODY [type=HIP stage_in=hicma_gpu_stage_in]
 {
 #if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
     /* Extract rank information for low-rank blocks */
@@ -1108,7 +1108,7 @@ CTL ctl_left <- (params_tlr->left_looking > 0 && k == 0 && n >= params_tlr->Q*pa
 ; (m >= (descA->mt - PRI_CHANGE)) ? (descA->mt - m) * (descA->mt - m) * (descA->mt - m) + 3 * ((2 * descA->mt) - m - n - 3) * (m - n) + 6 * (m - k) : PRI_MAX
 
 
-BODY [type=CUDA]
+BODY [type=CUDA stage_in=hicma_gpu_stage_in]
 {
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
     /* Skip GPU execution for low-rank C blocks */
@@ -1173,7 +1173,7 @@ BODY [type=CUDA]
 }
 END
 
-BODY [type=HIP]
+BODY [type=HIP stage_in=hicma_gpu_stage_in]
 {
 #if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
     /* Skip GPU execution for low-rank C blocks */
@@ -1326,7 +1326,7 @@ BODY
             hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( descA, descRank, params_tlr, es,
                     p_work, p_work_full_dp, p_work_full_sp, p_work_full_hp,
                     p_work_uv_dp, p_work_uv_sp, p_work_mbr, p_work_rr,
-                    C, A, B, m, n, k, Crank, Arank, Brank, A_norm, B_norm);
+                    this_task->data._f_C.data_out, C, A, B, m, n, k, Crank, Arank, Brank, A_norm, B_norm);
         } else {
             hicma_parsec_core_gemm_denseC_denseA_denseB_cpu( descA, descRank, params_tlr, es,
                     p_work, p_work_full_dp, p_work_full_sp, p_work_full_hp,

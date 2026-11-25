@@ -638,6 +638,55 @@ static int hicma_reallocate_tile_on_gpu(parsec_device_cuda_module_t *cuda_device
     *new_ptr_out = new_ptr;
     return 0;
 }
+
+#if !defined(PARSEC_GPU_ALLOC_PER_TILE)
+/* Bytes of the zone allocation that starts at ptr; 0 if none does */
+static size_t hicma_gpu_zone_bytes(const zone_malloc_t *zone, const void *ptr)
+{
+    if( NULL == zone || NULL == ptr ) {
+        return 0;
+    }
+    ptrdiff_t off = (const char *)ptr - zone->base;
+    if( off < 0 || 0 != off % (ptrdiff_t)zone->unit_size ) {
+        return 0;
+    }
+    size_t tid = (size_t)off / zone->unit_size;
+    if( tid >= (size_t)zone->max_segment ) {
+        return 0;
+    }
+    const segment_t *s = &zone->segments[tid];
+    return (SEGMENT_FULL == s->status) ? (size_t)s->nb_units * zone->unit_size : 0;
+}
+#endif
+
+/* See hicma_parsec_core.h. The copy's old content is stale (the stage-in
+ * replaces it), so it is not kept. */
+int hicma_gpu_stage_in(parsec_gpu_task_t *gtask, uint32_t flow_mask,
+                       parsec_gpu_exec_stream_t *gpu_stream)
+{
+#if !defined(PARSEC_GPU_ALLOC_PER_TILE)
+    parsec_task_t *task = gtask->ec;
+    for( uint32_t i = 0; i < gtask->nb_flows; i++ ) {
+        if( !(flow_mask & (1U << i)) ) continue;
+        parsec_data_copy_t *dst = task->data[i].data_out;
+        if( NULL == dst || NULL == dst->original ) continue;
+        parsec_device_module_t *dev = parsec_mca_device_get(dst->device_index);
+        if( NULL == dev || !PARSEC_DEV_IS_GPU(dev->type) ) continue;
+        parsec_device_gpu_module_t *gpu_device = (parsec_device_gpu_module_t *)dev;
+        size_t need = dst->original->span;
+        size_t have = hicma_gpu_zone_bytes(gpu_device->memory, dst->device_private);
+        if( 0 == have || have >= need ) continue;
+        zone_free(gpu_device->memory, dst->device_private);
+        dst->device_private = hicma_gpu_zone_malloc_with_evict(gpu_device, gtask, dst, need);
+        if( NULL == dst->device_private ) {
+            fprintf(stderr, "Failed to grow the GPU copy of a tile from %zu to %zu bytes before its stage-in\n",
+                    have, need);
+            return -1;
+        }
+    }
+#endif
+    return parsec_default_gpu_stage_in(gtask, flow_mask, gpu_stream);
+}
 #endif /* PARSEC_HAVE_DEV_CUDA_SUPPORT || PARSEC_HAVE_DEV_HIP_SUPPORT */
 
 /* Host buffers replaced by an FP64 promotion. Freeing pinned memory
@@ -677,6 +726,24 @@ void hicma_parsec_host_deferred_free_flush(void)
     pthread_mutex_unlock(&hicma_host_deferred_lock);
 }
 
+/* A host tile buffer of the given size: pinned when a GPU device is enabled,
+ * like the tiles convert_d2s allocates; NULL on failure */
+static void *hicma_host_tile_alloc(size_t bytes)
+{
+    void *ptr = NULL;
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+    if( parsec_device_cuda_enabled > 0 ) {
+        return (cudaSuccess == cudaMallocHost(&ptr, bytes)) ? ptr : NULL;
+    }
+#endif
+#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    if( parsec_device_hip_enabled > 0 ) {
+        return (hipSuccess == hipHostMalloc(&ptr, bytes, hipHostMallocDefault)) ? ptr : NULL;
+    }
+#endif
+    return malloc(bytes);
+}
+
 /* Grow the host copy of tile (m, n) to target_bytes for an FP64 promotion.
  * Only tiles that convert_d2s gave an SP-sized buffer need it: tiles still
  * in their FP64 generation buffer (tile_host_bytes == 0) are only downcast
@@ -697,31 +764,11 @@ static int hicma_reallocate_tile_on_cpu(hicma_parsec_params_t *params_tlr,
         return 0;  /* already large enough */
     }
 
-#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
-    if( parsec_device_cuda_enabled > 0 ) {
-        if( cudaSuccess != cudaMallocHost(&new_cpu_ptr, target_bytes) ) {
-            fprintf(stderr, "Failed to reallocate host C tile to FP64 in GEMM runtime decision (%d, %d, %d)\n",
-                    m, n, k);
-            return -1;
-        }
-    } else
-#endif
-#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
-    if( parsec_device_hip_enabled > 0 ) {
-        if( hipSuccess != hipHostMalloc(&new_cpu_ptr, target_bytes, hipHostMallocDefault) ) {
-            fprintf(stderr, "Failed to reallocate host C tile to FP64 in GEMM runtime decision (%d, %d, %d)\n",
-                    m, n, k);
-            return -1;
-        }
-    } else
-#endif
-    {
-        new_cpu_ptr = malloc(target_bytes);
-        if( NULL == new_cpu_ptr ) {
-            fprintf(stderr, "Failed to reallocate host C tile to FP64 in GEMM runtime decision (%d, %d, %d)\n",
-                    m, n, k);
-            return -1;
-        }
+    new_cpu_ptr = hicma_host_tile_alloc(target_bytes);
+    if( NULL == new_cpu_ptr ) {
+        fprintf(stderr, "Failed to reallocate host C tile to FP64 in GEMM runtime decision (%d, %d, %d)\n",
+                m, n, k);
+        return -1;
     }
 
     if( NULL != cpu_copy->device_private ) {
@@ -730,6 +777,50 @@ static int hicma_reallocate_tile_on_cpu(hicma_parsec_params_t *params_tlr,
     cpu_copy->device_private = new_cpu_ptr;
     *capacity = 0;  /* FP64-sized again */
     return 0;
+}
+
+/* Widen the FP32 tile C(m, n) to FP64 on the host, for a CPU GEMM: the CPU
+ * counterpart of the FP64 promotion of the GPU GEMM. Besides converting:
+ * - with adaptive_memory, convert_d2s may have left C in an FP32-sized host
+ *   buffer: C moves to an FP64-sized one;
+ * - the tile's span, the byte count PaRSEC uses for every later copy of it
+ *   (to a GPU, for one), may still be the FP32 size (convert_d2s, or a GPU
+ *   GEMM or TRSM that stored C in FP32): it is restored, or the next GPU
+ *   task on C would get half of the tile.
+ * A GPU may still hold a copy of C allocated at the FP32 span (the warmup
+ * stages every tile on its GPU after convert_d2s): PaRSEC would reuse it for
+ * the larger span, so the GPU tasks that read these tiles grow it first
+ * (hicma_gpu_stage_in).
+ * Returns C's buffer, a new one if C moved. */
+static void *hicma_cpu_promote_tile_fp64(hicma_parsec_params_t *params_tlr,
+                                         parsec_tiled_matrix_t *descA,
+                                         parsec_data_copy_t *C_copy, void *C,
+                                         int m, int n, int k, int counter_id)
+{
+    const size_t count = (size_t)descA->mb * descA->nb;
+    const size_t dp_bytes = count * sizeof(double);
+    size_t *capacity = &params_tlr->tile_host_bytes[hicma_tile_idx(params_tlr, m, n)];
+
+    hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
+    if( 0 != *capacity && *capacity < dp_bytes ) {
+        void *C_new = hicma_host_tile_alloc(dp_bytes);
+        if( NULL == C_new || NULL == C_copy || C_copy->device_private != C ) {
+            fprintf(stderr, "Failed to move host C tile to an FP64 buffer in CPU GEMM runtime decision (%d, %d, %d)\n",
+                    m, n, k);
+            exit(1);
+        }
+        HICMA_OMC( omc_convert(OMC_FP32, C, OMC_FP64, C_new, count, NULL) );
+        hicma_host_deferred_push(C);
+        C_copy->device_private = C_new;
+        *capacity = 0;  /* FP64-sized again */
+        C = C_new;
+    } else {
+        HICMA_OMC( omc_convert_inplace(OMC_FP32, OMC_FP64, C, count, NULL) );
+    }
+    if( NULL != C_copy && NULL != C_copy->original && C_copy->original->span < dp_bytes ) {
+        C_copy->original->span = dp_bytes;
+    }
+    return C;
 }
 
 /**
@@ -1919,6 +2010,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
         parsec_memory_pool_t *p_work_uv_sp,
         parsec_memory_pool_t *p_work_mbr,
         parsec_memory_pool_t *p_work_rr,
+        parsec_data_copy_t *C_copy,
         void *C, void *A, void *B,
         int m, int n, int k,
         int Crank, int Arank, int Brank,
@@ -1993,10 +2085,9 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
             B_use = B_d;
         }
 
-        /* Convert datatype, C, in place */
+        /* Convert datatype, C: an FP32 C becomes FP64 */
         if( DENSE_DP != params_tlr->decisions[n*descA->lmt+m] ) {
-            hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            HICMA_OMC( omc_convert_inplace(OMC_FP32, OMC_FP64, C, (size_t)(descA->mb) * (descA->nb), NULL) );
+            C = hicma_cpu_promote_tile_fp64(params_tlr, descA, C_copy, C, m, n, k, counter_id);
         }
 
         CORE_dgemm(PlasmaNoTrans, PlasmaTrans,
@@ -2112,8 +2203,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
             double Cnorm = hicma_parsec_core_matrix_norm_get(C, descA->mb, descA->nb, descA->mb, "float", 0, 0, 0, 0);
             hicma_parsec_get_precision_tile(params_tlr, &updated_decision, Cnorm, m, n);
             if(DENSE_DP == updated_decision) {
-                hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-                HICMA_OMC( omc_convert_inplace(OMC_FP32, OMC_FP64, C, (size_t)(descA->mb) * (descA->nb), NULL) );
+                C = hicma_cpu_promote_tile_fp64(params_tlr, descA, C_copy, C, m, n, k, counter_id);
                 params_tlr->decisions[n*descA->lmt+m] = DENSE_DP;
             } else {
                 params_tlr->decisions[n*descA->lmt+m] = DENSE_SP;
@@ -2138,10 +2228,9 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
 #if ACC_DP
         void *C_use = parsec_private_memory_pop( p_work_full_dp );
 
-        /* For the first GEMM */
+        /* For the first GEMM: an FP32 C becomes FP64 */
         if( DENSE_DP != params_tlr->decisions[n*descA->lmt+m] ) {
-            hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            HICMA_OMC( omc_convert_inplace(OMC_FP32, OMC_FP64, C, (size_t)(descA->mb) * (descA->nb), NULL) );
+            C = hicma_cpu_promote_tile_fp64(params_tlr, descA, C_copy, C, m, n, k, counter_id);
         }
 
         /* C(m, n) -= A(m, k) * A(n, k)^T, the product in FP32 */
@@ -2190,8 +2279,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
             double Cnorm = hicma_parsec_core_matrix_norm_get(C, descA->mb, descA->nb, descA->mb, "float", 0, 0, 0, 0);
             hicma_parsec_get_precision_tile(params_tlr, &updated_decision, Cnorm, m, n);
             if(DENSE_DP == updated_decision) {
-                hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-                HICMA_OMC( omc_convert_inplace(OMC_FP32, OMC_FP64, C, (size_t)(descA->mb) * (descA->nb), NULL) );
+                C = hicma_cpu_promote_tile_fp64(params_tlr, descA, C_copy, C, m, n, k, counter_id);
                 params_tlr->decisions[n*descA->lmt+m] = DENSE_DP;
             } else {
                 params_tlr->decisions[n*descA->lmt+m] = DENSE_SP;

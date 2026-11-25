@@ -1,0 +1,27 @@
+# Debug build (8e8fde8 + the span restore of section 7 without hicma_gpu_stage_in, + trace prints), leconte V100,
+# N = 2048, NB = 512, kind 10 1e-3, --adaptive_decision 1, HICMA_DEBUG_CPU_GEMM=3 (GEMMs of k = 0 on the CPU).
+# Cdec: decision of the tile (1 FP64, 2 FP32, 5 FP16); span in bytes (FP32 tile 1048576, FP64 2097152); norms of
+# the tile as stored. The warmup allocated the GPU copies at the FP32 span, 1 MB apart: (3,1) at ...42a00000,
+# (3,2) at ...42900000. GEMM (3,2,1) staged the 2 MB FP64 C(3,2) into its 1 MB copy, over A(3,1): A's norm on the
+# GPU went from 9.408 (TRSM output, also in its metadata) to 36.72. With every GEMM on the GPU, (3,2,1) ends at 38.568.
+TRACE gpu_trsm_in (1,0) Cdec 5 send 2 span 1048576 norm 4.4177341461e+01
+TRACE gpu_trsm_out (1,0) Cdec 5 ptr 0x7f6a42000000 copy 0x2b977700 dev 1 ver 3 norm 1.0922189713e+01
+TRACE gpu_trsm_in (2,0) Cdec 5 send 2 span 1048576 norm 3.8107704163e+01
+TRACE gpu_trsm_out (2,0) Cdec 5 ptr 0x7f6a42400000 copy 0x2b980e90 dev 1 ver 3 norm 9.8642864227e+00
+TRACE cpu_gemm_in (2,1,0) Cdec 5 new 5 Aprec 2 Bprec 2 ver 3 owner 0 span 1048576 norm 2.5363857362e+01
+TRACE cpu_gemm_end (2,1,0) Cdec 1 span 2097152 norm 1.5994288387e+01
+TRACE gpu_trsm_in (2,1) Cdec 1 send 2 span 2097152 norm 1.5994288387e+01
+TRACE gpu_trsm_out (2,1) Cdec 1 ptr 0x7f6a42300000 copy 0x2b934900 dev 1 ver 4 norm 4.5664461240e+00
+TRACE gpu_trsm_in (3,0) Cdec 5 send 2 span 1048576 norm 5.4311685562e+00
+TRACE gpu_trsm_out (3,0) Cdec 5 ptr 0x7f6a42b00000 copy 0x2b933ac0 dev 1 ver 3 norm 2.5688402653e+00
+TRACE cpu_gemm_in (3,1,0) Cdec 5 new 5 Aprec 2 Bprec 2 ver 3 owner 0 span 1048576 norm 3.9323564338e+01
+TRACE cpu_gemm_end (3,1,0) Cdec 1 span 2097152 norm 3.4305670257e+01
+TRACE cpu_gemm_in (3,2,0) Cdec 5 new 5 Aprec 2 Bprec 2 ver 3 owner 0 span 1048576 norm 4.5754567134e+01
+TRACE cpu_gemm_end (3,2,0) Cdec 1 span 2097152 norm 4.3456340707e+01
+TRACE gpu_trsm_in (3,1) Cdec 1 send 2 span 2097152 norm 3.4305670257e+01
+TRACE gpu_trsm_out (3,1) Cdec 1 ptr 0x7f6a42a00000 copy 0x2b981450 dev 1 ver 4 norm 9.4081757470e+00
+TRACE gpu_gemm_in (3,2,1) Cdec 1 new 5 Aprec 1 Bprec 1 span 2097152 Anorm(meta) 9.408176e+00 Bnorm(meta) 4.566446e+00 | dev norms C 4.34563407e+01 A 3.67188839e+01 B 4.56644612e+00
+TRACE gpu_gemm_in_ptr (3,2,1) A 0x7f6a42a00000 Acopy 0x2b981450 dev 1 ver 4 | Ain 0x2b981450 dev 1 ver 4 host ver 4
+TRACE gpu_gemm_end (3,2,1) Cdec 2 span 1048576 norm 4.1698249817e+01
+TRACE gpu_trsm_in (3,2) Cdec 2 send 2 span 1048576 norm 4.1698249817e+01
+TRACE gpu_trsm_out (3,2) Cdec 2 ptr 0x7f6a42900000 copy 0x2b977fb0 dev 1 ver 5 norm nan

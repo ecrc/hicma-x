@@ -1,0 +1,125 @@
+# verify_gpu.sh on leconte (V100, Xeon E5-2698 v4), base = ffcf1cb, new = 8e8fde8, both with
+# ../round5/factor_hash.patch and cpu_gemm_debug.patch; CUDA builds (sm_70), MKL 2024.2 (ACC_DP_PANEL 256 in new).
+# Mode 1: every GEMM on the CPU; 2: odd k on the CPU; lb: PaRSEC load balancing with the CPU allowed; gpu: default.
+# Mode 2 is not a valid test (GPU-to-CPU handoff without push-back): REPORT.md section 5.
+# CPU_GEMMS: runtime CPU GEMMs by decision, one line per process (none printed: no CPU GEMM ran).
+# rc=1: the residual check against --check_tol, default --fixedacc (1e-8 for k10_runtime; CTest uses 1e-7).
+
+# leconte 2026-11-24T20:55:47+00:00 Intel(R) Xeon(R) CPU E5-2698 v4 @ 2.20GHz
+GPU 0: Tesla V100-SXM2-32GB (UUID: GPU-d412eb91-77c0-bf5f-662e-20bda94bfde8)
+GPU 1: Tesla V100-SXM2-32GB (UUID: GPU-bf596f1e-7612-8d82-1d5d-7a54042f898d)
+k10_1e-3 np=1 1 base.1 rc=0 11s: h0 ec414125a43934cc CPU_GEMMS DP 0 SP 32 HP 4928 FP8 0 
+k10_runtime np=1 1 base.1 rc=1 11s: h0 fff31805ac879fb3 CPU_GEMMS DP 289 SP 1839 HP 2832 FP8 0 
+k10_1e-3 np=1 1 new.1 rc=0 10s: h0 ec414125a43934cc CPU_GEMMS DP 0 SP 32 HP 4928 FP8 0 
+k10_runtime np=1 1 new.1 rc=1 11s: h0 fff31805ac879fb3 CPU_GEMMS DP 289 SP 1839 HP 2832 FP8 0 
+k10_1e-3 np=1 1 base.2 rc=0 11s: h0 ec414125a43934cc CPU_GEMMS DP 0 SP 32 HP 4928 FP8 0 
+k10_runtime np=1 1 base.2 rc=1 11s: h0 fff31805ac879fb3 CPU_GEMMS DP 289 SP 1839 HP 2832 FP8 0 
+k10_1e-3 np=1 1 new.2 rc=0 12s: h0 ec414125a43934cc CPU_GEMMS DP 0 SP 32 HP 4928 FP8 0 
+k10_runtime np=1 1 new.2 rc=1 11s: h0 fff31805ac879fb3 CPU_GEMMS DP 289 SP 1839 HP 2832 FP8 0 
+k10_1e-3 np=2 1 base.1 rc=0 5s: h1 246d0646815acb1c h0 699b4888112fc321 CPU_GEMMS DP 0 SP 0 HP 308 FP8 0 CPU_GEMMS DP 0 SP 5 HP 247 FP8 0 
+k10_runtime np=2 1 base.1 rc=1 4s: h1 4bebd96445fd1966 h0 f7d1e650f33f55b5 CPU_GEMMS DP 43 SP 143 HP 66 FP8 0 CPU_GEMMS DP 38 SP 162 HP 108 FP8 0 
+k10_1e-3 np=2 1 new.1 rc=0 5s: h0 699b4888112fc321 h1 246d0646815acb1c CPU_GEMMS DP 0 SP 0 HP 308 FP8 0 CPU_GEMMS DP 0 SP 5 HP 247 FP8 0 
+k10_runtime np=2 1 new.1 rc=1 5s: h0 f7d1e650f33f55b5 h1 4bebd96445fd1966 CPU_GEMMS DP 43 SP 143 HP 66 FP8 0 CPU_GEMMS DP 38 SP 162 HP 108 FP8 0 
+k10_1e-3 np=2 1 base.2 rc=0 5s: h1 246d0646815acb1c h0 699b4888112fc321 CPU_GEMMS DP 0 SP 0 HP 308 FP8 0 CPU_GEMMS DP 0 SP 5 HP 247 FP8 0 
+k10_runtime np=2 1 base.2 rc=1 5s: h1 4bebd96445fd1966 h0 f7d1e650f33f55b5 CPU_GEMMS DP 38 SP 162 HP 108 FP8 0 CPU_GEMMS DP 43 SP 143 HP 66 FP8 0 
+k10_1e-3 np=2 1 new.2 rc=0 5s: h0 699b4888112fc321 h1 246d0646815acb1c CPU_GEMMS DP 0 SP 0 HP 308 FP8 0 CPU_GEMMS DP 0 SP 5 HP 247 FP8 0 
+k10_runtime np=2 1 new.2 rc=1 4s: h0 f7d1e650f33f55b5 h1 4bebd96445fd1966 CPU_GEMMS DP 38 SP 162 HP 108 FP8 0 CPU_GEMMS DP 43 SP 143 HP 66 FP8 0 
+k10_1e-3 np=1 2 base.1 rc=1 11s: h0 29d1a2a2053b0a47 CPU_GEMMS DP 1925 SP 3 HP 432 FP8 0 
+k10_runtime np=1 2 base.1 rc=1 11s: h0 5ad9ee90810a45b4 CPU_GEMMS DP 1940 SP 88 HP 332 FP8 0 
+k10_1e-3 np=1 2 new.1 rc=1 11s: h0 29d1a2a2053b0a47 CPU_GEMMS DP 1925 SP 3 HP 432 FP8 0 
+k10_runtime np=1 2 new.1 rc=1 19s: h0 5ad9ee90810a45b4 CPU_GEMMS DP 1940 SP 88 HP 332 FP8 0 
+k10_1e-3 np=1 2 base.2 rc=1 11s: h0 29d1a2a2053b0a47 CPU_GEMMS DP 1925 SP 3 HP 432 FP8 0 
+k10_runtime np=1 2 base.2 rc=1 11s: h0 5ad9ee90810a45b4 CPU_GEMMS DP 1940 SP 88 HP 332 FP8 0 
+k10_1e-3 np=1 2 new.2 rc=1 11s: h0 29d1a2a2053b0a47 CPU_GEMMS DP 1925 SP 3 HP 432 FP8 0 
+k10_runtime np=1 2 new.2 rc=1 11s: h0 5ad9ee90810a45b4 CPU_GEMMS DP 1940 SP 88 HP 332 FP8 0 
+k10_1e-3 np=2 2 base.1 rc=1 6s: h0 3d699dfe07681656 h1 a73df4a9c10e86d2 CPU_GEMMS DP 91 SP 0 HP 49 FP8 0 CPU_GEMMS DP 70 SP 1 HP 41 FP8 0 
+k10_runtime np=2 2 base.1 rc=1 5s: h0 01275953444c5bf8 h1 04b51ade12028bf5 CPU_GEMMS DP 76 SP 18 HP 18 FP8 0 CPU_GEMMS DP 95 SP 17 HP 28 FP8 0 
+k10_1e-3 np=2 2 new.1 rc=1 5s: h0 3d699dfe07681656 h1 a73df4a9c10e86d2 CPU_GEMMS DP 91 SP 0 HP 49 FP8 0 CPU_GEMMS DP 70 SP 1 HP 41 FP8 0 
+k10_runtime np=2 2 new.1 rc=1 5s: h0 01275953444c5bf8 h1 04b51ade12028bf5 CPU_GEMMS DP 95 SP 17 HP 28 FP8 0 CPU_GEMMS DP 76 SP 18 HP 18 FP8 0 
+k10_1e-3 np=2 2 base.2 rc=1 5s: h0 3d699dfe07681656 h1 a73df4a9c10e86d2 CPU_GEMMS DP 70 SP 1 HP 41 FP8 0 CPU_GEMMS DP 91 SP 0 HP 49 FP8 0 
+k10_runtime np=2 2 base.2 rc=1 5s: h0 01275953444c5bf8 h1 04b51ade12028bf5 CPU_GEMMS DP 76 SP 18 HP 18 FP8 0 CPU_GEMMS DP 95 SP 17 HP 28 FP8 0 
+k10_1e-3 np=2 2 new.2 rc=1 5s: h1 a73df4a9c10e86d2 h0 3d699dfe07681656 CPU_GEMMS DP 91 SP 0 HP 49 FP8 0 CPU_GEMMS DP 70 SP 1 HP 41 FP8 0 
+k10_runtime np=2 2 new.2 rc=1 5s: h1 04b51ade12028bf5 h0 01275953444c5bf8 CPU_GEMMS DP 95 SP 17 HP 28 FP8 0 CPU_GEMMS DP 76 SP 18 HP 18 FP8 0 
+k10_1e-3 np=1 lb base.1 rc=0 18s: h0 2aaac0884b3aa0c4 
+k10_runtime np=1 lb base.1 rc=1 17s: h0 df392a60daed78d1 
+k10_1e-3 np=1 lb new.1 rc=0 18s: h0 2aaac0884b3aa0c4 
+k10_runtime np=1 lb new.1 rc=1 18s: h0 df392a60daed78d1 
+k10_1e-3 np=1 lb base.2 rc=0 17s: h0 2aaac0884b3aa0c4 
+k10_runtime np=1 lb base.2 rc=1 17s: h0 df392a60daed78d1 
+k10_1e-3 np=1 lb new.2 rc=0 18s: h0 2aaac0884b3aa0c4 
+k10_runtime np=1 lb new.2 rc=1 17s: h0 df392a60daed78d1 
+k10_1e-3 np=2 lb base.1 rc=0 7s: h1 33b8489b59eac5b7 h0 364bbe4458751b54 
+k10_runtime np=2 lb base.1 rc=1 8s: h1 32fdb46f88416b08 h0 70af9ae3824fe0bd 
+k10_1e-3 np=2 lb new.1 rc=0 7s: h0 364bbe4458751b54 h1 33b8489b59eac5b7 
+k10_runtime np=2 lb new.1 rc=1 7s: h0 70af9ae3824fe0bd h1 32fdb46f88416b08 
+k10_1e-3 np=2 lb base.2 rc=0 7s: h1 33b8489b59eac5b7 h0 364bbe4458751b54 
+k10_runtime np=2 lb base.2 rc=1 7s: h0 70af9ae3824fe0bd h1 32fdb46f88416b08 
+k10_1e-3 np=2 lb new.2 rc=0 7s: h0 364bbe4458751b54 h1 33b8489b59eac5b7 
+k10_runtime np=2 lb new.2 rc=1 7s: h0 70af9ae3824fe0bd h1 32fdb46f88416b08 
+k10_1e-3 np=1 gpu base.1 rc=0 10s: h0 2aaac0884b3aa0c4 
+k10_runtime np=1 gpu base.1 rc=1 11s: h0 df392a60daed78d1 
+k10_1e-3 np=1 gpu new.1 rc=0 10s: h0 2aaac0884b3aa0c4 
+k10_runtime np=1 gpu new.1 rc=1 11s: h0 df392a60daed78d1 
+k10_1e-3 np=2 gpu base.1 rc=0 5s: h1 33b8489b59eac5b7 h0 364bbe4458751b54 
+k10_runtime np=2 gpu base.1 rc=1 5s: h1 32fdb46f88416b08 h0 70af9ae3824fe0bd 
+k10_1e-3 np=2 gpu new.1 rc=0 5s: h1 33b8489b59eac5b7 h0 364bbe4458751b54 
+k10_runtime np=2 gpu new.1 rc=1 5s: h0 70af9ae3824fe0bd h1 32fdb46f88416b08 
+# done 2026-11-24T21:04:30+00:00
+
+# ||LL^T-A||_F/||A||_F per log
+k10_1e-3.np1.1.base.1       passed:  1.028896e-05
+k10_1e-3.np1.1.base.2       passed:  1.028896e-05
+k10_1e-3.np1.1.new.1        passed:  1.028896e-05
+k10_1e-3.np1.1.new.2        passed:  1.028896e-05
+k10_1e-3.np1.2.base.1       FAILED:  1.981001e+02
+k10_1e-3.np1.2.base.2       FAILED:  1.981001e+02
+k10_1e-3.np1.2.new.1        FAILED:  1.981001e+02
+k10_1e-3.np1.2.new.2        FAILED:  1.981001e+02
+k10_1e-3.np1.gpu.base.1     passed:  1.048646e-05
+k10_1e-3.np1.gpu.new.1      passed:  1.048646e-05
+k10_1e-3.np1.lb.base.1      passed:  1.048646e-05
+k10_1e-3.np1.lb.base.2      passed:  1.048646e-05
+k10_1e-3.np1.lb.new.1       passed:  1.048646e-05
+k10_1e-3.np1.lb.new.2       passed:  1.048646e-05
+k10_1e-3.np2.1.base.1       passed:  1.146317e-05
+k10_1e-3.np2.1.base.2       passed:  1.146317e-05
+k10_1e-3.np2.1.new.1        passed:  1.146317e-05
+k10_1e-3.np2.1.new.2        passed:  1.146317e-05
+k10_1e-3.np2.2.base.1       FAILED:  6.127846e+74
+k10_1e-3.np2.2.base.2       FAILED:  6.127846e+74
+k10_1e-3.np2.2.new.1        FAILED:  6.127846e+74
+k10_1e-3.np2.2.new.2        FAILED:  6.127846e+74
+k10_1e-3.np2.gpu.base.1     passed:  1.145341e-05
+k10_1e-3.np2.gpu.new.1      passed:  1.145341e-05
+k10_1e-3.np2.lb.base.1      passed:  1.145341e-05
+k10_1e-3.np2.lb.base.2      passed:  1.145341e-05
+k10_1e-3.np2.lb.new.1       passed:  1.145341e-05
+k10_1e-3.np2.lb.new.2       passed:  1.145341e-05
+k10_runtime.np1.1.base.1    FAILED:  3.788793e-08
+k10_runtime.np1.1.base.2    FAILED:  3.788793e-08
+k10_runtime.np1.1.new.1     FAILED:  3.788793e-08
+k10_runtime.np1.1.new.2     FAILED:  3.788793e-08
+k10_runtime.np1.2.base.1    FAILED:  1.955939e+02
+k10_runtime.np1.2.base.2    FAILED:  1.955939e+02
+k10_runtime.np1.2.new.1     FAILED:  1.955939e+02
+k10_runtime.np1.2.new.2     FAILED:  1.955939e+02
+k10_runtime.np1.gpu.base.1  FAILED:  3.786851e-08
+k10_runtime.np1.gpu.new.1   FAILED:  3.786851e-08
+k10_runtime.np1.lb.base.1   FAILED:  3.786851e-08
+k10_runtime.np1.lb.base.2   FAILED:  3.786851e-08
+k10_runtime.np1.lb.new.1    FAILED:  3.786851e-08
+k10_runtime.np1.lb.new.2    FAILED:  3.786851e-08
+k10_runtime.np2.1.base.1    FAILED:  1.581407e-08
+k10_runtime.np2.1.base.2    FAILED:  1.581407e-08
+k10_runtime.np2.1.new.1     FAILED:  1.581407e-08
+k10_runtime.np2.1.new.2     FAILED:  1.581407e-08
+k10_runtime.np2.2.base.1    FAILED:  8.919528e+01
+k10_runtime.np2.2.base.2    FAILED:  8.919528e+01
+k10_runtime.np2.2.new.1     FAILED:  8.919528e+01
+k10_runtime.np2.2.new.2     FAILED:  8.919528e+01
+k10_runtime.np2.gpu.base.1  FAILED:  1.456535e-08
+k10_runtime.np2.gpu.new.1   FAILED:  1.456535e-08
+k10_runtime.np2.lb.base.1   FAILED:  1.456535e-08
+k10_runtime.np2.lb.base.2   FAILED:  1.456535e-08
+k10_runtime.np2.lb.new.1    FAILED:  1.456535e-08
+k10_runtime.np2.lb.new.2    FAILED:  1.456535e-08

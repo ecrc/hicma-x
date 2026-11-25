@@ -1,0 +1,105 @@
+# verify_widen.sh on leconte (V100, Xeon E5-2698 v4), 2026-11-24/25: parent = ffcf1cb, fix = 8e8fde8 + the
+# fix of section 7; both with ../round5/factor_hash.patch and cpu_gemm_debug.patch; CUDA sm_70 builds, MKL 2024.2.
+# Placement (HICMA_DEBUG_CPU_GEMM): 1 = every GEMM on the CPU, 3 = the GEMMs of k = 0 on the CPU (both hand C from the
+# CPU to a GPU only); gpu = default; lb = PaRSEC load balancing with the CPU allowed; cpu = no GPU visible.
+# Columns: label, build, placement, processes, exit code, wall time, t = factorization time, h<rank> = factor hash,
+# check verdict and ||LL^T-A||_F/||A||_F, cpu = runtime CPU GEMMs by decision per process. Section C has no --check.
+# rc=1 with "Factorization failed": not positive definite; rc=134/139: abort/segmentation fault.
+
+# leconte 2026-11-24T23:46:22+00:00 CUDA_VISIBLE_DEVICES=0,1
+A k10_1e-3 ad=1 parent 1 np=1 rc=1 14s: t=2.81039 Factorization failed (info = 1538) h0 1e7d1d88a4b2ed4f FAILED 1.973597e+02 cpu DP 3654 SP 59 HP 1247 FP8 0  
+A k10_1e-3 ad=1 fix 1 np=1 rc=0 13s: t=2.38378 h0 558cc6a9ce055900 passed 1.033990e-05 cpu DP 0 SP 32 HP 4928 FP8 0  
+A runtime  ad=1 parent 1 np=1 rc=1 13s: t=2.81300 Factorization failed (info = 2561) h0 445d120e13e38b52 FAILED 1.865782e+02 cpu DP 3318 SP 499 HP 1143 FP8 0  
+A runtime  ad=1 fix 1 np=1 rc=0 14s: t=2.40259 h0 e61dc1a84854aaa4 passed 3.789758e-08 cpu DP 289 SP 1839 HP 2832 FP8 0  
+A k10_1e-3 ad=1 parent 1 np=2 rc=1 5s: t=0.71200 Factorization failed (info = 1537) h0 087e49cdbaf308fa h1 6e301c7adb3c1dde FAILED 1.319625e+02 cpu DP 125 SP 13 HP 114 FP8 0 cpu DP 161 SP 20 HP 127 FP8 0  
+A k10_1e-3 ad=1 fix 1 np=2 rc=0 6s: t=0.55225 h1 1919b371ab29ee60 h0 2bd14db980af15b6 passed 1.142222e-05 cpu DP 0 SP 5 HP 247 FP8 0 cpu DP 0 SP 0 HP 308 FP8 0  
+A runtime  ad=1 parent 1 np=2 rc=1 6s: t=0.66715 Factorization failed (info = 2579) h0 48c76b4e5b3af12a h1 5dd046808098c889 FAILED 7.837190e+01 cpu DP 153 SP 73 HP 82 FP8 0 cpu DP 118 SP 70 HP 64 FP8 0  
+A runtime  ad=1 fix 1 np=2 rc=0 5s: t=0.58923 h0 52f796f74b310165 h1 582f3f15832d98c9 passed 1.584895e-08 cpu DP 38 SP 162 HP 108 FP8 0 cpu DP 43 SP 143 HP 66 FP8 0  
+A k10_1e-3 ad=0 parent 1 np=1 rc=0 14s: t=2.34526 h0 ec414125a43934cc passed 1.028896e-05 cpu DP 0 SP 32 HP 4928 FP8 0  
+A k10_1e-3 ad=0 fix 1 np=1 rc=0 13s: t=2.20256 h0 ec414125a43934cc passed 1.028896e-05 cpu DP 0 SP 32 HP 4928 FP8 0  
+A runtime  ad=0 parent 1 np=1 rc=0 13s: t=2.56472 h0 fff31805ac879fb3 passed 3.788793e-08 cpu DP 289 SP 1839 HP 2832 FP8 0  
+A runtime  ad=0 fix 1 np=1 rc=0 13s: t=2.22411 h0 fff31805ac879fb3 passed 3.788793e-08 cpu DP 289 SP 1839 HP 2832 FP8 0  
+A k10_1e-3 ad=0 parent 1 np=2 rc=0 6s: t=0.58208 h1 246d0646815acb1c h0 699b4888112fc321 passed 1.146317e-05 cpu DP 0 SP 0 HP 308 FP8 0 cpu DP 0 SP 5 HP 247 FP8 0  
+A k10_1e-3 ad=0 fix 1 np=2 rc=0 5s: t=0.61213 h0 699b4888112fc321 h1 246d0646815acb1c passed 1.146317e-05 cpu DP 0 SP 0 HP 308 FP8 0 cpu DP 0 SP 5 HP 247 FP8 0  
+A runtime  ad=0 parent 1 np=2 rc=0 6s: t=0.57298 h0 f7d1e650f33f55b5 h1 4bebd96445fd1966 passed 1.581407e-08 cpu DP 43 SP 143 HP 66 FP8 0 cpu DP 38 SP 162 HP 108 FP8 0  
+A runtime  ad=0 fix 1 np=2 rc=0 6s: t=0.66700 h0 f7d1e650f33f55b5 h1 4bebd96445fd1966 passed 1.581407e-08 cpu DP 43 SP 143 HP 66 FP8 0 cpu DP 38 SP 162 HP 108 FP8 0  
+A k10_1e-3 ad=1 parent 3 np=1 rc=1 11s: t=0.69241 Factorization failed (info = 2309) h0 17b768a721075182 FAILED 3.295044e+53 cpu DP 0 SP 4 HP 461 FP8 0  
+A k10_1e-3 ad=1 fix 3 np=1 rc=0 11s: t=0.63325 h0 50376c3ed254ef2b passed 1.049960e-05 cpu DP 0 SP 4 HP 461 FP8 0  
+A runtime  ad=1 parent 3 np=1 rc=134 45s:  ERR: [leconte:3232285] Signal: Aborted (6) 
+A runtime  ad=1 fix 3 np=1 rc=0 11s: t=0.60640 h0 7b2bd2bf85a2e46e passed 3.787622e-08 cpu DP 13 SP 64 HP 388 FP8 0  
+A k10_1e-3 ad=1 parent 3 np=2 rc=1 5s: t=0.36915 Factorization failed (info = 1537) h0 99cd1abeb9c816c3 h1 16e449a668f05d0a FAILED 1.378453e+39 cpu DP 0 SP 0 HP 56 FP8 0 cpu DP 0 SP 1 HP 48 FP8 0  
+A k10_1e-3 ad=1 fix 3 np=2 rc=0 6s: t=0.36421 h0 14ecb225b58d0b27 h1 de3449f506d68a80 passed 1.142868e-05 cpu DP 0 SP 0 HP 56 FP8 0 cpu DP 0 SP 1 HP 48 FP8 0  
+A runtime  ad=1 parent 3 np=2 rc=1 5s: t=0.38314 Factorization failed (info = 2561) h1 e14f1f792e490780 h0 7919a125ff601050 FAILED 2.045701e+02 cpu DP 2 SP 10 HP 44 FP8 0 cpu DP 1 SP 16 HP 32 FP8 0  
+A runtime  ad=1 fix 3 np=2 rc=0 6s: t=0.35499 h1 eaa78375564e95f6 h0 eb67f4e26543bd39 passed 1.458103e-08 cpu DP 2 SP 10 HP 44 FP8 0 cpu DP 1 SP 16 HP 32 FP8 0  
+A k10_1e-3 ad=0 parent 3 np=1 rc=0 11s: t=0.62332 h0 ab9f78baaa8f4e4a passed 1.048117e-05 cpu DP 0 SP 4 HP 461 FP8 0  
+A k10_1e-3 ad=0 fix 3 np=1 rc=0 12s: t=0.60592 h0 ab9f78baaa8f4e4a passed 1.048117e-05 cpu DP 0 SP 4 HP 461 FP8 0  
+A runtime  ad=0 parent 3 np=1 rc=0 11s: t=0.62314 h0 254b7392e93a951d passed 3.788461e-08 cpu DP 13 SP 64 HP 388 FP8 0  
+A runtime  ad=0 fix 3 np=1 rc=0 11s: t=0.57647 h0 254b7392e93a951d passed 3.788461e-08 cpu DP 13 SP 64 HP 388 FP8 0  
+A k10_1e-3 ad=0 parent 3 np=2 rc=0 6s: t=0.36638 h1 4ae823d7878ad7a2 h0 390eda37aec05f36 passed 1.147936e-05 cpu DP 0 SP 0 HP 56 FP8 0 cpu DP 0 SP 1 HP 48 FP8 0  
+A k10_1e-3 ad=0 fix 3 np=2 rc=0 5s: t=0.31101 h0 390eda37aec05f36 h1 4ae823d7878ad7a2 passed 1.147936e-05 cpu DP 0 SP 0 HP 56 FP8 0 cpu DP 0 SP 1 HP 48 FP8 0  
+A runtime  ad=0 parent 3 np=2 rc=0 6s: t=0.39806 h0 627bc7e6c4304ba0 h1 7629a2c5aa2cb73f passed 1.455328e-08 cpu DP 1 SP 16 HP 32 FP8 0 cpu DP 2 SP 10 HP 44 FP8 0  
+A runtime  ad=0 fix 3 np=2 rc=0 5s: t=0.36419 h1 7629a2c5aa2cb73f h0 627bc7e6c4304ba0 passed 1.455328e-08 cpu DP 2 SP 10 HP 44 FP8 0 cpu DP 1 SP 16 HP 32 FP8 0  
+B k10_1e-3 ad=0 parent gpu np=1 rc=0 11s: t=0.40245 h0 2aaac0884b3aa0c4 passed 1.048646e-05  
+B k10_1e-3 ad=0 fix gpu np=1 rc=0 11s: t=0.40528 h0 2aaac0884b3aa0c4 passed 1.048646e-05  
+B runtime  ad=0 parent gpu np=1 rc=0 11s: t=0.49108 h0 df392a60daed78d1 passed 3.786851e-08  
+B runtime  ad=0 fix gpu np=1 rc=0 11s: t=0.48115 h0 df392a60daed78d1 passed 3.786851e-08  
+B k10_1e-3 ad=0 parent gpu np=2 rc=0 5s: t=0.24102 h1 33b8489b59eac5b7 h0 364bbe4458751b54 passed 1.145341e-05  
+B k10_1e-3 ad=0 fix gpu np=2 rc=0 5s: t=0.25117 h0 364bbe4458751b54 h1 33b8489b59eac5b7 passed 1.145341e-05  
+B k10_1e-3 ad=1 parent gpu np=1 rc=0 11s: t=0.40211 h0 2aaac0884b3aa0c4 passed 1.048646e-05  
+B k10_1e-3 ad=1 fix gpu np=1 rc=0 11s: t=0.40070 h0 2aaac0884b3aa0c4 passed 1.048646e-05  
+B runtime  ad=1 parent gpu np=1 rc=0 11s: t=0.50191 h0 5d913811a633ff61 passed 3.785923e-08  
+B runtime  ad=1 fix gpu np=1 rc=0 11s: t=0.47985 h0 5d913811a633ff61 passed 3.785923e-08  
+B k10_1e-3 ad=1 parent gpu np=2 rc=0 5s: t=0.24009 h1 33b8489b59eac5b7 h0 364bbe4458751b54 passed 1.145341e-05  
+B k10_1e-3 ad=1 fix gpu np=2 rc=0 5s: t=0.25910 h0 364bbe4458751b54 h1 33b8489b59eac5b7 passed 1.145341e-05  
+B k10_1e-3 ad=0 parent lb np=1 rc=0 20s: t=0.42100 h0 2aaac0884b3aa0c4 passed 1.048646e-05  
+B k10_1e-3 ad=0 fix lb np=1 rc=0 19s: t=0.40105 h0 2aaac0884b3aa0c4 passed 1.048646e-05  
+B runtime  ad=0 parent lb np=1 rc=0 19s: t=0.48356 h0 df392a60daed78d1 passed 3.786851e-08  
+B runtime  ad=0 fix lb np=1 rc=0 20s: t=0.47416 h0 df392a60daed78d1 passed 3.786851e-08  
+B k10_1e-3 ad=0 parent lb np=2 rc=0 8s: t=0.27419 h1 33b8489b59eac5b7 h0 364bbe4458751b54 passed 1.145341e-05  
+B k10_1e-3 ad=0 fix lb np=2 rc=0 9s: t=0.25315 h1 33b8489b59eac5b7 h0 364bbe4458751b54 passed 1.145341e-05  
+B k10_1e-3 ad=1 parent lb np=1 rc=0 19s: t=0.41130 h0 2aaac0884b3aa0c4 passed 1.048646e-05  
+B k10_1e-3 ad=1 fix lb np=1 rc=0 19s: t=0.41452 h0 2aaac0884b3aa0c4 passed 1.048646e-05  
+B runtime  ad=1 parent lb np=1 rc=0 20s: t=0.55398 h0 5d913811a633ff61 passed 3.785923e-08  
+B runtime  ad=1 fix lb np=1 rc=0 19s: t=0.47345 h0 5d913811a633ff61 passed 3.785923e-08  
+B k10_1e-3 ad=1 parent lb np=2 rc=0 9s: t=0.25716 h1 33b8489b59eac5b7 h0 364bbe4458751b54 passed 1.145341e-05  
+B k10_1e-3 ad=1 fix lb np=2 rc=0 7s: t=0.23713 h1 33b8489b59eac5b7 h0 364bbe4458751b54 passed 1.145341e-05  
+B k10_1e-3 ad=0 parent cpu np=1 rc=0 16s: t=1.80764 h0 84f913aa96c45f8b passed 4.871434e-08 cpu DP 0 SP 4960 HP 0 FP8 0  
+B k10_1e-3 ad=0 fix cpu np=1 rc=0 17s: t=1.84070 h0 84f913aa96c45f8b passed 4.871434e-08 cpu DP 0 SP 4960 HP 0 FP8 0  
+B runtime  ad=0 parent cpu np=1 rc=0 16s: t=1.90653 h0 f68c2e050b29dfcc passed 2.672243e-09 cpu DP 289 SP 4671 HP 0 FP8 0  
+B runtime  ad=0 fix cpu np=1 rc=0 17s: t=1.89622 h0 f68c2e050b29dfcc passed 2.672243e-09 cpu DP 289 SP 4671 HP 0 FP8 0  
+B k10_1e-3 ad=0 parent cpu np=2 rc=0 7s: t=0.62266 h0 c565c6b201a7872e h1 8ad2d5d6df583d95 passed 4.939674e-08 cpu DP 0 SP 252 HP 0 FP8 0 cpu DP 0 SP 308 HP 0 FP8 0  
+B k10_1e-3 ad=0 fix cpu np=2 rc=0 6s: t=0.56000 h1 8ad2d5d6df583d95 h0 c565c6b201a7872e passed 4.939674e-08 cpu DP 0 SP 308 HP 0 FP8 0 cpu DP 0 SP 252 HP 0 FP8 0  
+B k10_1e-3 ad=1 parent cpu np=1 rc=0 16s: t=1.51610 h0 f29d0d0c47a2cfea passed 1.000715e-07 cpu DP 0 SP 4960 HP 0 FP8 0  
+B k10_1e-3 ad=1 fix cpu np=1 rc=0 16s: t=1.51436 h0 f29d0d0c47a2cfea passed 1.000715e-07 cpu DP 0 SP 4960 HP 0 FP8 0  
+B runtime  ad=1 parent cpu np=1 rc=0 16s: t=1.67001 h0 691b712007ef454e passed 2.814032e-09 cpu DP 289 SP 4671 HP 0 FP8 0  
+B runtime  ad=1 fix cpu np=1 rc=0 16s: t=1.68331 h0 691b712007ef454e passed 2.814032e-09 cpu DP 289 SP 4671 HP 0 FP8 0  
+B k10_1e-3 ad=1 parent cpu np=2 rc=0 6s: t=0.48700 h0 baef75566e66bf7f h1 9aaef4e212a0bcd8 passed 8.705919e-08 cpu DP 0 SP 308 HP 0 FP8 0 cpu DP 0 SP 252 HP 0 FP8 0  
+B k10_1e-3 ad=1 fix cpu np=2 rc=0 6s: t=0.49637 h1 9aaef4e212a0bcd8 h0 baef75566e66bf7f passed 8.705919e-08 cpu DP 0 SP 252 HP 0 FP8 0 cpu DP 0 SP 308 HP 0 FP8 0  
+C admem k10_1e-3 ad=1 parent gpu np=1 rc=0 3s: t=0.40523  
+C admem k10_1e-3 ad=1 fix gpu np=1 rc=0 3s: t=0.41427  
+C admem runtime  ad=1 parent gpu np=1 rc=0 3s: t=0.53692  
+C admem runtime  ad=1 fix gpu np=1 rc=0 4s: t=0.52457  
+C admem k10_1e-3 ad=1 parent 1 np=1 rc=139 12s:  ERR: [leconte:3235375:1:3235389] Caught signal 11 (Segmentation fault: invalid permissions for mapped object at address 0x7fc8c0200000) 
+C admem k10_1e-3 ad=1 fix 1 np=1 rc=0 6s: t=2.69670 cpu DP 0 SP 32 HP 4928 FP8 0  
+C admem runtime  ad=1 parent 1 np=1 rc=139 13s:  ERR: [leconte:3235481:1:3235504] Caught signal 11 (Segmentation fault: invalid permissions for mapped object at address 0x7f4889800000) 
+C admem runtime  ad=1 fix 1 np=1 rc=0 6s: t=2.36406 cpu DP 289 SP 1839 HP 2832 FP8 0  
+C admem k10_1e-3 ad=1 parent 3 np=1 rc=139 13s:  ERR: [leconte:3235631:1:3235814] Caught signal 11 (Segmentation fault: invalid permissions for mapped object at address 0x7fb2e6000000) 
+C admem k10_1e-3 ad=1 fix 3 np=1 rc=0 4s: t=1.42935 cpu DP 0 SP 4 HP 461 FP8 0  
+C admem runtime  ad=1 parent 3 np=1 rc=139 15s:  ERR: [leconte:3238273:1:3238447] Caught signal 11 (Segmentation fault: invalid permissions for mapped object at address 0x7f6e7f000000) 
+C admem runtime  ad=1 fix 3 np=1 rc=0 4s: t=1.12350 cpu DP 13 SP 64 HP 388 FP8 0  
+E 2gpu k10_1e-3 ad=1 parent 3 np=1 rc=1 11s: t=0.72734 Factorization failed (info = 2049) h0 d4c2f1a25a5051d7 FAILED 8.051625e+39 cpu DP 0 SP 4 HP 461 FP8 0  
+E 2gpu k10_1e-3 ad=1 fix 3 np=1 rc=0 12s: t=0.69374 h0 50376c3ed254ef2b passed 1.049960e-05 cpu DP 0 SP 4 HP 461 FP8 0  
+E 2gpu runtime  ad=1 parent 3 np=1 rc=134 44s:  ERR: [leconte:3240022] Signal: Aborted (6) 
+E 2gpu runtime  ad=1 fix 3 np=1 rc=0 11s: t=0.57707 h0 7b2bd2bf85a2e46e passed 3.787622e-08 cpu DP 13 SP 64 HP 388 FP8 0  
+E 2gpu k10_1e-3 ad=1 parent 1 np=1 rc=1 14s: t=2.59355 Factorization failed (info = 1537) h0 212c3d44778836c6 FAILED 1.973597e+02 cpu DP 3656 SP 124 HP 1180 FP8 0  
+E 2gpu k10_1e-3 ad=1 fix 1 np=1 rc=0 13s: t=2.07198 h0 558cc6a9ce055900 passed 1.033990e-05 cpu DP 0 SP 32 HP 4928 FP8 0  
+E 2gpu runtime  ad=1 parent 1 np=1 rc=1 13s: t=2.55171 Factorization failed (info = 2561) h0 bebc894a5501b914 FAILED 1.865894e+02 cpu DP 3354 SP 484 HP 1122 FP8 0  
+E 2gpu runtime  ad=1 fix 1 np=1 rc=0 13s: t=2.07649 h0 e61dc1a84854aaa4 passed 3.789758e-08 cpu DP 289 SP 1839 HP 2832 FP8 0  
+E 2gpu k10_1e-3 ad=1 parent gpu np=1 rc=0 11s: t=0.39658 h0 2aaac0884b3aa0c4 passed 1.048646e-05  
+E 2gpu k10_1e-3 ad=1 fix gpu np=1 rc=0 11s: t=0.40163 h0 2aaac0884b3aa0c4 passed 1.048646e-05  
+E 2gpu runtime  ad=1 parent gpu np=1 rc=0 12s: t=0.48903 h0 5d913811a633ff61 passed 3.785923e-08  
+E 2gpu runtime  ad=1 fix gpu np=1 rc=0 11s: t=0.47898 h0 5d913811a633ff61 passed 3.785923e-08  
+D lb k10_1e-3 ad=1 N=32768 parent lb np=1 rc=0 120s: t=2.33534 h0 64f1cadbb1faf987 passed 1.211169e-05  
+D lb k10_1e-3 ad=1 N=32768 fix lb np=1 rc=0 118s: t=2.72415 h0 64f1cadbb1faf987 passed 1.211169e-05  
+# done 2026-11-25T00:07:39+00:00
+# final_job done 2026-11-25T00:11:43+00:00
