@@ -1574,7 +1574,7 @@ with `PARSEC_MCA_mpi_gpu_aware=0` (host memory).
     (checked since: section 5.23).
   - OmniCast's launch check reads `cudaGetLastError()`, which also returns
     an earlier error of the same thread, and its message does not name the
-    CUDA error.
+    CUDA error (both fixed in OmniCast 2.1.0: section 5.25).
 
 Not covered: two GPUs per process on two NVIDIA nodes, InfiniBand (or
 GPUDirect RDMA) between NVIDIA nodes, and more than two nodes.
@@ -1771,6 +1771,86 @@ gfx90a and newer AMD GPUs (as in section 7, item 5); leconte, which another
 job was using.
 
 
+### 5.25 OmniCast 2.1.1: the CUDA or HIP error of a failed conversion (2026-11-26)
+
+**Why.** Section 5.22 left two weaknesses of OmniCast 2.0.1's GPU calls.
+A failed call returned `OMC_ERROR_DEVICE`, which `HICMA_OMC()` printed as
+"device runtime error" without naming the CUDA error. And the launch check
+read `cudaGetLastError()`, which also returns an error that earlier code of
+the thread left pending, so OmniCast reported someone else's error as its
+own launch failure and cleared it.
+
+**Change.** OmniCast 2.1.1 (tag `v2.1.1`):
+- `omc_last_error_detail()` (per thread, QingleiCao/OmniCast#3) names the
+  failed CUDA or HIP call and its error, for instance "launch of k_cvt:
+  cudaErrorInvalidConfiguration (invalid configuration argument)".
+- Each GPU entry point peeks at the runtime's last error before its first
+  runtime call. An error that is already pending is reported as such
+  (`OMC_ERROR_DEVICE`, nothing launched) and left in place for the code
+  that caused it.
+- "Not ready" is not an error (QingleiCao/OmniCast#4; see below).
+
+`HICMA_OMC()` prints the detail after the status. `cudaMallocHost`'s error
+in `hicma_parsec_core_memory_allocation` is still cleared (section 5.23):
+left pending, it would now stop the next OmniCast call.
+
+**2.1.0 on a Radeon VII.** With the submodule at 2.1.0 (without #4 above),
+CTest passed 30/30 CPU-only (caffeine) and 55/55 on the A100, but 35/46 on
+a Radeon VII (histamine2): the 11 failures were GPU cases, and each stopped
+with "OmniCast: device runtime error: pending before the call, from an
+earlier runtime call (left pending): hipErrorNotReady (device not ready)".
+PaRSEC polls its events, and HIP records the "not ready" of a query as the
+last error. A probe built for both runtimes shows the difference:
+
+| last error (peek) | ROCm 6.3.2, Radeon VII | CUDA 12.6, A100 |
+|---|---|---|
+| after an event or stream query of a busy stream | `hipErrorNotReady` | `cudaSuccess` |
+| after a failed malloc, then a successful call | `hipSuccess` (overwritten) | `cudaErrorMemoryAllocation` (kept until read) |
+
+On HIP the last error is the status of the last HIP call. OmniCast 2.1.1
+treats "not ready" as no error in the pending check and in the launch
+check. Its new test (an event query of a busy stream before each of the
+five GPU entry points, every call must succeed) fails for all five with
+2.1.0's code on the Radeon VII.
+
+**Tests.** OmniCast with #4 on its own (2.1.1 adds only the version
+number): CTest 5/5 on the A100 (CUDA 12.6, also run on 2.1.1 itself), 4/4
+on the Radeon VII (ROCm 6.3.2), 2/2 CPU-only; the install consumer against
+an install of 2.1.1. The host cost per call is unchanged (back-to-back
+`omc_gpu_convert` of 256 elements on the A100: 2.81 us against 2.83 us for
+2.0.1, measured with #3).
+
+HiCMA-X `468f81e` (the submodule at 2.1.1), built in the fresh-clone trees
+of section 5.24:
+
+| machine | CTest `-L hicma` |
+|---|---|
+| caffeine, Broadwell, CPU-only | 30 / 30 |
+| methane, A100-PCIE-40GB | 55 / 55 |
+| histamine2, Radeon VII (gfx906, ROCm 6.3.2) | 46 / 46 (35 / 46 with 2.1.0) |
+
+The HIP build has one more warning of a kind OmniCast already had 17 times
+in `gpu_api.cu`: the result of `hipGetLastError()` is ignored where it
+clears OmniCast's own error on purpose. The CUDA and CPU builds have no
+warning in the changed lines.
+
+**A failed launch inside HiCMA-X.** An `LD_PRELOAD` shim gives the N-th
+`cudaLaunchKernel` of a process 2048 threads per block, which the runtime
+refuses, so the launch fails as a real one does (kind 3 with an FP32 band,
+N = 8192, NB = 1024, `--check_tol 1e-5`, on the A100):
+
+| failed launch | HiCMA-X stops with |
+|---|---|
+| none | passes, residual 8.46e-07 |
+| 1st | `hicma_parsec_core.c:3968: OmniCast: device runtime error: launch of k_cvt: cudaErrorInvalidConfiguration (invalid configuration argument)` |
+| 20th | `potrf_L_dense_mp_band.c:3267: OmniCast: device runtime error: launch of k_cvt: cudaErrorInvalidConfiguration (invalid configuration argument)` |
+
+The launches made to fail (also the 5th and the 60th in a run with 2.1.0)
+were all OmniCast conversions; cuBLAS launches its kernels another way. So
+the shim did not leave another component's error pending before an
+OmniCast call; that path is covered by OmniCast's own test.
+
+
 ## 6. Release checklist
 
 | Item | Status |
@@ -1798,6 +1878,7 @@ job was using.
 | Kinds 8 and 9 on their own kernels again, on request (section 5.18) | done; results identical to the merged kernel on A100, H100 (FP8) and V100s, timings within the spread; kinds 8 to 10 refuse stochastic rounding again |
 | Complete round on the head (section 5.19) | done; fresh clone on methane (CPU and CUDA builds, install, both matrices) and hexane (H100 with FP8, V100, both GPUs) pass and match the earlier results; leconte not run |
 | Release round on the head `d8217b5` (section 5.24) | done; clone of `ecrc/hicma-x` with `pull/13/head` (submodules from GitHub as after the merge): CTest on two CPUs, A100, H100, V100 and Radeon VII, `test_CI.sh`, install consumer, OmniCast's exhaustive check pass; validation matrix identical to `f5142be` on four machines; GPU timings unchanged, kind 10 on the CPU 1.13-1.32x faster |
+| OmniCast 2.1.1: the CUDA or HIP error of a failed conversion (section 5.25) | done; `HICMA_OMC()` names the failed CUDA/HIP call and error; an error pending before a call is reported as such; HIP's "not ready" (which stopped 2.1.0 on a Radeon VII) is not an error; CTest 30/30 CPU-only, 55/55 on the A100, 46/46 on a Radeon VII |
 | Review by the maintainer of the behaviour changes (binding check, `--adddiag`, `N % NB`, genomics option) | **open** |
 | Tag `v0.2.0`, GitHub release, merge to `main` | **open** (authorization required) |
 
