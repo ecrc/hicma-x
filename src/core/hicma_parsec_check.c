@@ -196,6 +196,11 @@ int check_dpotrf2( parsec_context_t *parsec, int verbose,
     if( NULL == LLt.mat ) {
         LLt.mat = parsec_data_allocate(LLt_bytes);  /* pageable: PaRSEC registers it */
         LLt_core = 0;
+        if( NULL == LLt.mat ) {
+            fprintf(stderr, "Fatal: allocating the LL^T of the check failed: %zu bytes of host memory\n",
+                    LLt_bytes);
+            abort();
+        }
     } else {
         /* PaRSEC cannot register memory that is pinned already. A hook that
          * does nothing rather than NULL: DPLASMA's LAPACK-layout wrapper calls

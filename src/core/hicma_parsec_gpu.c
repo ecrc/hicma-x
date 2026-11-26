@@ -461,14 +461,15 @@ void gpu_handle_init( hicma_parsec_data_t *data ) {
             /* Create handle_cublas_gpu */
             status = cublasCreate(&handle_cublas_gpu);
             HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cublasCreate");
-            cublasSetStream( handle_cublas_gpu, cuda_stream->cuda_stream );
+            status = cublasSetStream( handle_cublas_gpu, cuda_stream->cuda_stream );
             HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cuBLAS handle setup");
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].handle_cublas = handle_cublas_gpu;
 
             /* Create handle_cublas_gpu_deviceptr */
             status = cublasCreate(&handle_cublas_gpu_deviceptr);
             HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cublasCreate");
-            cublasSetStream( handle_cublas_gpu_deviceptr, cuda_stream->cuda_stream );
+            status = cublasSetStream( handle_cublas_gpu_deviceptr, cuda_stream->cuda_stream );
+            HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cuBLAS handle setup");
             status = cublasSetPointerMode(handle_cublas_gpu_deviceptr, CUBLAS_POINTER_MODE_DEVICE);
             HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cuBLAS handle setup");
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].handle_cublas_deviceptr = handle_cublas_gpu_deviceptr;
@@ -681,12 +682,12 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t 
                 cublasLtMatmulDesc_t matmulDesc;
                 HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == cublasLtMatmulDescCreate(&matmulDesc, CUBLAS_COMPUTE_32F, CUDA_R_32F), "cuBLASLt matmul descriptor");
                 const cublasOperation_t transa = CUBLAS_OP_T, transb = CUBLAS_OP_N;
-                cublasLtMatmulDescSetAttribute(
+                HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == cublasLtMatmulDescSetAttribute(
                         matmulDesc, CUBLASLT_MATMUL_DESC_TRANSA, &transa,
-                        sizeof(transa));
-                cublasLtMatmulDescSetAttribute(
+                        sizeof(transa)), "cuBLASLt matmul descriptor");
+                HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == cublasLtMatmulDescSetAttribute(
                         matmulDesc, CUBLASLT_MATMUL_DESC_TRANSB, &transb,
-                        sizeof(transb));
+                        sizeof(transb)), "cuBLASLt matmul descriptor");
                 data->ws_gpu->gpu_workspace[i].stream_workspace[j].matmulDesc= matmulDesc;
 
                 // Adesc Bdesc Cdesc
@@ -713,9 +714,9 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t 
                 // heuristicResultsArray 
                 cublasLtMatmulPreference_t pref;
                 HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == cublasLtMatmulPreferenceCreate(&pref), "cuBLASLt preference");
-                cublasLtMatmulPreferenceSetAttribute(
+                HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == cublasLtMatmulPreferenceSetAttribute(
                         pref, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES,
-                        &workspaceSize, sizeof(workspaceSize));
+                        &workspaceSize, sizeof(workspaceSize)), "cuBLASLt preference");
 
                 int requestedAlgoCount = 1;
                 int returnAlgoCount = 0;
@@ -746,10 +747,10 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t 
                 const float *a_scale = fp8_scale + 2, *b_scale = fp8_scale + 6;
                 cublasLtMatmulDesc_t matmulDesc_scaled;
                 HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == cublasLtMatmulDescCreate(&matmulDesc_scaled, CUBLAS_COMPUTE_32F, CUDA_R_32F), "cuBLASLt scaled matmul descriptor");
-                cublasLtMatmulDescSetAttribute(matmulDesc_scaled, CUBLASLT_MATMUL_DESC_TRANSA, &transa, sizeof(transa));
-                cublasLtMatmulDescSetAttribute(matmulDesc_scaled, CUBLASLT_MATMUL_DESC_TRANSB, &transb, sizeof(transb));
-                cublasLtMatmulDescSetAttribute(matmulDesc_scaled, CUBLASLT_MATMUL_DESC_A_SCALE_POINTER, &a_scale, sizeof(a_scale));
-                cublasLtMatmulDescSetAttribute(matmulDesc_scaled, CUBLASLT_MATMUL_DESC_B_SCALE_POINTER, &b_scale, sizeof(b_scale));
+                HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == cublasLtMatmulDescSetAttribute(matmulDesc_scaled, CUBLASLT_MATMUL_DESC_TRANSA, &transa, sizeof(transa)), "cuBLASLt scaled matmul descriptor");
+                HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == cublasLtMatmulDescSetAttribute(matmulDesc_scaled, CUBLASLT_MATMUL_DESC_TRANSB, &transb, sizeof(transb)), "cuBLASLt scaled matmul descriptor");
+                HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == cublasLtMatmulDescSetAttribute(matmulDesc_scaled, CUBLASLT_MATMUL_DESC_A_SCALE_POINTER, &a_scale, sizeof(a_scale)), "cuBLASLt scaled matmul descriptor");
+                HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == cublasLtMatmulDescSetAttribute(matmulDesc_scaled, CUBLASLT_MATMUL_DESC_B_SCALE_POINTER, &b_scale, sizeof(b_scale)), "cuBLASLt scaled matmul descriptor");
 
                 cublasLtMatmulHeuristicResult_t heuristic_scaled;
                 memset(&heuristic_scaled, 0, sizeof(heuristic_scaled));
@@ -799,14 +800,15 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t 
             /* Create handle_cublas_gpu */
             status = cublasCreate(&handle_cublas_gpu);
             HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cublasCreate");
-            cublasSetStream( handle_cublas_gpu, cuda_stream->cuda_stream );
+            status = cublasSetStream( handle_cublas_gpu, cuda_stream->cuda_stream );
             HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cuBLAS handle setup");
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].handle_cublas = handle_cublas_gpu;
 
             /* Create handle_cublas_gpu_deviceptr */
             status = cublasCreate(&handle_cublas_gpu_deviceptr);
             HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cublasCreate");
-            cublasSetStream( handle_cublas_gpu_deviceptr, cuda_stream->cuda_stream );
+            status = cublasSetStream( handle_cublas_gpu_deviceptr, cuda_stream->cuda_stream );
+            HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cuBLAS handle setup");
             status = cublasSetPointerMode(handle_cublas_gpu_deviceptr, CUBLAS_POINTER_MODE_DEVICE);
             HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cuBLAS handle setup");
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].handle_cublas_deviceptr = handle_cublas_gpu_deviceptr;
@@ -814,7 +816,6 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t 
             /* Create handle_cublas_tensor */
             status = cublasCreate(&handle_cublas_tensor);
             HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cublasCreate");
-            HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cuBLAS handle setup");
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
             status = cublasSetMathMode(handle_cublas_tensor, CUBLAS_DEFAULT_MATH); /* Set the math mode to allow cuBLAS to use Tensor Cores */
             HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cuBLAS handle setup");

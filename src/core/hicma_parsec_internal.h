@@ -167,6 +167,70 @@ typedef struct parsec_cuda_exec_stream_s parsec_cuda_exec_stream_t;
 #endif
 
 /* ============================================================================
+ * GPU library status checks
+ * ============================================================================ */
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+#define HICMA_GPU_BLAS_NAME             "hipBLAS"
+#define HICMA_GPU_BLAS_STRING(s_)       hipblasStatusToString(s_)
+#define HICMA_GPU_SOLVER_NAME           "rocSOLVER"
+#define HICMA_GPU_SOLVER_STRING(s_)     rocblas_status_to_string(s_)
+#define HICMA_GPU_SOLVER_SUCCESS        rocblas_status_success
+typedef rocblas_status hicma_gpu_solver_status_t;   /**< rocsolver_* return a rocBLAS status */
+#else
+#define HICMA_GPU_BLAS_NAME             "cuBLAS"
+#define HICMA_GPU_BLAS_STRING(s_)       cublasGetStatusString(s_)
+#define HICMA_GPU_SOLVER_NAME           "cuSOLVER"
+#define HICMA_GPU_SOLVER_STRING(s_)     hicma_cusolver_status_string(s_)
+#define HICMA_GPU_SOLVER_SUCCESS        CUSOLVER_STATUS_SUCCESS
+typedef cusolverStatus_t hicma_gpu_solver_status_t;
+
+/** cuSOLVER has no status-string function */
+static inline const char *hicma_cusolver_status_string(cusolverStatus_t s)
+{
+    switch( s ) {
+        case CUSOLVER_STATUS_NOT_INITIALIZED:           return "CUSOLVER_STATUS_NOT_INITIALIZED";
+        case CUSOLVER_STATUS_ALLOC_FAILED:              return "CUSOLVER_STATUS_ALLOC_FAILED";
+        case CUSOLVER_STATUS_INVALID_VALUE:             return "CUSOLVER_STATUS_INVALID_VALUE";
+        case CUSOLVER_STATUS_ARCH_MISMATCH:             return "CUSOLVER_STATUS_ARCH_MISMATCH";
+        case CUSOLVER_STATUS_EXECUTION_FAILED:          return "CUSOLVER_STATUS_EXECUTION_FAILED";
+        case CUSOLVER_STATUS_INTERNAL_ERROR:            return "CUSOLVER_STATUS_INTERNAL_ERROR";
+        case CUSOLVER_STATUS_MATRIX_TYPE_NOT_SUPPORTED: return "CUSOLVER_STATUS_MATRIX_TYPE_NOT_SUPPORTED";
+        case CUSOLVER_STATUS_NOT_SUPPORTED:             return "CUSOLVER_STATUS_NOT_SUPPORTED";
+        default:                                        return "unknown cuSOLVER status";
+    }
+}
+#endif
+
+/** Abort with the call site when a cuBLAS or cuBLASLt call (hipBLAS on HIP)
+ *  of a GPU kernel fails. The kernels enqueue their work and return, so a
+ *  failed call leaves a tile without its update and the factor wrong; a
+ *  failure means a wrong argument, a broken handle or a dead GPU context,
+ *  not a condition to recover from (as HICMA_OMC for OmniCast). */
+#define HICMA_CUBLAS(call) do {                                                    \
+        cublasStatus_t hicma_cublas_status_ = (call);                              \
+        if( CUBLAS_STATUS_SUCCESS != hicma_cublas_status_ ) {                      \
+            fprintf(stderr, "%s:%d: " HICMA_GPU_BLAS_NAME ": %s (status %d)\n",    \
+                    __FILE__, __LINE__, HICMA_GPU_BLAS_STRING(hicma_cublas_status_), \
+                    (int)hicma_cublas_status_);                                    \
+            abort();                                                               \
+        }                                                                          \
+    } while(0)
+
+/** The same for cuSOLVER (rocSOLVER on HIP). A matrix that is not positive
+ *  definite is not a failure here: POTRF reports it in its info argument. */
+#define HICMA_CUSOLVER(call) do {                                                  \
+        hicma_gpu_solver_status_t hicma_cusolver_status_ = (call);                 \
+        if( HICMA_GPU_SOLVER_SUCCESS != hicma_cusolver_status_ ) {                 \
+            fprintf(stderr, "%s:%d: " HICMA_GPU_SOLVER_NAME ": %s (status %d)\n",  \
+                    __FILE__, __LINE__, HICMA_GPU_SOLVER_STRING(hicma_cusolver_status_), \
+                    (int)hicma_cusolver_status_);                                  \
+            abort();                                                               \
+        }                                                                          \
+    } while(0)
+#endif /* PARSEC_HAVE_DEV_CUDA_SUPPORT || PARSEC_HAVE_DEV_HIP_SUPPORT */
+
+/* ============================================================================
  * C++ compatibility
  * ============================================================================ */
 #ifdef __cplusplus

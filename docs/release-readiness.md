@@ -1570,13 +1570,85 @@ with `PARSEC_MCA_mpi_gpu_aware=0` (host memory).
   stopped cleanly 5 times while the other process held its GPU.
 - **Two weaknesses found along the way**, neither shown to cause it:
   - Most of HiCMA-X's static GPU kernels store cuBLAS's return status
-    without checking it, so a failed cuBLAS call would go unnoticed.
+    without checking it, so a failed cuBLAS call would go unnoticed
+    (checked since: section 5.23).
   - OmniCast's launch check reads `cudaGetLastError()`, which also returns
     an earlier error of the same thread, and its message does not name the
     CUDA error.
 
 Not covered: two GPUs per process on two NVIDIA nodes, InfiniBand (or
 GPUDirect RDMA) between NVIDIA nodes, and more than two nodes.
+
+### 5.23 Status checks of the GPU library calls (2026-11-25)
+
+**Why.** Section 5.22 found that most GPU kernels of the Cholesky stored the
+status of their cuBLAS calls without checking it. The GPU POTRF checked
+cuSOLVER's status only in an `assert`, which Release builds drop. A failed
+call left a tile without its update, and the run went on.
+
+**Change.** `HICMA_CUBLAS()` and `HICMA_CUSOLVER()`
+(`hicma_parsec_internal.h`) stop the run with the file, the line and the
+name of the status, as `HICMA_OMC()` does for OmniCast; on HIP they check
+hipBLAS and rocSOLVER. They wrap every unchecked cuBLAS, cuBLASLt and
+cuSOLVER call of the Cholesky kernels:
+- 52 call sites in `hicma_parsec_core.c`: POTRF, TRSM, SYRK, the dense and
+  low-rank GEMMs, the FP8 scale attributes and the stream settings;
+- 20 in the Cholesky JDFs: stream settings, the GEMMs of kind 3 and the
+  norms of kind 10.
+
+The kind-10 and FP8 GEMMs already stopped on a failed call and are
+unchanged. The handle setup checked `cublasCreate`'s status a second time
+after `cublasSetStream` instead of `cublasSetStream`'s own; it checks the
+right one now, and the cuBLASLt descriptor attributes are checked too. Not
+changed: the TRMM (checked already), the genomics and climate drivers, and
+the HIP warm-up calls at start-up.
+
+**Results** (`fa915ce` plus the change, built for sm 70, 80 and 90, and for
+gfx906 with ROCm 6.3.2):
+- The CUDA, HIP and CPU-only trees build without new warnings.
+- CTest 55/55 on the H100 and 55/55 on the V100 (hexane), and 46/46 on a
+  Radeon VII (histamine2).
+- The 22 GPU CTest cases on the H100 with `fa915ce` and with the change,
+  built side by side: the residuals are identical in all 22.
+- **Injected failures.** A preload library made one call of a GPU
+  factorization at N = 8192 return an error: the third `cublasDtrsm` or the
+  second `cusolverDnDpotrf`, in the default kind and in kind 2.
+  - With the change, each run stops at that call, for example
+    `hicma_parsec_core.c:3942: cuBLAS: the function failed to launch on the
+    GPU (status 13)` and `hicma_parsec_core.c:3864: cuSOLVER:
+    CUSOLVER_STATUS_EXECUTION_FAILED (status 6)`. With the library loaded
+    and no failure injected, the run passes.
+  - With `fa915ce`, the default kind went on without the TRSM and reported
+    "not positive definite" at row 3131 with residual 7.6e+01, a failure
+    like the unexplained one of section 5.22. Kind 2 failed later, in an
+    HCORE QR (`info=-4`) or with PaRSEC giving up on the GPU, and neither
+    message named the failed call.
+
+The unexplained wrong factor of section 5.22 stays unexplained: a failed
+cuBLAS call would now stop such a run instead of letting it finish.
+
+**The CPU side.** The CPU kernels have no such silent failure: their BLAS
+calls return no status (a wrong argument is a programming error), the CPU
+POTRF passes LAPACK's `info` on, and HCORE's QR and SVD exit with a message
+when LAPACK fails. Unchecked were allocations, which crash rather than
+miscompute:
+- `hicma_parsec_core_memory_allocation`, which allocates the LL^T of
+  `--check` (and the tiles of the climate emulator and of the TRMM
+  performance test), ignored the result of `cudaMallocHost`/`hipHostMalloc`.
+  It now returns NULL on failure and clears the CUDA (HIP) runtime's last
+  error, which OmniCast's launch check would otherwise report later as its
+  own. The check falls back to pageable memory as before, and every caller
+  stops with the size when that fails too.
+  - On the A100 (methane), with `cudaMallocHost` of the LL^T failed on
+    purpose, the run falls back and passes with the same residual
+    (3.602581e-16). With the pageable fallback failed as well, it stops with
+    `Fatal: allocating the LL^T of the check failed: 536870912 bytes of host
+    memory`.
+  - CTest 55/55 on the A100, and 46/46 on the Radeon VII again.
+- The work buffers of PaRSEC's private memory pools (about 70 pops) and four
+  `calloc`s of recompressed low-rank tiles are still unchecked. They crash at
+  once if the system runs out of memory; PaRSEC's pool returns a pointer just
+  past NULL then, so a NULL check would not catch it.
 
 
 ## 6. Release checklist

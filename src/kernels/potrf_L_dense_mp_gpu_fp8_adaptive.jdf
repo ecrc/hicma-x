@@ -482,7 +482,7 @@ BODY [type=CUDA stage_in=hicma_gpu_stage_in]
     }
 
     parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, ws_gpu);
-    cublasSetStream( stream_found->handle_cublas, cuda_stream->cuda_stream );
+    HICMA_CUBLAS( cublasSetStream( stream_found->handle_cublas, cuda_stream->cuda_stream ) );
 
     /* Column 0 (no GEMM updates C before this TRSM): decide from the norm
      * of C whether to store C in SP before the solve. */
@@ -519,12 +519,12 @@ BODY [type=CUDA stage_in=hicma_gpu_stage_in]
     if(params_tlr->adaptive_decision_runtime) {
         if( DENSE_DP == decision ) {
             double C_precision_dp = (double)DENSE_DP;
-            cublasDnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, &((hicma_tile_meta_t *)C_norm)->norm);
+            HICMA_CUBLAS( cublasDnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, &((hicma_tile_meta_t *)C_norm)->norm) );
             set_device_double(&((hicma_tile_meta_t *)C_norm)->precision, C_precision_dp, cuda_stream->cuda_stream);
         } else {
             double C_precision_sp = (double)DENSE_SP;
             float *norm_sp_device = (float *)stream_found->gpu_buffer_C;
-            cublasSnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, norm_sp_device);
+            HICMA_CUBLAS( cublasSnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, norm_sp_device) );
             HICMA_OMC( omc_gpu_convert(OMC_FP32, norm_sp_device, OMC_FP64, &((hicma_tile_meta_t *)C_norm)->norm, 1, NULL, cuda_stream->cuda_stream) );
             set_device_double(&((hicma_tile_meta_t *)C_norm)->precision, C_precision_sp, cuda_stream->cuda_stream);
         }
@@ -552,7 +552,7 @@ BODY [type=HIP stage_in=hicma_gpu_stage_in]
     }
 
     parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, ws_gpu);
-    cublasSetStream( stream_found->handle_cublas, cuda_stream->cuda_stream );
+    HICMA_CUBLAS( cublasSetStream( stream_found->handle_cublas, cuda_stream->cuda_stream ) );
 
     /* Column 0 (no GEMM updates C before this TRSM): decide from the norm
      * of C whether to store C in SP before the solve. */
@@ -590,12 +590,12 @@ BODY [type=HIP stage_in=hicma_gpu_stage_in]
     if(params_tlr->adaptive_decision_runtime) {
         if( DENSE_DP == decision ) {
             double C_precision_dp = (double)DENSE_DP;
-            cublasDnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, &((hicma_tile_meta_t *)C_norm)->norm);
+            HICMA_CUBLAS( cublasDnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, &((hicma_tile_meta_t *)C_norm)->norm) );
             set_device_double(&((hicma_tile_meta_t *)C_norm)->precision, C_precision_dp, cuda_stream->cuda_stream);
         } else {
             double C_precision_sp = (double)DENSE_SP;
             float *norm_sp_device = (float *)stream_found->gpu_buffer_C;
-            cublasSnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, norm_sp_device);
+            HICMA_CUBLAS( cublasSnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, norm_sp_device) );
             HICMA_OMC( omc_gpu_convert(OMC_FP32, norm_sp_device, OMC_FP64, &((hicma_tile_meta_t *)C_norm)->norm, 1, NULL, cuda_stream->cuda_stream) );
             set_device_double(&((hicma_tile_meta_t *)C_norm)->precision, C_precision_sp, cuda_stream->cuda_stream);
         }

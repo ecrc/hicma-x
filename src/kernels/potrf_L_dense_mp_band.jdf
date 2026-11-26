@@ -332,7 +332,7 @@ BODY [type=CUDA]
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
     /* GPU implementation: Delegate to GPU-specific triangular solve */
     parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, ws_gpu);
-    cublasSetStream( stream_found->handle_cublas, cuda_stream->cuda_stream );
+    HICMA_CUBLAS( cublasSetStream( stream_found->handle_cublas, cuda_stream->cuda_stream ) );
     hicma_parsec_core_trsm_gpu( descA, params_tlr, stream_found, cuda_device, gpu_task, cuda_stream, T, C, m, k );
 #endif
 }
@@ -574,7 +574,6 @@ BODY [type=CUDA]
     void *A_use = A;
     void *B_use = B;
     void *A_d, *A_s, *A_h, *B_d, *B_s, *B_h, *C_s, *C_h, *buffer_mbr, *buffer_rr;
-    cublasStatus_t status;
 
     /* Find workspace */
     parsec_potrf_workspace_t *_ws_gpu = (parsec_potrf_workspace_t *)ws_gpu;
@@ -585,7 +584,7 @@ BODY [type=CUDA]
     if( DENSE_HP == params_tlr->decisions[n*descA->lmt+m] ) {
         handle = stream_found->handle_cublas_tensor;
     }
-    cublasSetStream( handle, parsec_body.stream );
+    HICMA_CUBLAS( cublasSetStream( handle, parsec_body.stream ) );
 
     /* Get the temporary buffer on GPU */
     A_d = (double *)stream_found->gpu_buffer_A;
@@ -610,11 +609,11 @@ BODY [type=CUDA]
             HICMA_OMC( omc_gpu_convert_2d(OMC_FP32, B, descA->mb, OMC_FP64, B_d, descA->mb, descA->mb, descA->nb, NULL, parsec_body.stream) );
         }
 
-        status = cublasDgemm( handle, CUBLAS_OP_N, CUBLAS_OP_T,
+        HICMA_CUBLAS( cublasDgemm( handle, CUBLAS_OP_N, CUBLAS_OP_T,
                  tempmm, descA->mb, descA->mb, 
                  &alpha_double, ((m-k >= params_tlr->band_size_dense_dp)? (double *)A_d: (double *)A), ldam,
                                 ((n-k >= params_tlr->band_size_dense_dp)? (double *)B_d: (double *)B), ldan,
-                 &beta_double,  (double *)C, ldam );
+                 &beta_double,  (double *)C, ldam ) );
 
     } else if( m-n < params_tlr->band_size_dense_sp ) {
         if( n-k < params_tlr->band_size_dense_dp && SENDER_CONVERT != params_tlr->datatype_convert ) {
@@ -622,11 +621,11 @@ BODY [type=CUDA]
             HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, B, descA->mb, OMC_FP32, B_s, descA->mb, descA->mb, descA->nb, NULL, parsec_body.stream) );
         }
 
-        status = cublasSgemm( handle, CUBLAS_OP_N, CUBLAS_OP_T,
+        HICMA_CUBLAS( cublasSgemm( handle, CUBLAS_OP_N, CUBLAS_OP_T,
                  tempmm, descA->mb, descA->mb,
                  &alpha_float, (float *)A, ldam,
                                (((n-k) < params_tlr->band_size_dense_dp && SENDER_CONVERT != params_tlr->datatype_convert )? (float *)B_s: (float *)B), ldan,
-                 &beta_float,  (float *)C, ldam );
+                 &beta_float,  (float *)C, ldam ) );
 
     } else {
         /* Convert A from double to half */
@@ -657,12 +656,12 @@ BODY [type=CUDA]
         /* HGEMM; with FP16 compute cuBLAS reads alpha and beta as half
          * precision (the float values read that way are 0) */
         char alphah[16], betah[16];
-        status = cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
+        HICMA_CUBLAS( cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
                 (int64_t)tempmm, (int64_t)descA->mb, (int64_t)descA->mb,
                 HICMA_GEMM_SCALAR(compute16, alpha_float, alphah), A_h, CUDA_R_16F, (int64_t)ldam,
                               B_h, CUDA_R_16F, (int64_t)ldan,
                 HICMA_GEMM_SCALAR(compute16, beta_float, betah), C,   c16? CUDA_R_16F: CUDA_R_32F, (int64_t)ldam,
-                compute16? CUDA_R_16F: CUDA_R_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+                compute16? CUDA_R_16F: CUDA_R_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP) );
 
         /* After last local GEMM convert C from half to single */
         if( n-1 == k && c16 ) {

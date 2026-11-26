@@ -217,6 +217,25 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   `device_load_balance_allow_cpu=1`, PaRSEC put every kind-10 GEMM on the
   CPU (3 to 6 times slower in one process on a V100 node). Default runs give
   the same bits. Report in `docs/omnicast/round6/REPORT.md`, section 8.
+- The GPU kernels of the Cholesky check the status of their cuBLAS,
+  cuBLASLt and cuSOLVER calls (hipBLAS and rocSOLVER on HIP). Most stored it
+  unchecked, and the GPU POTRF checked it only in an `assert`, which Release
+  builds drop: a failed call left a tile without its update and the run went
+  on, to a wrong factor ("not positive definite", residual 7.6e+01 with one
+  TRSM failed on purpose) or a later, unrelated error. A failed call now stops
+  the run with the file, the line and the status name (`HICMA_CUBLAS()`,
+  `HICMA_CUSOLVER()` in `hicma_parsec_internal.h`, as `HICMA_OMC()` for
+  OmniCast). The cuBLAS handle setup checked `cublasCreate`'s status again
+  after `cublasSetStream` instead of `cublasSetStream`'s own; the cuBLASLt
+  descriptor attributes are checked too. Results do not change
+  (`docs/release-readiness.md`, section 5.23).
+- `hicma_parsec_core_memory_allocation` (the LL^T of `--check`, and the tiles
+  of the climate emulator and the TRMM performance test) ignored the result
+  of `cudaMallocHost`/`hipHostMalloc`: a failure crashed later with no word
+  about memory. It now returns NULL and clears the runtime's error, which a
+  later launch check would otherwise have reported as its own. The check
+  falls back to pageable memory as before, and every caller stops with the
+  size when no memory is left.
 
 ### Architecture and maintenance
 

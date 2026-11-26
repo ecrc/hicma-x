@@ -387,8 +387,8 @@ static void hicma_operand_release(hicma_operand_hold_t *hold, int sidx, cudaStre
 static void hicma_fp8_set_scales(cublasLtMatmulDesc_t desc, const float *A_scale, const float *B_scale)
 {
     const float *a = A_scale + 2, *b = B_scale + 2;
-    cublasLtMatmulDescSetAttribute(desc, CUBLASLT_MATMUL_DESC_A_SCALE_POINTER, &a, sizeof(a));
-    cublasLtMatmulDescSetAttribute(desc, CUBLASLT_MATMUL_DESC_B_SCALE_POINTER, &b, sizeof(b));
+    HICMA_CUBLAS( cublasLtMatmulDescSetAttribute(desc, CUBLASLT_MATMUL_DESC_A_SCALE_POINTER, &a, sizeof(a)) );
+    HICMA_CUBLAS( cublasLtMatmulDescSetAttribute(desc, CUBLASLT_MATMUL_DESC_B_SCALE_POINTER, &b, sizeof(b)) );
 }
 
 static int hicma_parsec_check_cublaslt_status(cublasStatus_t status,
@@ -823,19 +823,7 @@ static void *hicma_cpu_promote_tile_fp64(hicma_parsec_params_t *params_tlr,
     return C;
 }
 
-/**
- * @brief Allocates memory for HICMA computations with GPU acceleration support
- * 
- * This function provides unified memory allocation for both CPU and GPU computations.
- * It automatically selects the appropriate allocation method based on available hardware:
- * - GPU-accelerated: Uses pinned host memory for better GPU transfer performance
- * - CPU-only: Uses standard malloc for regular host memory
- * 
- * @param[out] A Pointer to the allocated memory buffer
- * @param[in] nb_elements Number of elements to allocate
- * @param[in] allocate_type Data type string (e.g., "double", "float", "int")
- * @param[out] data_size Total size of allocated memory in bytes
- */
+/** Frees a buffer of hicma_parsec_core_memory_allocation */
 void hicma_parsec_core_memory_free(void *A)
 {
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
@@ -852,10 +840,26 @@ void hicma_parsec_core_memory_free(void *A)
     free(A);
 }
 
+/**
+ * @brief Allocates host memory for matrix data, pinned when GPUs are enabled
+ *
+ * - GPUs enabled: pinned host memory (cudaMallocHost / hipHostMalloc), for
+ *   faster transfers, and because HIP faults on some pageable pages
+ * - otherwise: malloc
+ *
+ * Free with hicma_parsec_core_memory_free.
+ *
+ * @param[out] A Pointer to the allocated memory buffer, NULL when the
+ *               allocation fails: callers check it
+ * @param[in] nb_elements Number of elements to allocate
+ * @param[in] allocate_type Data type string (e.g., "double", "float", "int")
+ * @param[out] data_size Total size of allocated memory in bytes
+ */
 void hicma_parsec_core_memory_allocation(void **A, size_t nb_elements, char *allocate_type, size_t *data_size) {
     // Calculate total memory size based on data type and element count
     *data_size = nb_elements * get_datatype_size(allocate_type);  
     size_t data_size_ = *data_size;
+    *A = NULL;
     
     // Check if GPU acceleration is available and enabled
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
@@ -867,13 +871,21 @@ void hicma_parsec_core_memory_allocation(void **A, size_t nb_elements, char *all
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
         // Allocate pinned host memory for CUDA GPU acceleration
         // Pinned memory provides better transfer performance between host and GPU
-        cudaMallocHost(A, data_size_);
+        if( cudaSuccess != cudaMallocHost(A, data_size_) ) {
+            /* Clear the error: a later launch check (cudaGetLastError) would
+             * report it as its own */
+            (void)cudaGetLastError();
+            *A = NULL;
+        }
 #endif
 
 #if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
         // Allocate pinned host memory for HIP/ROCm GPU acceleration
         // hipHostMallocDefault provides optimal memory allocation for GPU transfers
-        hipHostMalloc(A, data_size_, hipHostMallocDefault);
+        if( hipSuccess != hipHostMalloc(A, data_size_, hipHostMallocDefault) ) {
+            (void)hipGetLastError();
+            *A = NULL;
+        }
         // Note: hipHostMallocNumaUser could be used for NUMA-aware allocation
         // References:
         // https://github.com/ROCm-Developer-Tools/HIP/issues/2475
@@ -3825,11 +3837,14 @@ void hicma_parsec_core_potrf_gpu( parsec_tiled_matrix_t* descA,
     parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, _ws_gpu);
     int buffer_size = stream_found->gpu_buffer_size;
     cusolverDnHandle_t handle = stream_found->handle_cusolver;
-    cusolverStatus_t status = CUSOLVER_STATUS_SUCCESS;
     int *dev_info;
 
     /* Set stream */
-    cusolverDnSetStream( handle, cuda_stream->cuda_stream );
+#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    HICMA_CUBLAS( cusolverDnSetStream( handle, cuda_stream->cuda_stream ) );  /* hipblasSetStream */
+#else
+    HICMA_CUSOLVER( cusolverDnSetStream( handle, cuda_stream->cuda_stream ) );
+#endif
 
 #if PRINT_KERNEL_TIME && defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
     cudaEvent_t gpu_time_start = NULL;
@@ -3845,11 +3860,11 @@ void hicma_parsec_core_potrf_gpu( parsec_tiled_matrix_t* descA,
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
         float *gpu_buffer = (float *)stream_found->gpu_buffer;
         assert(NULL != gpu_buffer);
-        status = cusolverDnSpotrf(handle, CUBLAS_FILL_MODE_LOWER, tempkn, T, ldak, gpu_buffer, buffer_size, dev_info);
+        HICMA_CUSOLVER( cusolverDnSpotrf(handle, CUBLAS_FILL_MODE_LOWER, tempkn, T, ldak, gpu_buffer, buffer_size, dev_info) );
 #endif
 
 #if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
-        rocsolver_spotrf(handle, rocblas_fill_lower, tempkn, T, ldak, dev_info); 
+        HICMA_CUSOLVER( rocsolver_spotrf(handle, rocblas_fill_lower, tempkn, T, ldak, dev_info) );
 #endif
 
 
@@ -3858,16 +3873,15 @@ void hicma_parsec_core_potrf_gpu( parsec_tiled_matrix_t* descA,
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
         double *gpu_buffer = (double *)stream_found->gpu_buffer;
         assert(NULL != gpu_buffer);
-        status = cusolverDnDpotrf(handle, CUBLAS_FILL_MODE_LOWER, tempkn, T, ldak, gpu_buffer, buffer_size, dev_info);
+        HICMA_CUSOLVER( cusolverDnDpotrf(handle, CUBLAS_FILL_MODE_LOWER, tempkn, T, ldak, gpu_buffer, buffer_size, dev_info) );
 #endif
 
 #if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
         //printf("dev_info %d\n", dev_info[0]);
-        rocsolver_dpotrf(handle, rocblas_fill_lower, tempkn, T, ldak, dev_info);                      
+        HICMA_CUSOLVER( rocsolver_dpotrf(handle, rocblas_fill_lower, tempkn, T, ldak, dev_info) );
 #endif
 
     }
-    assert(CUSOLVER_STATUS_SUCCESS == status);
 
     /* Update info */
     cudaMemcpyAsync(&params_tlr->info_gpu[k], dev_info, sizeof(int), cudaMemcpyDeviceToHost, cuda_stream->cuda_stream);
@@ -3926,8 +3940,7 @@ void hicma_parsec_core_trsm_gpu( parsec_tiled_matrix_t* descA,
     /* Get handle_cublas */
     cublasHandle_t handle = stream_found->handle_cublas;
 
-    cublasStatus_t status;
-    cublasSetStream( handle, cuda_stream->cuda_stream );
+    HICMA_CUBLAS( cublasSetStream( handle, cuda_stream->cuda_stream ) );
 
 #if PRINT_KERNEL_TIME && defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
     cudaEvent_t gpu_time_start = NULL;
@@ -3938,11 +3951,11 @@ void hicma_parsec_core_trsm_gpu( parsec_tiled_matrix_t* descA,
 #endif
 
     if( DENSE_DP == params_tlr->decisions[k*descA->lmt+m] ) {
-        status = cublasDtrsm( handle, CUBLAS_SIDE_RIGHT, CUBLAS_FILL_MODE_LOWER,
+        HICMA_CUBLAS( cublasDtrsm( handle, CUBLAS_SIDE_RIGHT, CUBLAS_FILL_MODE_LOWER,
                 CUBLAS_OP_T, CUBLAS_DIAG_NON_UNIT,
                 tempmm, descA->mb,
                 &alpha_double, (double *)T /*A(k, k)*/, ldak,
-                               (double *)C /*A(m, k)*/, ldam);
+                               (double *)C /*A(m, k)*/, ldam) );
     } else {
         /* Get the temporary buffer on GPU */
         float *T_s = (float *)T;
@@ -3956,11 +3969,11 @@ void hicma_parsec_core_trsm_gpu( parsec_tiled_matrix_t* descA,
 			        HICMA_OMC_SR(params_tlr->enable_stochastic_rounding, hicma_parsec_sr_seed(k, k)), cuda_stream->cuda_stream) );
 		}
 
-		status = cublasStrsm( handle, CUBLAS_SIDE_RIGHT, CUBLAS_FILL_MODE_LOWER,
+		HICMA_CUBLAS( cublasStrsm( handle, CUBLAS_SIDE_RIGHT, CUBLAS_FILL_MODE_LOWER,
 				CUBLAS_OP_T, CUBLAS_DIAG_NON_UNIT,
 				tempmm, descA->mb,
 				&alpha_float, (float *)T_s /*A(k, k)*/, ldak,
-				(float *)C   /*A(m, k)*/, ldam);
+				(float *)C   /*A(m, k)*/, ldam) );
     }
 
 #if PRINT_KERNEL_TIME && defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
@@ -4014,8 +4027,7 @@ void hicma_parsec_core_syrk_gpu( parsec_tiled_matrix_t* descA,
     parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, _ws_gpu);
     cublasHandle_t handle = stream_found->handle_cublas;
 
-    cublasStatus_t status;
-    cublasSetStream( handle, cuda_stream->cuda_stream );
+    HICMA_CUBLAS( cublasSetStream( handle, cuda_stream->cuda_stream ) );
 
 #if PRINT_KERNEL_TIME && defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
     cudaEvent_t gpu_time_start = NULL;
@@ -4041,18 +4053,18 @@ void hicma_parsec_core_syrk_gpu( parsec_tiled_matrix_t* descA,
                 HICMA_OMC( omc_gpu_convert_2d(OMC_FP32, A, descA->mb, OMC_FP64, A_d, descA->mb, descA->mb, descA->nb, NULL, cuda_stream->cuda_stream) );
             }
 
-            status = cublasDsyrk(handle, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_N,
+            HICMA_CUBLAS( cublasDsyrk(handle, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_N,
                     tempmm, descA->mb,
                     &alpha, A_d /*A(m, k)*/, ldam,
-                    &beta,  T /*A(m, m)*/, ldam);
+                    &beta,  T /*A(m, m)*/, ldam) );
         } else {
             const float alpha = (float)-1.0;
             const float beta = (float)1.0;
 
-            status = cublasSsyrk(handle, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_N,
+            HICMA_CUBLAS( cublasSsyrk(handle, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_N,
                     tempmm, descA->mb,
                     &alpha, A  /*A(m, k)*/, ldam,
-                    &beta,  T  /*A(m, m)*/, ldam);
+                    &beta,  T  /*A(m, m)*/, ldam) );
         }
     }
     /* A is low-rank */
@@ -4086,31 +4098,31 @@ void hicma_parsec_core_syrk_gpu( parsec_tiled_matrix_t* descA,
         double beta = (double)0.0;
 
         /* tmp_rr = trans(Av) * Av */
-        status = hicma_parsec_dgemm_gpu(handle, CUBLAS_OP_T, CUBLAS_OP_N,
+        HICMA_CUBLAS( hicma_parsec_dgemm_gpu(handle, CUBLAS_OP_T, CUBLAS_OP_N,
                 Arank, Arank, descA->mb,
                 &alpha, Av          /*A(k, m)*/, descA->mb,
                         Av          /*A(k, n)*/, descA->mb,
-                &beta,  buffer_rr   /*A(m, n)*/, Arank);
+                &beta,  buffer_rr   /*A(m, n)*/, Arank) );
 
         alpha = (double)1.0;
         beta = (double)0.0;
 
         /* tmp_mbr = tmp_rr * trans(Au) */
-        status = hicma_parsec_dgemm_gpu(handle, CUBLAS_OP_N, CUBLAS_OP_T,
+        HICMA_CUBLAS( hicma_parsec_dgemm_gpu(handle, CUBLAS_OP_N, CUBLAS_OP_T,
                 Arank, descA->mb, Arank,
                 &alpha, buffer_rr    /*A(m, k)*/, Arank,
                         Au           /*A(n, k)*/, descA->mb,
-                &beta,  buffer_mbr   /*A(m, n)*/, Arank);
+                &beta,  buffer_mbr   /*A(m, n)*/, Arank) );
 
         alpha = (double)-1.0;
         beta = (double)1.0;
 
         /* T = T - Au * tmp_mbr */
-        status = hicma_parsec_dgemm_gpu(handle, CUBLAS_OP_N, CUBLAS_OP_N,
+        HICMA_CUBLAS( hicma_parsec_dgemm_gpu(handle, CUBLAS_OP_N, CUBLAS_OP_N,
                 descA->mb, descA->mb, Arank,
                 &alpha, Au              /*A(m, k)*/, descA->mb,
                         buffer_mbr   /*A(k, n)*/, Arank,
-                &beta,  T               /*A(m, n)*/, descA->mb);
+                &beta,  T               /*A(m, n)*/, descA->mb) );
 
     }
 
@@ -4152,8 +4164,7 @@ void hicma_parsec_core_syrk_runtime_decision_gpu( parsec_tiled_matrix_t* descA,
     parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, _ws_gpu);
     cublasHandle_t handle = stream_found->handle_cublas;
 
-    cublasStatus_t status;
-    cublasSetStream( handle, cuda_stream->cuda_stream );
+    HICMA_CUBLAS( cublasSetStream( handle, cuda_stream->cuda_stream ) );
 
 #if PRINT_KERNEL_TIME && defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
     cudaEvent_t gpu_time_start = NULL;
@@ -4182,19 +4193,19 @@ void hicma_parsec_core_syrk_runtime_decision_gpu( parsec_tiled_matrix_t* descA,
                 HICMA_OMC( omc_gpu_convert_2d(OMC_FP32, A, descA->mb, OMC_FP64, A_d, descA->mb, descA->mb, descA->nb, NULL, cuda_stream->cuda_stream) );
             }
 
-            status = cublasDsyrk(handle, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_N,
+            HICMA_CUBLAS( cublasDsyrk(handle, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_N,
                     tempmm, descA->mb,
                     &alpha, A_d /*A(m, k)*/, ldam,
-                    &beta,  T /*A(m, m)*/, ldam);
+                    &beta,  T /*A(m, m)*/, ldam) );
         } else {
             fprintf(stderr, "Should not reach here: SYRK SP %d\n", m);
             const float alpha = (float)-1.0;
             const float beta = (float)1.0;
 
-            status = cublasSsyrk(handle, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_N,
+            HICMA_CUBLAS( cublasSsyrk(handle, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_N,
                     tempmm, descA->mb,
                     &alpha, A  /*A(m, k)*/, ldam,
-                    &beta,  T  /*A(m, m)*/, ldam);
+                    &beta,  T  /*A(m, m)*/, ldam) );
         }
     } else {
             fprintf(stderr, "Should not reach here: SYRK LOW_RANK %d\n", m);
@@ -4267,7 +4278,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
     }
 
     //if( DENSE_FP8 != params_tlr->decisions[n*descA->lmt+m] ) {
-        cublasSetStream( handle, cuda_stream->cuda_stream );
+        HICMA_CUBLAS( cublasSetStream( handle, cuda_stream->cuda_stream ) );
     //}
 
 #if PRINT_KERNEL_TIME && defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
@@ -4349,12 +4360,12 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
 
         double alpha = -1.0, beta = 1.0;
 
-        status = hicma_parsec_dgemm_gpu( handle, CUBLAS_OP_N, CUBLAS_OP_T,
+        HICMA_CUBLAS( hicma_parsec_dgemm_gpu( handle, CUBLAS_OP_N, CUBLAS_OP_T,
         //status = cublasDgemm( handle, CUBLAS_OP_N, CUBLAS_OP_T,
                 tempmm, descA->mb, descA->mb,
                 &alpha, A_use, ldam,
                         B_use, ldan,
-                &beta,  C,     ldam );
+                &beta,  C,     ldam ) );
 
     }
     /* If sgemm */
@@ -4380,12 +4391,12 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
 
         float alpha = -1.0f, beta = 1.0f;
 
-        status = hicma_parsec_sgemm_gpu( handle, CUBLAS_OP_N, CUBLAS_OP_T,
+        HICMA_CUBLAS( hicma_parsec_sgemm_gpu( handle, CUBLAS_OP_N, CUBLAS_OP_T,
                 tempmm, descA->mb, descA->mb,
                 &alpha, A_use, ldam,
                         B_use, ldan,
                 &beta,  C,     ldam,
-                params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m]);
+                params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m]) );
     }
     /* If hgemm */
     else if( DENSE_HP == params_tlr->decisions[n*descA->lmt+m] ) {
@@ -4425,23 +4436,23 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
 
                     /* Call hgemm */
                     if( MASK_TF16_A16_B16_C32_OP32 == tensor_gemm_type ) {
-                        status = cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
+                        HICMA_CUBLAS( cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
                                 tempmm, descA->mb, descA->mb,
                                 &alpha, A_use, CUDA_R_16F, ldam,
                                         B_use, CUDA_R_16F, ldan,
                                 &beta,  C,     CUDA_R_32F, ldam,
-                                CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+                                CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT) );
                     } else {
                         // convert alpha and beta
                         char alphah[16], betah[16];
                         hicma_parsec_fp32_to_fp16_host(alpha, &alphah[0]);
                         hicma_parsec_fp32_to_fp16_host(beta, &betah[0]);
-                        status = cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
+                        HICMA_CUBLAS( cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
                                 tempmm, descA->mb, descA->mb,
                                 &alphah[0], A_use, CUDA_R_16F, ldam,
                                 B_use, CUDA_R_16F, ldan,
                                 &betah[0],  C,     CUDA_R_16F, ldam,
-                                CUBLAS_COMPUTE_16F, CUBLAS_GEMM_DEFAULT);
+                                CUBLAS_COMPUTE_16F, CUBLAS_GEMM_DEFAULT) );
 
                     }
 
@@ -4487,19 +4498,19 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
 
                     /* Call hgemm */
                     if( MASK_BF16_A16_B16_C32_OP32 == tensor_gemm_type ) {
-                        status = cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
+                        HICMA_CUBLAS( cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
                                 tempmm, descA->mb, descA->mb,
                                 &alpha, A_use, CUDA_R_16BF, ldam,
                                         B_use, CUDA_R_16BF, ldan,
                                 &beta,  C,     CUDA_R_32F, ldam,
-                                CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+                                CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT) );
                     } else {
-                        status = cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
+                        HICMA_CUBLAS( cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
                                 tempmm, descA->mb, descA->mb,
                                 &alpha, A_use, CUDA_R_16BF, ldam,
                                         B_use, CUDA_R_16BF, ldan,
                                 &beta,  C,     CUDA_R_16BF, ldam,
-                                CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+                                CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT) );
 
                     }
 
@@ -4685,7 +4696,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
         }
     }
     hicma_parsec_get_precision_tile(params_tlr, &new_decision, Anorm * Bnorm, m, n);
-    cublasSetStream( handle, cuda_stream->cuda_stream );
+    HICMA_CUBLAS( cublasSetStream( handle, cuda_stream->cuda_stream ) );
 
 
     /* The first local GEMM: decide the *storage* precision of C from ||C||.
@@ -5076,7 +5087,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
             && DENSE_DP == params_tlr->decisions[idx_C] ) {
         double C_norm = 0.0;
         const size_t tile_elems = descA->mb * descA->nb;
-        cublasDnrm2(stream_found->handle_cublas, tile_elems, C, 1, &C_norm);
+        HICMA_CUBLAS( cublasDnrm2(stream_found->handle_cublas, tile_elems, C, 1, &C_norm) );
         hicma_parsec_get_precision_tile(params_tlr, &new_decision, C_norm, m, n);
         if( params_tlr->verbose > 100 ) {
             printf("m %d n %d C_norm %lf new_decision %d old_decision %d\n",
@@ -5135,7 +5146,6 @@ void hicma_parsec_core_gemm_denseC_lrA_denseB_gpu( parsec_tiled_matrix_t* descA,
     void *A_use = A;
     void *B_use = B;
     void *A_d, *A_s, *A_h, *B_d, *B_s, *B_h, *C_s, *C_h, *buffer_mbr, *buffer_rr, *Au, *Av;
-    cublasStatus_t status;
 
     /* If rank is 0, return */
     if( 0 == Arank ) {
@@ -5151,7 +5161,7 @@ void hicma_parsec_core_gemm_denseC_lrA_denseB_gpu( parsec_tiled_matrix_t* descA,
     if( DENSE_HP == params_tlr->decisions[n*descA->lmt+m] ) {
         handle = stream_found->handle_cublas_tensor;
     }
-    cublasSetStream( handle, cuda_stream->cuda_stream );
+    HICMA_CUBLAS( cublasSetStream( handle, cuda_stream->cuda_stream ) );
 
     /* Get the temporary buffer on GPU */
     A_d = (double *)stream_found->gpu_buffer_A;
@@ -5194,21 +5204,21 @@ void hicma_parsec_core_gemm_denseC_lrA_denseB_gpu( parsec_tiled_matrix_t* descA,
         double alpha = 1.0;
         double beta = 0.0;
 
-        status = hicma_parsec_dgemm_gpu( handle, CUBLAS_OP_T, CUBLAS_OP_T,
+        HICMA_CUBLAS( hicma_parsec_dgemm_gpu( handle, CUBLAS_OP_T, CUBLAS_OP_T,
                 Arank, descA->mb, descA->mb,
                 &alpha, Av         /*A(m, k)*/, descA->mb,
                         B_use      /*A(n, m)*/, descA->mb,
-                &beta,  buffer_mbr /*A(k, n)*/, Arank);
+                &beta,  buffer_mbr /*A(k, n)*/, Arank) );
 
         /* C = C - Au * tmp_mbr */
         alpha = -1.0;
         beta = 1.0;
 
-        status = hicma_parsec_dgemm_gpu( handle, CUBLAS_OP_N, CUBLAS_OP_N,
+        HICMA_CUBLAS( hicma_parsec_dgemm_gpu( handle, CUBLAS_OP_N, CUBLAS_OP_N,
                 descA->mb, descA->mb, Arank,
                 &alpha, Au         /*A(m, k)*/, descA->mb,
                         buffer_mbr /*A(k, n)*/, Arank,
-                &beta,  C          /*A(m, n)*/, descA->mb);
+                &beta,  C          /*A(m, n)*/, descA->mb) );
 
     } else if( DENSE_SP == params_tlr->decisions[n*descA->lmt+m] ) {
         /* Convert datatype, A */
@@ -5232,23 +5242,23 @@ void hicma_parsec_core_gemm_denseC_lrA_denseB_gpu( parsec_tiled_matrix_t* descA,
         /* tmp_mbr = trans(Av) * trans(B) */
         float alpha = 1.0f;
         float beta = 0.0f;
-        status = hicma_parsec_sgemm_gpu( handle, CUBLAS_OP_T, CUBLAS_OP_T,
+        HICMA_CUBLAS( hicma_parsec_sgemm_gpu( handle, CUBLAS_OP_T, CUBLAS_OP_T,
                 Arank, descA->mb, descA->mb,
                 &alpha, Av         /*A(m, k)*/, descA->mb,
                 B_use      /*A(n, m)*/, descA->mb,
                 &beta,  buffer_mbr /*A(k, n)*/, Arank,
-                params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m]);
+                params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m]) );
 
         /* C = C - Au * tmp_mbr */
         alpha = -1.0f;
         beta = 1.0f;
 
-        status = hicma_parsec_sgemm_gpu( handle, CUBLAS_OP_N, CUBLAS_OP_N,
+        HICMA_CUBLAS( hicma_parsec_sgemm_gpu( handle, CUBLAS_OP_N, CUBLAS_OP_N,
                 descA->mb, descA->mb, Arank,
                 &alpha, Au         /*A(m, k)*/, descA->mb,
                         buffer_mbr /*A(k, n)*/, Arank,
                 &beta,  C          /*A(m, n)*/, descA->mb,
-                params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m]);
+                params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m]) );
 
     } else {
         /* Convert datatype, A */
@@ -5298,22 +5308,22 @@ void hicma_parsec_core_gemm_denseC_lrA_denseB_gpu( parsec_tiled_matrix_t* descA,
         float alpha = 1.0f;
         float beta = 0.0f;
         char alphah[16], betah[16];
-        status = cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_T,
+        HICMA_CUBLAS( cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_T,
                 (int64_t)Arank, (int64_t)descA->mb, (int64_t)descA->mb,
                 HICMA_GEMM_SCALAR(compute16, alpha, alphah), Av, CUDA_R_16F, (int64_t)descA->mb,
                         B_use,       CUDA_R_16F, (int64_t)descA->mb,
                 HICMA_GEMM_SCALAR(compute16, beta, betah), buffer_mbr,  CUDA_R_16F, (int64_t)Arank,
-                compute16? CUBLAS_COMPUTE_16F: CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+                compute16? CUBLAS_COMPUTE_16F: CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT) );
 
         /* C = C - Au * tmp_mbr */
         alpha = -1.0f;
         beta = 1.0f;
-        status = cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
+        HICMA_CUBLAS( cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
                 (int64_t)descA->mb, (int64_t)descA->mb, (int64_t)Arank,
                 HICMA_GEMM_SCALAR(compute16, alpha, alphah), Au, CUDA_R_16F, (int64_t)descA->mb,
                         buffer_mbr,  CUDA_R_16F, (int64_t)Arank,
                 HICMA_GEMM_SCALAR(compute16, beta, betah), C,           c16? CUDA_R_16F: CUDA_R_32F, (int64_t)descA->mb,
-                compute16? CUBLAS_COMPUTE_16F: CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+                compute16? CUBLAS_COMPUTE_16F: CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT) );
 
         /* After last local GEMM convert C from half to single */
         if( n-1 == k && c16 ) {
@@ -5368,7 +5378,6 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_gpu( parsec_tiled_matrix_t* descA,
     void *A_use = A;
     void *B_use = B;
     void *A_d, *A_s, *A_h, *B_d, *B_s, *B_h, *C_s, *C_h, *buffer_mbr, *buffer_rr, *Au, *Av, *Bu, *Bv;
-    cublasStatus_t status;
 
     /* If rank is 0, return */
     if( 0 == Arank || 0 == Brank ) {
@@ -5384,7 +5393,7 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_gpu( parsec_tiled_matrix_t* descA,
     if( DENSE_HP == params_tlr->decisions[n*descA->lmt+m] ) {
         handle = stream_found->handle_cublas_tensor;
     }
-    cublasSetStream( handle, cuda_stream->cuda_stream );
+    HICMA_CUBLAS( cublasSetStream( handle, cuda_stream->cuda_stream ) );
 
     /* Get the temporary buffer on GPU */
     A_d = (double *)stream_found->gpu_buffer_A;
@@ -5429,48 +5438,48 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_gpu( parsec_tiled_matrix_t* descA,
         /* tmp_rr = trans(Av) * Bv */
         double alpha = 1.0;
         double beta = 0.0;
-        status = hicma_parsec_dgemm_gpu( handle, CUBLAS_OP_T, CUBLAS_OP_N,
+        HICMA_CUBLAS( hicma_parsec_dgemm_gpu( handle, CUBLAS_OP_T, CUBLAS_OP_N,
                 Arank, Brank, descA->mb,
                 &alpha, Av        /*A(k, m)*/, descA->mb,
                         Bv        /*A(k, n)*/, descA->mb,
-                &beta, buffer_rr  /*A(m, n)*/, Arank);
+                &beta, buffer_rr  /*A(m, n)*/, Arank) );
 
         if( Arank > Brank ) {
             /* tmp_mbr = Au * tmp_rr */
             alpha = 1.0;
             beta = 0.0;
-            status = hicma_parsec_dgemm_gpu( handle, CUBLAS_OP_N, CUBLAS_OP_N,
+            HICMA_CUBLAS( hicma_parsec_dgemm_gpu( handle, CUBLAS_OP_N, CUBLAS_OP_N,
                     descA->mb, Brank, Arank,
                     &alpha, Au         /*A(m, k)*/, descA->mb,
                             buffer_rr  /*A(k, n)*/, Arank,
-                    &beta,  buffer_mbr /*A(m, n)*/, descA->mb);
+                    &beta,  buffer_mbr /*A(m, n)*/, descA->mb) );
 
             /* C = C - tmp_mbr * trans(Bu) */
             alpha = -1.0;
             beta = 1.0;
-            status = hicma_parsec_dgemm_gpu( handle, CUBLAS_OP_N, CUBLAS_OP_T,
+            HICMA_CUBLAS( hicma_parsec_dgemm_gpu( handle, CUBLAS_OP_N, CUBLAS_OP_T,
                     descA->mb, descA->mb, Brank,
                     &alpha, buffer_mbr /*A(m, k)*/, descA->mb,
                             Bu         /*A(n, k)*/, descA->mb,
-                    &beta,  C          /*A(m, n)*/, descA->mb);
+                    &beta,  C          /*A(m, n)*/, descA->mb) );
         } else {
             /* tmp_mbr = tmp_rr * trans(Bu) */
             alpha = 1.0;
             beta = 0.0;
-            status = hicma_parsec_dgemm_gpu( handle, CUBLAS_OP_N, CUBLAS_OP_T,
+            HICMA_CUBLAS( hicma_parsec_dgemm_gpu( handle, CUBLAS_OP_N, CUBLAS_OP_T,
                     Arank, descA->mb, Brank,
                     &alpha, buffer_rr  /*A(m, k)*/, Arank,
                             Bu         /*A(n, k)*/, descA->mb,
-                    &beta,  buffer_mbr /*A(m, n)*/, Arank);
+                    &beta,  buffer_mbr /*A(m, n)*/, Arank) );
 
             /* C = C - Au * tmp_mbr */
             alpha = -1.0;
             beta = 1.0;
-            status = hicma_parsec_dgemm_gpu( handle, CUBLAS_OP_N, CUBLAS_OP_N,
+            HICMA_CUBLAS( hicma_parsec_dgemm_gpu( handle, CUBLAS_OP_N, CUBLAS_OP_N,
                     descA->mb, descA->mb, Arank,
                     &alpha, Au         /*A(m, k)*/, descA->mb,
                             buffer_mbr /*A(k, n)*/, Arank,
-                    &beta,  C          /*A(m, n)*/, descA->mb);
+                    &beta,  C          /*A(m, n)*/, descA->mb) );
         }
 
     }
@@ -5499,54 +5508,54 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_gpu( parsec_tiled_matrix_t* descA,
         /* tmp_rr = trans(Av) * Bv */
         float alpha = 1.0f;
         float beta = 0.0f;
-        status = hicma_parsec_sgemm_gpu( handle, CUBLAS_OP_T, CUBLAS_OP_N,
+        HICMA_CUBLAS( hicma_parsec_sgemm_gpu( handle, CUBLAS_OP_T, CUBLAS_OP_N,
                 Arank, Brank, descA->mb,
                 &alpha, Av        /*A(k, m)*/, descA->mb,
                         Bv        /*A(k, n)*/, descA->mb,
                 &beta, buffer_rr  /*A(m, n)*/, Arank,
-                params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m]);
+                params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m]) );
 
         if( Arank > Brank ) {
             /* tmp_mbr = Au * tmp_rr */
             alpha = 1.0f;
             beta = 0.0f;
-            status = hicma_parsec_sgemm_gpu( handle, CUBLAS_OP_N, CUBLAS_OP_N,
+            HICMA_CUBLAS( hicma_parsec_sgemm_gpu( handle, CUBLAS_OP_N, CUBLAS_OP_N,
                     descA->mb, Brank, Arank,
                     &alpha, Au         /*A(m, k)*/, descA->mb,
                             buffer_rr  /*A(k, n)*/, Arank,
                     &beta,  buffer_mbr /*A(m, n)*/, descA->mb,
-                    params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m]);
+                    params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m]) );
 
             /* C = C - tmp_mbr * trans(Bu) */
             alpha = -1.0f;
             beta = 1.0f;
-            status = hicma_parsec_sgemm_gpu( handle, CUBLAS_OP_N, CUBLAS_OP_T,
+            HICMA_CUBLAS( hicma_parsec_sgemm_gpu( handle, CUBLAS_OP_N, CUBLAS_OP_T,
                     descA->mb, descA->mb, Brank,
                     &alpha, buffer_mbr /*A(m, k)*/, descA->mb,
                             Bu         /*A(n, k)*/, descA->mb,
                     &beta,  C          /*A(m, n)*/, descA->mb,
-                    params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m]);
+                    params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m]) );
 
         } else {
             /* tmp_mbr = tmp_rr * trans(Bu) */
             alpha = 1.0f;
             beta = 0.0f;
-            status = hicma_parsec_sgemm_gpu( handle, CUBLAS_OP_N, CUBLAS_OP_T,
+            HICMA_CUBLAS( hicma_parsec_sgemm_gpu( handle, CUBLAS_OP_N, CUBLAS_OP_T,
                     Arank, descA->mb, Brank,
                     &alpha, buffer_rr  /*A(m, k)*/, Arank,
                             Bu         /*A(n, k)*/, descA->mb,
                     &beta,  buffer_mbr /*A(m, n)*/, Arank,
-                    params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m]);
+                    params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m]) );
 
             /* C = C - Au * tmp_mbr */
             alpha = -1.0;
             beta = 1.0;
-            status = hicma_parsec_sgemm_gpu( handle, CUBLAS_OP_N, CUBLAS_OP_N,
+            HICMA_CUBLAS( hicma_parsec_sgemm_gpu( handle, CUBLAS_OP_N, CUBLAS_OP_N,
                     descA->mb, descA->mb, Arank,
                     &alpha, Au         /*A(m, k)*/, descA->mb,
                             buffer_mbr /*A(k, n)*/, Arank,
                     &beta,  C          /*A(m, n)*/, descA->mb,
-                    params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m]);
+                    params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m]) );
         }
 
     }
@@ -5603,54 +5612,54 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_gpu( parsec_tiled_matrix_t* descA,
         float alpha = 1.0f;
         float beta = 0.0f;
         char alphah[16], betah[16];
-        status = cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
+        HICMA_CUBLAS( cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
                 (int64_t)Arank, (int64_t)Brank, (int64_t)descA->mb,
                 HICMA_GEMM_SCALAR(compute16, alpha, alphah), Av,          CUDA_R_16F, (int64_t)descA->mb,
                         Bv,          CUDA_R_16F, (int64_t)descA->mb,
                 HICMA_GEMM_SCALAR(compute16, beta, betah),  buffer_rr,   CUDA_R_16F, (int64_t)Arank,
-                compute16? CUBLAS_COMPUTE_16F: CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+                compute16? CUBLAS_COMPUTE_16F: CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT) );
 
         if( Arank > Brank ) {
             /* tmp_mbr = Au * tmp_rr */
             alpha = 1.0f;
             beta = 0.0f;
-            status = cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
+            HICMA_CUBLAS( cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
                     (int64_t)descA->mb, (int64_t)Brank, (int64_t)Arank,
                     HICMA_GEMM_SCALAR(compute16, alpha, alphah), Au,          CUDA_R_16F, (int64_t)descA->mb,
                             buffer_rr,   CUDA_R_16F, (int64_t)Arank,
                     HICMA_GEMM_SCALAR(compute16, beta, betah),  buffer_mbr,  CUDA_R_16F, (int64_t)descA->mb,
-                    compute16? CUBLAS_COMPUTE_16F: CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+                    compute16? CUBLAS_COMPUTE_16F: CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT) );
 
             /* C = C - tmp_mbr * trans(Bu) */
             alpha = -1.0f;
             beta = 1.0f;
-            status = cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
+            HICMA_CUBLAS( cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
                     (int64_t)descA->mb, (int64_t)descA->mb, (int64_t)Brank,
                     HICMA_GEMM_SCALAR(compute16, alpha, alphah), buffer_mbr,  CUDA_R_16F, (int64_t)descA->mb,
                             Bu,          CUDA_R_16F, (int64_t)descA->mb,
                     HICMA_GEMM_SCALAR(compute16, beta, betah),  C,           c16? CUDA_R_16F: CUDA_R_32F, (int64_t)descA->mb,
-                    compute16? CUBLAS_COMPUTE_16F: CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+                    compute16? CUBLAS_COMPUTE_16F: CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT) );
 
         } else {
             /* tmp_mbr = tmp_rr * trans(Bu) */
             alpha = 1.0f;
             beta = 0.0f;
-            status = cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
+            HICMA_CUBLAS( cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
                     (int64_t)Arank, (int64_t)descA->mb, (int64_t)Brank,
                     HICMA_GEMM_SCALAR(compute16, alpha, alphah), buffer_rr,   CUDA_R_16F, (int64_t)Arank,
                             Bu,          CUDA_R_16F, (int64_t)descA->mb,
                     HICMA_GEMM_SCALAR(compute16, beta, betah),  buffer_mbr,  CUDA_R_16F, (int64_t)Arank,
-                    compute16? CUBLAS_COMPUTE_16F: CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+                    compute16? CUBLAS_COMPUTE_16F: CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT) );
 
             /* C = C - Au * tmp_mbr */
             alpha = -1.0f;
             beta = 1.0f;
-            status = cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
+            HICMA_CUBLAS( cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
                     (int64_t)descA->mb, (int64_t)descA->mb, (int64_t)Arank,
                     HICMA_GEMM_SCALAR(compute16, alpha, alphah), Au,          CUDA_R_16F, (int64_t)descA->mb,
                             buffer_mbr,  CUDA_R_16F, (int64_t)Arank,
                     HICMA_GEMM_SCALAR(compute16, beta, betah),  C,           c16? CUDA_R_16F: CUDA_R_32F, (int64_t)descA->mb,
-                    compute16? CUBLAS_COMPUTE_16F: CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+                    compute16? CUBLAS_COMPUTE_16F: CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT) );
         }
 
         /* After last local GEMM convert C from half to single */
