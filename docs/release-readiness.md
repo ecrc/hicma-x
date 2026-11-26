@@ -1608,6 +1608,9 @@ gfx906 with ROCm 6.3.2):
 - The CUDA, HIP and CPU-only trees build without new warnings.
 - CTest 55/55 on the H100 and 55/55 on the V100 (hexane), and 46/46 on a
   Radeon VII (histamine2).
+- Rebased onto `19a02ec` (GEMMs stay on the GPU): CTest 55/55 on a V100
+  node (leconte) and 30/30 CPU-only (caffeine); the CUDA (sm 70), HIP
+  (gfx90a) and CPU-only trees build without new warnings.
 - The 22 GPU CTest cases on the H100 with `fa915ce` and with the change,
   built side by side: the residuals are identical in all 22.
 - **Injected failures.** A preload library made one call of a GPU
