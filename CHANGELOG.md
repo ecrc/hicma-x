@@ -5,7 +5,7 @@
 Release engineering of the 0.1.0 code base plus the features merged on `main`
 since November 2025. `docs/code-review.md` records the review this release is
 based on, `docs/release-improvement-plan.md` the task list and its status,
-`docs/release-readiness.md` the validation results.
+`docs/hicma-x-0.2.0-report.pdf` the validation and performance results ("the report" below).
 
 ### Features (merged before this release cycle)
 
@@ -47,7 +47,7 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   Conversion kernels take 26 % less GPU time in a mixed-precision Cholesky
   (the factorization is 0-1.6 % faster); CPU factorizations with stochastic
   rounding are 18-19 % faster, the other CPU kinds unchanged. Details in
-  `docs/omnicast/README.md`.
+  the report, chapter 6.
 - OmniCast update (2026-11-22): every conversion with every option in place
   and out of place on the host, CUDA and HIP; faster FP8 operands (1.04-1.13x),
   in-place tile conversions (1.04-1.18x) and stochastic rounding from FP32
@@ -66,7 +66,7 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   scales through cuBLASLt pointer attributes instead of two device copies.
   On an H100 (N = 45056): 1.07-1.08x for kinds 8, 9 and 10, 1.02-1.04x for
   the FP32/FP16 kinds; conversions take 4.9 % instead of 19 % of the GPU time
-  when most tiles are FP8. Report in `docs/omnicast/round3/REPORT.md`.
+  when most tiles are FP8. The report, chapter 7.
 - OmniCast round 3: hardware FP8 converts on sm_89+, 4 loads in flight in the
   amax pass of dynamic scaling, an opt-in fused dynamic-scaling kernel, and,
   for its other users, faster host FP8 encoding (F16C) and streaming stores
@@ -83,8 +83,8 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   to 4-5 digits. An AMD Zen 2 CPU has no such penalty and is unchanged.
   `--flush_subnormals 0` keeps IEEE subnormals. OmniCast's host conversions
   now give the same bits whatever the caller's FTZ/DAZ or rounding mode
-  (some had changed under FTZ/DAZ; QingleiCao/OmniCast#2). Report in
-  `docs/omnicast/round4/REPORT.md`.
+  (some had changed under FTZ/DAZ; QingleiCao/OmniCast#2). The report,
+  chapter 9.
 - OmniCast 2.1.1 (QingleiCao/OmniCast#3, #4): a failed OmniCast call on the
   GPU names the CUDA or HIP call and its error, and `HICMA_OMC()` prints it,
   for instance "OmniCast: device runtime error: launch of k_cvt:
@@ -94,8 +94,7 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   and clear it. Such an error is now reported as pending, nothing is
   launched, and the error stays for the code that caused it. "Not ready",
   which HIP records after PaRSEC polls an unfinished event, is not an error
-  (2.1.0 stopped 11 Radeon VII tests on it;
-  `docs/release-readiness.md`, section 5.25).
+  (2.1.0 stopped 11 Radeon VII tests on it; the report, chapter 12).
 - Host operand cache for kind 10 on CPUs (`--operand_cache`, default on).
   With runtime decisions, every CPU GEMM that picks FP32 converted both of
   its FP64 panel tiles again: 9342 conversions of 496 tiles at N = 16384. A
@@ -104,16 +103,16 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   copies are bounded, by default to a quarter of the process's panel tiles;
   at the bound the copy whose tile has the fewest readers left is evicted.
   Results are bit-identical. On a Broadwell node: 1.13-1.15x at N = 16384
-  (2454 conversions left instead of 9342, 130 MB) and 1.16x at N = 32768. Report
-  in `docs/omnicast/round5/REPORT.md`.
+  (2454 conversions left instead of 9342, 130 MB) and 1.16x at N = 32768. The
+  report, chapter 10.
 - Kind 10 runtime CPU GEMMs, `ACC_DP`: with MKL, the FP32 GEMM whose
   product is subtracted from an FP64 tile runs in 256-column panels, each
   subtracted right after it is computed (`ACC_DP_PANEL`; CMake passes
   `HICMA_PARSEC_BLAS_MKL` when the BLAS is MKL). Bit-identical; about 1 %
   faster at N = 16384 on a Broadwell node, no measurable change at
   N = 32768. The loop is bound by the memory bandwidth of the core; AVX,
-  prefetching and non-temporal stores did not help enough to keep. Report in
-  `docs/omnicast/round6/REPORT.md`.
+  prefetching and non-temporal stores did not help enough to keep. The report,
+  chapter 11.
 
 ### Correctness
 
@@ -216,8 +215,8 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   `device_load_balance_allow_cpu=1` in the runs made); with GEMMs forced onto
   the CPU and `--adaptive_decision 1` the factor was wrong or the run
   crashed, and is now right (residuals as with every GEMM on the GPU). Other
-  runs give the same bits as before. Report in
-  `docs/omnicast/round6/REPORT.md`, section 7.
+  runs give the same bits as before. The report,
+  chapter 11.
 - Cholesky with GPUs (kinds 1, 2, 5, 8, 9, 10): a GEMM that a GPU accepts
   now always runs on a GPU. The CPU and recursive chores of `potrf_dgemm`
   get an evaluate, `hicma_potrf_gemm_cpu_evaluate`, installed by
@@ -227,7 +226,7 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   warmup and `potrf_bind_A` give each tile: without it and with
   `device_load_balance_allow_cpu=1`, PaRSEC put every kind-10 GEMM on the
   CPU (3 to 6 times slower in one process on a V100 node). Default runs give
-  the same bits. Report in `docs/omnicast/round6/REPORT.md`, section 8.
+  the same bits. The report, chapter 11.
 - The GPU kernels of the Cholesky check the status of their cuBLAS,
   cuBLASLt and cuSOLVER calls (hipBLAS and rocSOLVER on HIP). Most stored it
   unchecked, and the GPU POTRF checked it only in an `assert`, which Release
@@ -239,7 +238,7 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   OmniCast). The cuBLAS handle setup checked `cublasCreate`'s status again
   after `cublasSetStream` instead of `cublasSetStream`'s own; the cuBLASLt
   descriptor attributes are checked too. Results do not change
-  (`docs/release-readiness.md`, section 5.23).
+  (the report, chapter 12).
 - `hicma_parsec_core_memory_allocation` (the LL^T of `--check`, and the tiles
   of the climate emulator and the TRMM performance test) ignored the result
   of `cudaMallocHost`/`hipHostMalloc`: a failure crashed later with no word
@@ -282,7 +281,7 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   removed); its code lines that sit in duplicated runs of 25 lines or more
   went from 8,013 of 30,775 to 4,177 of 26,879 (`docs/code-review.md`,
   section 13). Timings are unchanged (old against new, interleaved, on CPUs,
-  an H100 and four V100s: `docs/release-readiness.md`, section 5.17).
+  an H100 and four V100s: the report, chapter 4).
 - Per-core and per-GPU statistics arrays are allocated once, after device
   discovery.
 - Dead code removed: 14 unreferenced JDFs and sources (`copy2double`,
@@ -546,7 +545,7 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   CTest 46 / 46 (the 14 GPU cases, OmniCast's 4 tests, the two-rank cases),
   with OmniCast and the GPU operand cache. ROCm 6.4 and later ship no rocBLAS
   kernels for gfx906: build against ROCm 6.3 or earlier there
-  (`docs/release-readiness.md`, section 5.20).
+  (the report, chapter 3).
 - gfx906 keeps FP16 subnormals in rocBLAS's FP16 GEMMs (FP32 and FP16 C) and
   has no BF16 hardware: BF16 GEMMs (`--tensor_gemm_hp 0x20`) made an adaptive
   kind-5 run at N=30720 6x slower (12.7 s against 2.1 s). The start-up note
@@ -594,26 +593,30 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   one rank per node: the two-rank CTest cases, the 14 GPU cases and the
   operand cache on two nodes with one GPU each, and the GPU cases and the
   cache on two nodes with two GPUs each and on one node with two GPUs
-  (`docs/release-readiness.md`, section 5.21).
+  (the report, chapter 3).
 - Also run on two NVIDIA nodes, a V100 (leconte) and an A100 (methane), one
   rank each, over Ethernet with Open MPI and UCX built with CUDA, so tiles
   leave from GPU memory. The two-rank CTest cases, the 22 GPU cases and the
   operand cache pass, and sending from GPU memory and through host memory
   give the same residuals. One run in 144 gave a wrong factor and was not
   reproduced; other failures were clean aborts while another job used the
-  same GPU (`docs/release-readiness.md`, section 5.22).
+  same GPU (the report, chapter 3).
 
 ### Documentation
 
 - `TESTS.md` regenerated from the option table; `BUILD.md`, `README.md` and
   `RELEASE.md` updated; `CHANGELOG.md` added.
+- `docs/hicma-x-0.2.0-report.pdf`: how 0.2.0 was tested and what it measured,
+  with figures and tables (machines and methods, correctness on every
+  platform, performance, known limitations, and the OmniCast and operand
+  cache work). It replaces the Markdown validation log and the reports, raw
+  data and scripts that were under `docs/omnicast/`.
 
-### Known limitations (see `docs/release-readiness.md`)
+### Known limitations (see the report, chapter 5)
 
 - Cholesky drivers need `N % NB == 0`.
 - Kinds 1 to 4 have no HIP bodies. HIP GPU runs were validated on Frontier
-  (MI210, MI250X; `docs/release-readiness.md`, section 5.15) and on a Radeon
-  VII (gfx906, section 5.20).
+  (MI210, MI250X) and on a Radeon VII (gfx906; the report, chapter 3).
 - AMD gfx90a GPUs (MI210, MI250X) flush FP16 subnormals in their FP16 GEMMs:
   use `--tensor_gemm_hp 0x20` (BF16) with adaptive precisions in the dense
   layout. gfx906 keeps them and has no BF16 hardware: keep FP16 there.

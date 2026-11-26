@@ -41,9 +41,9 @@ and the genomics (kernel ridge regression) applications.
 | Configuration | Status in 0.2.0 |
 |---|---|
 | Linux x86_64, CPU only (OpenBLAS or MKL, LAPACKE, Open MPI or MPICH) | tested (CI, 1 and 2 ranks) |
-| Linux x86_64 + CUDA 12 (A100, V100; H100 for FP8) | tested on one A100 (1 and 2 ranks sharing it), one 8-A100 node (1 to 8 ranks), one H100 (FP8; 1 and 2 ranks) and one 8-V100 node (1 to 8 GPUs in one process, 2 and 8 ranks); also on two nodes (a V100 and an A100, one rank each, over Ethernet), with tiles sent from GPU memory (`docs/release-readiness.md` section 5.22) |
+| Linux x86_64 + CUDA 12 (A100, V100; H100 for FP8) | tested on one A100 (1 and 2 ranks sharing it), one 8-A100 node (1 to 8 ranks), one H100 (FP8; 1 and 2 ranks) and one 8-V100 node (1 to 8 GPUs in one process, 2 and 8 ranks); also on two nodes (a V100 and an A100, one rank each, over Ethernet), with tiles sent from GPU memory (chapter 3 of `docs/hicma-x-0.2.0-report.pdf`) |
 | Linux + ROCm 6 (HIP, gfx90a) | tested on Frontier: one MI210 (CTest 35 / 35) and one MI250X node (CTest 42 / 42 with the two-rank cases, `test_CI.sh`, the GPU validation matrix; 1 to 8 GCDs in one process, two ranks with one GCD each or sharing one); kinds 1 to 4 run on the CPU |
-| Linux + ROCm 6.3 (HIP, gfx906: Radeon VII, MI50/60) | tested on one Radeon VII with ROCm 6.3.2 (CTest 46 / 46 with the two-rank cases), and on two nodes with one or two Radeon VIIs per process over InfiniBand (the GPU cases and the operand cache, `docs/release-readiness.md` section 5.21). ROCm 6.4 and later ship no rocBLAS kernels for gfx906 |
+| Linux + ROCm 6.3 (HIP, gfx906: Radeon VII, MI50/60) | tested on one Radeon VII with ROCm 6.3.2 (CTest 46 / 46 with the two-rank cases), and on two nodes with one or two Radeon VIIs per process over InfiniBand (the GPU cases and the operand cache, chapter 3 of the report). ROCm 6.4 and later ship no rocBLAS kernels for gfx906 |
 | Fugaku (`ON_FUGAKU`), macOS, Windows | not supported |
 
 Requirements: the submodules (`git clone --recursive`, or `git submodule
@@ -88,15 +88,16 @@ GSL optional (Matérn kernels).
 
 ### Validation
 
-`docs/release-readiness.md` records what was built and run for this release:
+The validation and performance report, `docs/hicma-x-0.2.0-report.pdf`, records with figures and
+tables what was built and run for this release:
 CPU, CUDA (A100, H100, V100) and HIP (MI210, MI250X on Frontier; Radeon VII)
 configurations, the CTest suite, the validation matrix
 (`scripts/validation_matrix.sh`), the install consumer, two-node runs and
 before/after timing comparisons. The last rounds built the release
 candidate from a fresh clone, with the submodules as GitHub serves them:
 CTest passed on two CPU-only nodes (Broadwell, Zen 4), an A100, an H100, a
-V100 and a Radeon VII (section 5.24), and again on Broadwell, the A100 and
-the Radeon VII with OmniCast 2.1.1 (section 5.25).
+V100 and a Radeon VII, and again on Broadwell, the A100 and the Radeon VII
+with OmniCast 2.1.1 (chapters 3 and 12 of the report).
 
 ### Upgrading from 0.1.0
 

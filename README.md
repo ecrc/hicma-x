@@ -93,7 +93,9 @@ their options and the correctness checks.
 [RELEASE.md](RELEASE.md) describes the current release, its supported
 configurations and known limitations; [CHANGELOG.md](CHANGELOG.md) lists the
 changes. The code review behind the 0.2.0 release is in
-[docs/code-review.md](docs/code-review.md).
+[docs/code-review.md](docs/code-review.md), and how 0.2.0 was tested and what
+it measured, with figures and tables, is in
+[docs/hicma-x-0.2.0-report.pdf](docs/hicma-x-0.2.0-report.pdf).
 
 
 ## Literature

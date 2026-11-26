@@ -3,7 +3,7 @@
 Companion to `docs/code-review.md` (finding IDs refer to it). Status values:
 **done** (implemented and validated on methane), **partial**, **todo**, **deferred**
 (recorded in `code-review.md` section 6 with the reason). Validation refers to the
-matrix in `docs/release-readiness.md`: 40+ `--check 1` runs over every Cholesky kind,
+matrix in chapter 3 of `docs/hicma-x-0.2.0-report.pdf`: 40+ `--check 1` runs over every Cholesky kind,
 TRMM, 1 and 2 ranks, CPU and one A100, plus a HIP compile.
 
 ## 1. Release scope
@@ -40,7 +40,7 @@ and 9 keep static decisions.
 | P1-3 | Runtime GEMM: reallocate/resize the device tile on every FP64 promotion | D1 | `hicma_parsec_core.c` | kind-10 matrix unchanged; low `device_cuda_memory_use` run | done |
 | P1-4 | HCORE storage maxrank `2*maxrank` → `maxrank` (3 sites); enforce `maxrank <= compmaxrank`, `<= genmaxrank`, `<= NB/2` | C1, C7, D4 | TLR JDFs, `hicma_parsec_internal.c` | kind 2 `--band_dense 2 --maxrank 24` aborts cleanly like kind 1 | done (compmaxrank >= maxrank enforced; the NB/2 and genmaxrank bounds are left to HCORE's run-time check) |
 | P1-5 | `--tensor_gemm 0x80`: abort on unknown mask in the FP16 GEMM switch and reject for Cholesky kinds | D3 | `hicma_parsec_core.c`, `hicma_parsec_internal.c` | option gives a message instead of a wrong result | done |
-| P1-6 | GPU kernel status checks: one abort-on-error macro after every cuBLAS/cuSOLVER/cuBLASLt call in the non-runtime kernels and the FP8 setup | D8, A5 | `hicma_parsec_core.c`, `hicma_parsec_gpu.c` | GPU matrix unchanged | done (`2940b51`, `release-readiness.md` section 5.23: `HICMA_CUBLAS()`/`HICMA_CUSOLVER()` after every call of the Cholesky GPU kernels; left unchecked: the HIP warm-up at start-up and the destroy calls at exit) |
+| P1-6 | GPU kernel status checks: one abort-on-error macro after every cuBLAS/cuSOLVER/cuBLASLt call in the non-runtime kernels and the FP8 setup | D8, A5 | `hicma_parsec_core.c`, `hicma_parsec_gpu.c` | GPU matrix unchanged | done (`2940b51`, chapter 12 of the report: `HICMA_CUBLAS()`/`HICMA_CUSOLVER()` after every call of the Cholesky GPU kernels; left unchecked: the HIP warm-up at start-up and the destroy calls at exit) |
 | P1-7 | Refuse unsupported combinations loudly: SR with kinds 8-10, `datatype_convert 2` on CPU, HP band on CPU for kind 3, HIP with kinds 1-4 on GPU | B3, D7, B6, C11, C6 | `hicma_parsec_internal.c`, four TLR/band wrappers | each combination exits with a message | done |
 | P1-8 | Genomics/GPU-only drivers not built when they cannot run: `GENOMICS` overridable, CMake option, GPU gating | F4, F2 | `tests/CMakeLists.txt`, `hicma_parsec_internal.h`, `testing_igemm_summa.c` | CPU-only configure builds no genomics drivers | done |
 | P1-9 | Climate emulator: correctly spelled switches, unconditional file-read checks, CI skip without data | F3, F5 | `src/climate_emulator/*`, `scripts/test_CI.sh` | compiles CPU and CUDA; a missing file is fatal | done |
@@ -87,7 +87,7 @@ and 9 keep static decisions.
    HIP (compile only).
 6. P0-5, P0-6, P1-8, P1-11, P1-12, P0-7 (build, install, version, CI, CTest); install
    consumer test; `ctest`.
-7. P2-10, P2-11, release notes, `docs/release-readiness.md`.
+7. P2-10, P2-11, release notes, the validation report.
 
 Performance guard: the matrix records the factorization time of every case; the
 large-case comparison (N=32768, one A100, kinds 5 and 10) is done once before and once
@@ -97,10 +97,10 @@ after the library changes.
 
 - 2026-11-07: review completed, baseline matrix recorded (all CPU and single-GPU cases
   pass; two-rank GPU cases need `--mca device_cuda_memory_use 30` on a shared GPU;
-  partial-tile cases fail silently; see `release-readiness.md`).
+  partial-tile cases fail silently; see chapter 3 of the report).
 - 2026-11-07 (later): P0-1 to P0-7, P1-1 to P1-12 and P2-1 to P2-5, P2-7, P2-8,
   P2-10, P2-11 implemented on `qinglei/release-cleanup` (eleven commits, see
-  `release-readiness.md` section 2); the full matrix rerun after each batch
+  the git history); the full matrix rerun after each batch
   (labels p0, p1a, p1b, p2, p4, p5, p6), identical to the baseline except the
   intended virus-mesh change; the two-rank kind-2 band case exposed the
   sink-task crash (P3-4, fixed); CPU `ctest` 20/20, CUDA-tree `ctest` 30/30,
@@ -127,7 +127,7 @@ after the library changes.
   Eleven problems fixed, among them kind 3 on GPUs (reshape abort, sender
   conversion), FP16-accumulation GEMM scalars, sparse kinds with a single tile
   row, embedding crashes and the BLAS run-time path; see
-  `release-readiness.md` section 5.6. Final tree: CTest 23/23 (CPU) and 37/37
+  chapter 3 of the report. Final tree: CTest 23/23 (CPU) and 37/37
   (CUDA, methane and guyot), matrix 31 + 50 cases identical to the baseline
   except the mesh fix, HIP compiles.
 - 2026-11-08 (third pass, on request): `TODOs` item 3 done (one
@@ -137,12 +137,12 @@ after the library changes.
   `GPU_BUFFER_ONCE` removed (broken and slower), workload-balance strategy 4
   heap corruption fixed; AddressSanitizer runs found the pool-storage leak
   (fixed: kind-10 memory over 8 runs 1238 -> 605 MB). See
-  `release-readiness.md` section 5.7.
+  chapter 3 of the report.
 - 2026-11-08 (fourth pass, on request): build scripts rewritten for the
   single-configure build, `scripts/machines/legacy/` removed; validating them
   found that CUDA builds without an explicit architecture compiled for sm_52
   only (fixed) and that the kind-3 guards made the JDF compiler print fatal
-  errors (fixed). See `release-readiness.md` section 5.8.
+  errors (fixed). See chapter 3 of the report.
 - 2026-11-08 (on request): GEMM reordering (`reorder_gemm.jdf`,
   `hicma_parsec_reorder_gemm`) restored for future use, not wired in; its
   launch compiles, its sort and pool leak are fixed.
@@ -150,24 +150,24 @@ after the library changes.
   inventoried and reviewed (`code-review.md` section 9): unused macros and
   fields removed, local and climate switches settable with -D, two climate
   debug paths fixed; matrix identical to the third pass. See
-  `release-readiness.md` section 5.9.
+  chapter 3 of the report.
 - 2026-11-08 (on request): the 28 unnamed `#if 0`/`#if 1` blocks unwrapped,
   deleted or named (`GENOMICS_SYRK_ISYRK`); matrix again identical.
 - 2026-11-08 (on request): CI hardened after a runner-dependent failure:
   BLAS thread-safety fixture for every HiCMA case, runner CPU/BLAS printed,
-  `OPENBLAS_NUM_THREADS=1`. See `release-readiness.md` section 5.10.
+  `OPENBLAS_NUM_THREADS=1`. See chapter 3 of the report.
 
 - 2026-11-08 (sixth pass, on request): external-user pass (fresh clone,
   README/TESTS walkthrough, DPLASMA comparison). Fixed: `--nruns` crash in
   TLR runs, wrong help defaults, duplicate and uninitialized summary line,
   missing revision, two zero exit codes; notes for `--gpus 0` with visible
   GPUs, fully dense TLR kinds, and launcher bindings. See
-  `release-readiness.md` section 5.11.
+  chapter 3 of the report.
 - 2026-11-08 (seventh pass, on request): `--tensor_gemm` redesigned
   (`--tensor_gemm_hp`, `--tensor_gemm_sp`, `TODOs` item 12) after wrong
   results and crashes with several masks; an independent review and rounds
   of checks closed five more paths; a static FP16 band with low-rank tiles
-  is refused on GPUs (cause open). See `release-readiness.md` section 5.12.
+  is refused on GPUs (cause open). See chapter 3 of the report.
 - 2026-11-08 (on request): the GPU failure with a static FP16 band and
   low-rank tiles root-caused and fixed: the FP16 branch of the low-rank x
   low-rank GPU GEMM converted its low-rank B as a dense tile. The refusal is
@@ -176,16 +176,16 @@ after the library changes.
   two ranks, performance) found FP8 operands read as FP64 by the low-rank
   GEMMs (fixed); FP8 band numerics documented; a documentation audit's
   findings corrected; `scripts/test_CI.sh` brought up to the CTest cases.
-  See `release-readiness.md` section 5.13.
+  See chapter 3 of the report.
 - 2026-11-09 (on request): a complete test on hexane, H100 and V100, one and
   two GPUs, one and two ranks, performance and ease of use: correct
   everywhere; notes added for a capped `--gpus` and for oversubscribed cores.
-  See `release-readiness.md` section 5.14.
+  See chapter 3 of the report.
 - 2026-11-10 (on request): PaRSEC rebased on ICLDisco master `2c16c652e`
   (#814 merged upstream; the fork's copies and `5cd761f64` dropped, eight
   fork commits reapplied, one conflict resolved). methane: PaRSEC 205 / 205,
   HiCMA 27 / 27 and 48 / 48, matrix identical, eviction reproducer 10 / 10.
-  See `release-readiness.md` section 5.16.
+  See chapter 3 of the report.
 - 2026-11-10 (tenth pass, on request): code structure and several GPUs.
   Kinds 5, 8 and 9 merged into one kernel, the low-rank CPU GEMM of kinds 1,
   5 and 10 moved into two functions (`TODOs` item 2, in part; 6,076 lines
@@ -193,10 +193,10 @@ after the library changes.
   comparison on four V100s, stochastic rounding for kinds 8 and 9, a note
   for GPUs that are not all linked. Results unchanged on methane, hexane and
   leconte; old against new timings within the spread. See
-  `release-readiness.md` section 5.17.
+  chapter 3 of the report.
 - 2026-11-11 (on request): kinds 8 and 9 run their own JDFs again
   (`potrf_L_dense_mp_gpu_fp8{,_sp}.jdf` and wrappers restored, with the
   shared CPU GEMM and the placement rule of the tenth pass), so kinds 8 to
   10 refuse stochastic rounding again. Also removed: the prototype of the
   deleted `parsec_convert_i2s` and commented-out calls to removed
-  functions. See `release-readiness.md` section 5.18.
+  functions. See chapter 3 of the report.

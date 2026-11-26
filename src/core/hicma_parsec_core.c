@@ -47,7 +47,8 @@
  * (narrower ones differ on Broadwell); OpenBLAS 0.3.28 does not, nor BLIS
  * 5.0 for 128 columns, hence ACC_DP_PANEL 0 without MKL. As before, all ldc
  * rows of W are subtracted (m = ldc: runtime decisions need N to be a
- * multiple of NB). docs/omnicast/round6/REPORT.md has the measurements. */
+ * multiple of NB). Chapter 11 of docs/hicma-x-0.2.0-report.pdf has the
+ * measurements. */
 static void hicma_parsec_sgemm_sub_dp(int m, int n, int k,
         const float *A, int lda, const float *B, int ldb,
         float *W, double *C, int ldc)

@@ -1,5 +1,0 @@
-# rocprofv3 kernel trace, Radeon VII, N=30720 NB=2048, factorization phase only (last GPU phase)
-k8_nocache: span 1969 ms, kernel time 1716 ms, conversions 43.9 ms = 2.6 % in 1120 launches
-k8_cache: span 1958 ms, kernel time 1689 ms, conversions 17.9 ms = 1.1 % in 334 launches
-k5sr_nocache: span 2143 ms, kernel time 1874 ms, conversions 54.2 ms = 2.9 % in 658 launches
-k5sr_cache: span 2120 ms, kernel time 1846 ms, conversions 27.0 ms = 1.5 % in 315 launches

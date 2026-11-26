@@ -15,7 +15,7 @@ not be confirmed by reading alone it is marked *plausible* or *speculative*.
 Baseline behaviour was measured on `methane` (72 cores, one A100-PCIE-40GB, CUDA
 12.6, Open MPI 5.0.5, MKL 2024.2, ROCm 6.4.3 for HIP compile-only) with two fresh
 Release builds of the branch point (`build_rc_cpu`, `build_rc_cuda`) and the matrix of
-40 `--check 1` runs in `docs/release-readiness.md` (every Cholesky kind, TRMM, 1 and 2
+40 `--check 1` runs described in chapter 3 of `docs/hicma-x-0.2.0-report.pdf` (every Cholesky kind, TRMM, 1 and 2
 ranks, CPU and GPU).
 
 Severity:
@@ -925,7 +925,7 @@ the bodies' NEXT returns.
 #### C8. CI coverage — P2, confirmed
 
 - Kinds 2, 3, 4 and 7 are never run; kind 6 only with the mesh file; nothing on more
-  than one rank. The validation matrix in `docs/release-readiness.md` and the CTest set
+  than one rank. The validation matrix (chapter 3 of `docs/hicma-x-0.2.0-report.pdf`) and the CTest set
   (G5) cover them.
 
 #### C9. Dead and unreachable code — P2/P3, confirmed
@@ -1279,8 +1279,8 @@ Findings and what was done (minimal changes):
    applications built with `-D_GNU_SOURCE`); now guarded.
 8. **Performance**: at their defaults the switches add no work. The task
    timing hooks of `potrf_common.c` call `MPI_Wtime` a few times per task
-   whatever the switches, as the 0.1.0 wrappers did (measured neutral in
-   `release-readiness.md`, section 5.3).
+   whatever the switches, as the 0.1.0 wrappers did (measured neutral: chapter 4 of
+   the report).
 9. **Not changed (recorded for a later release)**: the installed header
    defines generic names (`RED` ... `RESET`, `str`, `xstr`, `DATATYPE`,
    `MPIIO`, `PREDICTION`, `DEBUG_INFO`, `IS_DENSE`, ...) that collide with
@@ -1388,8 +1388,8 @@ each of its values compiles (and runs, where a test reaches it).
 
 A fresh clone built by following `BUILD.md`, then the drivers run the way
 `README.md` and `TESTS.md` describe, with DPLASMA's `testing_dpotrf` as the
-performance reference. Measurements are in `release-readiness.md` section
-5.11.
+performance reference. Measurements are in chapter 4 of
+`docs/hicma-x-0.2.0-report.pdf`.
 
 1. **`--nruns` crashed in TLR runs** (`tests/testing_potrf.c`). Where A
    cannot be regenerated, run 2 factorized run 1's factor; in TLR its ranks
@@ -1523,9 +1523,9 @@ do not take it (kind 3, run-time decisions, the TRMM, HIP).
 4. **Performance.** No per-task device-wide synchronization or allocation in
    the GPU hot paths (kind 10's per-GEMM norm read already uses a private
    stream, by design). Lookahead and tile size moved the time within the
-   noise on the A100 (section 5.13 of release-readiness); no default changed.
-5. **A complete test on hexane** (H100, V100, both, two ranks; release-readiness
-   section 5.14) found no defect. Two silent cases now print a note on rank
+   noise on the A100 (chapter 4 of the report); no default changed.
+5. **A complete test on hexane** (H100, V100, both, two ranks; chapter 3
+   of the report) found no defect. Two silent cases now print a note on rank
    0: `--gpus` above the usable GPUs (or on a build without GPU support), and
    processes of a node starting more worker threads than it has cores.
 
@@ -1580,7 +1580,7 @@ all in the Cholesky kernels. After this pass: 4,177 of 26,879.
    on the tile's position among the tiles of its rank (`m/P`, `n/Q`): the
    grid for a dense matrix, by column when only a band is dense. The same
    two cases then give 16 to 20 % and 8 % per GPU. An interleaved comparison
-   of the candidate rules in one binary (release-readiness, section 5.17)
+   of the candidate rules in one binary (chapter 4 of the report)
    decided the choice: the grid is 1 to 10 % faster than by row or by column
    for the dense layouts; for a dense band among low-rank tiles the rules do
    not differ beyond the run-to-run spread, and by column is kept because it

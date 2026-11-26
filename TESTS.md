@@ -81,7 +81,7 @@ the release validation matrix (31 CPU cases, 50 with `gpu`): every Cholesky
 kind, the TRMM, the sparse paths, single- and two-rank runs, all with
 `--check 1`. It writes `results_<label>.tsv` (exit code, residual,
 factorization time, GEMM precision counts) and one log per case. The results
-recorded for 0.2.0 are in `docs/release-readiness.md`.
+recorded for 0.2.0 are in chapter 3 of `docs/hicma-x-0.2.0-report.pdf`.
 
 ## Examples
 
