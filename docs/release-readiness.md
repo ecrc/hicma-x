@@ -1666,7 +1666,7 @@ miscompute:
 | Known limitations documented (`RELEASE.md`, `TESTS.md`) | done |
 | CI covers correctness (`--check 1` in CTest and `scripts/test_CI.sh`), install, CUDA compile | done; the first GitHub run failed on three environment issues, fixed (section 5.5); both jobs pass on the final commit |
 | P0 items of the plan | all done and validated |
-| P1 items | done except: per-call status checks in the non-FP8 GPU kernels (P1-6, partial), warning-flags option (P1-11) |
+| P1 items | done except the warning-flags option (P1-11); the GPU status checks (P1-6) were completed in section 5.23 |
 | P2 items | done except P2-6, P2-9, P2-12 (deferred) and the remaining parts of P2-5, P2-7, P2-8 |
 | Second pass: conversion merge, external-user walkthrough, guyot sweeps (section 5.6) | done; 11 problems fixed |
 | Third pass: matrix sum, macro review, sanitizers (section 5.7) | done; pool leak, `GPU_BUFFER_ONCE`, strategy 4 fixed |
@@ -1732,7 +1732,7 @@ miscompute:
 Deferred from the plan (none blocks the release): P2-6 (zero-initialized check
 matrices, `matrix_uncompress` flows), P2-9 (one JDF for the integer
 conversions), P2-12 (statistics communicator hygiene), P3-1 to P3-3, the
-remaining parts of P1-6, P1-11, P2-5, P2-7, P2-8. The project's own `TODOs`
+remaining parts of P1-11, P2-5, P2-7, P2-8. The project's own `TODOs`
 backlog (API, Python/Julia bindings, merging the potrf JDFs, hcore removal,
 tensor_gemm redesign) was out of scope by request; item 12 (tensor_gemm)
 was done on request in the seventh pass (section 5.12), item 1 (merge the
