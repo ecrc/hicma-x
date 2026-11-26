@@ -1657,6 +1657,120 @@ miscompute:
   past NULL then, so a NULL check would not catch it.
 
 
+### 5.24 Release round on the head (2026-11-26)
+
+**Why.** Six commits changed code since the last complete round with
+timings (the OmniCast 2.0.1 comparison, `f5142be`): the host operand cache
+and the MKL panels for the kind-10 CPU GEMMs (`ffcf1cb`, `8e8fde8`), the
+widening of FP32 tiles on the CPU (`fa915ce`), GEMMs that a GPU accepts
+staying on the GPU (`19a02ec`) and the status checks (`2940b51`). This round
+tests the head as a user gets it after the merge, and compares it with
+`f5142be`, built the same way, for results and time.
+
+**Source.** A fresh HTTPS clone of `ecrc/hicma-x` with `pull/13/head`
+checked out (`d8217b5`) and `git submodule update --init --recursive`: the
+relative submodule URLs resolve on GitHub as they will after the merge
+(DPLASMA `c660df45`, PaRSEC `7ff8d542a`, HCORE `78028a59`, OmniCast
+`e21735b` = v2.0.1, STARS-H `5d98f2c2`). The base is a worktree of
+`f5142be`, which has the same submodule commits, so the comparison covers
+HiCMA-X's own changes only. Builds on methane, Release: CUDA 12.6.2 for
+`70;80;90a` (FP8 GEMMs on), CPU-only with sequential MKL, and gfx906 with
+ROCm 6.3.2. The head and base CUDA and CPU trees give the same warning
+counts (280 and 275).
+
+**CTest** (`-L hicma`, head):
+
+| machine | result |
+|---|---|
+| caffeine, Xeon E5-2660 v4 (Broadwell), CPU-only | 30 / 30 |
+| serotonin, Ryzen 9 7950X (Zen 4), CPU-only | 30 / 30 |
+| methane, A100-PCIE-40GB | 55 / 55 |
+| hexane, H100 PCIe (FP8) | 55 / 55 |
+| hexane, V100-PCIE-16GB | 55 / 55 |
+| histamine2, Radeon VII (gfx906, ROCm 6.3.2) | 46 / 46 |
+
+`scripts/test_CI.sh`: 27 passed, 2 skipped on caffeine (climate data; the
+GPU cases without `HICMA_GPUS`); 49 passed, 1 skipped (climate data) on the
+A100 and on the H100 with `HICMA_GPUS=1`.
+
+**Install.** `cmake --install` of the CPU and the CUDA trees, then
+`tests/install_consumer` against each, as in CI: both build, the Cholesky
+check passes (5.0e-16) and the conversion test runs 13 cases without
+failure.
+
+**Validation matrix, head against base** (`scripts/validation_matrix.sh`,
+both trees on the same node one after the other):
+
+| machine | cases | exit codes | residuals | GEMM counts by precision |
+|---|---|---|---|---|
+| caffeine (CPU build) | 31 | all 0 in both | identical | identical |
+| methane A100 (CUDA build) | 50 | all 0 in both | identical | identical |
+| hexane H100 (CUDA build) | 50 | all 0 in both | identical | identical |
+| histamine2 Radeon VII (HIP build) | 43 | all 0 in both | identical | identical |
+
+The only counter that changed is the number of conversions in the three
+kind-10 cases that run on the CPU (`runtime_k10_cpu`, `_adapt1`, `_np2`),
+from 90, 61 and 90 to 24, 36 and 39: the host operand cache keeps the FP32
+copies of the panel tiles (`ffcf1cb`).
+
+**OmniCast 2.0.1** (the submodule commit, built on its own):
+- The exhaustive check of the scalar core against CUDA's host conversions
+  (every FP32 input into FP16, BF16, E4M3 and E5M2, both saturation modes,
+  every code decoded, FP64 edge and random values): 0 mismatches.
+- Its CTest is part of the counts above (5 tests on CUDA, including the
+  native FP8 converts on the H100; 4 on HIP; 2 on the CPU); also 2 / 2 on
+  Zen 4 on its own.
+
+**Time, head against base** (interleaved, the order of the two alternates
+between rounds; each process runs three factorizations and the first is
+dropped; speedup = median of the per-round base/head ratios, with a
+bootstrap 95 % interval):
+
+One GPU, N = 45056, NB = 2048, `--kind_of_problem 2`, default options
+(operand cache on), 9 rounds; the A100 started each process at 65 C or
+below and logged no thermal slowdown, and no other process used either GPU:
+
+| configuration | A100 base/head | H100 base/head |
+|---|---|---|
+| dense FP64 (kind 5) | 0.998 [0.983, 1.031] | 0.998 [0.990, 1.010] |
+| kind 3, static FP16 band | 1.000 [0.999, 1.002] | 0.998 [0.995, 1.004] |
+| kind 3, FP16 accumulation | 0.999 [0.995, 1.002] | 0.996 [0.988, 1.009] |
+| kind 5 adaptive, 1e-8 | 1.008 [0.991, 1.014] | 1.006 [0.994, 1.020] |
+| kind 5 adaptive, 1e-4 | 1.003 [0.993, 1.012] | 0.998 [0.996, 1.000] |
+| kind 5, stochastic rounding | 0.999 [0.987, 1.013] | 0.999 [0.988, 1.003] |
+| kind 5, `--datatype_convert 2` | 1.006 [0.998, 1.011] | 0.986 [0.964, 1.051] |
+| kind 8, 1e-3 (FP8 on the H100) | 1.002 [0.990, 1.020] | 0.993 [0.975, 1.022] |
+| kind 10, 1e-3 | 1.004 [0.997, 1.012] | 0.992 [0.962, 1.073] |
+| runtime decisions | 1.000 [0.998, 1.006] | 1.003 [0.983, 1.010] |
+
+No GPU configuration changed beyond its run-to-run spread. The H100's
+tile low-rank cases were noisy in both builds: single factorizations took
+up to three times their usual time (for example 3.19 s against 1.08 s in
+one process), so their intervals are wide. With the best repeat of each
+process in place of the mean, every H100 ratio lies between 0.986 and
+1.005.
+
+CPU-only builds, N = 16384, NB = 512, all cores:
+
+| configuration | caffeine, Broadwell, 28 cores (6 rounds) | serotonin, Zen 4, 16 cores (4 rounds) |
+|---|---|---|
+| dense FP64 | 0.994 [0.989, 1.008] | 1.002 [0.997, 1.009] |
+| kind 3, SP band | 1.002 [0.992, 1.020] | 1.000 [0.992, 1.003] |
+| kind 5 adaptive, 1e-4 | 1.002 [0.995, 1.007] | 0.997 [0.989, 1.001] |
+| kind 5, stochastic rounding | 1.008 [0.992, 1.014] | 1.008 [1.004, 1.015] |
+| kind 10, 1e-3 | **1.154** [1.142, 1.164] | **1.323** [1.309, 1.353] |
+| runtime decisions (kind 10) | **1.134** [1.125, 1.142] | **1.275** [1.256, 1.292] |
+
+Kind 10 on the CPU is faster in every round on both machines (2.57 s to
+2.23 s and 1.83 s to 1.38 s at 1e-3): the host operand cache and the MKL
+panels (`ffcf1cb`, `8e8fde8`; round 5 measured 1.13-1.16x on Broadwell).
+The other kinds are unchanged.
+
+**Not covered:** more than two nodes, InfiniBand between NVIDIA nodes,
+gfx90a and newer AMD GPUs (as in section 7, item 5); leconte, which another
+job was using.
+
+
 ## 6. Release checklist
 
 | Item | Status |
@@ -1683,6 +1797,7 @@ miscompute:
 | Tenth pass: code structure and several GPUs (section 5.17) | done; kinds 5, 8 and 9 one kernel, the low-rank CPU GEMM shared, one measured GPU placement rule, a note for GPUs that are not all linked; results unchanged on A100, H100 and V100s, timings unchanged or better |
 | Kinds 8 and 9 on their own kernels again, on request (section 5.18) | done; results identical to the merged kernel on A100, H100 (FP8) and V100s, timings within the spread; kinds 8 to 10 refuse stochastic rounding again |
 | Complete round on the head (section 5.19) | done; fresh clone on methane (CPU and CUDA builds, install, both matrices) and hexane (H100 with FP8, V100, both GPUs) pass and match the earlier results; leconte not run |
+| Release round on the head `d8217b5` (section 5.24) | done; clone of `ecrc/hicma-x` with `pull/13/head` (submodules from GitHub as after the merge): CTest on two CPUs, A100, H100, V100 and Radeon VII, `test_CI.sh`, install consumer, OmniCast's exhaustive check pass; validation matrix identical to `f5142be` on four machines; GPU timings unchanged, kind 10 on the CPU 1.13-1.32x faster |
 | Review by the maintainer of the behaviour changes (binding check, `--adddiag`, `N % NB`, genomics option) | **open** |
 | Tag `v0.2.0`, GitHub release, merge to `main` | **open** (authorization required) |
 
