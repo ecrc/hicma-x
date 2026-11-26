@@ -19,6 +19,22 @@ and the genomics (kernel ridge regression) applications.
   installed package is usable, and the Cholesky wrappers share one
   implementation. The full list is in
   `CHANGELOG.md`; the review that led to it is in `docs/code-review.md`.
+- Every data-type conversion goes through OmniCast 2.1.1 (new submodule
+  `omnicast/`): one library for FP64, FP32, FP16, BF16, FP8 and integers on
+  the CPU, CUDA and HIP, with the same results as before. Each GPU keeps the
+  converted GEMM operands of a factorization for reuse (`--operand_cache`,
+  on by default): on an H100 at N = 45056, FP8-heavy factorizations run
+  1.07-1.08x faster. CPU-only runs of kind 10 keep FP32 copies of the panel
+  tiles the same way and, with MKL, compute their FP32 GEMMs in panels:
+  1.13-1.32x faster on Broadwell and Zen 4.
+- CPU threads flush subnormal numbers (`--flush_subnormals`, on by
+  default): on Intel CPUs the mixed-precision kinds are 1.6-2.6x faster,
+  and no longer slower than FP64.
+- A failed cuBLAS, cuBLASLt, cuSOLVER (hipBLAS, rocSOLVER) or OmniCast call
+  stops the run with the file, the line and the error, where 0.1.0 went on
+  to a wrong factor or a later, unrelated error.
+- Validated on two nodes (two Radeon VII nodes over InfiniBand; a V100 and
+  an A100 node over Ethernet) and with several GPUs per process.
 
 ### Supported configurations
 
@@ -30,9 +46,11 @@ and the genomics (kernel ridge regression) applications.
 | Linux + ROCm 6.3 (HIP, gfx906: Radeon VII, MI50/60) | tested on one Radeon VII with ROCm 6.3.2 (CTest 46 / 46 with the two-rank cases), and on two nodes with one or two Radeon VIIs per process over InfiniBand (the GPU cases and the operand cache, `docs/release-readiness.md` section 5.21). ROCm 6.4 and later ship no rocBLAS kernels for gfx906 |
 | Fugaku (`ON_FUGAKU`), macOS, Windows | not supported |
 
-Requirements: CMake 3.21, a C11/C++17 compiler, a Fortran compiler (BLAS/LAPACK
-linkage), MPI with `MPI_THREAD_MULTIPLE`, BLAS, LAPACKE; CUDA 12.0 or later for
-GPU builds (`90a` architecture needs 12.0); GSL optional (Matérn kernels).
+Requirements: the submodules (`git clone --recursive`, or `git submodule
+update --init --recursive`), CMake 3.21, a C11/C++17 compiler, a Fortran
+compiler (BLAS/LAPACK linkage), MPI with `MPI_THREAD_MULTIPLE`, BLAS,
+LAPACKE; CUDA 12.0 or later for GPU builds (`90a` architecture needs 12.0);
+GSL optional (Matérn kernels).
 
 ### Known limitations
 
@@ -71,9 +89,14 @@ GPU builds (`90a` architecture needs 12.0); GSL optional (Matérn kernels).
 ### Validation
 
 `docs/release-readiness.md` records what was built and run for this release:
-CPU, CUDA (A100, H100, V100) and HIP (MI210, MI250X on Frontier) configurations, the CTest suite, the
-validation matrix (`scripts/validation_matrix.sh`), the install consumer and a
-before/after timing comparison.
+CPU, CUDA (A100, H100, V100) and HIP (MI210, MI250X on Frontier; Radeon VII)
+configurations, the CTest suite, the validation matrix
+(`scripts/validation_matrix.sh`), the install consumer, two-node runs and
+before/after timing comparisons. The last rounds built the release
+candidate from a fresh clone, with the submodules as GitHub serves them:
+CTest passed on two CPU-only nodes (Broadwell, Zen 4), an A100, an H100, a
+V100 and a Radeon VII (section 5.24), and again on Broadwell, the A100 and
+the Radeon VII with OmniCast 2.1.1 (section 5.25).
 
 ### Upgrading from 0.1.0
 
@@ -165,6 +188,44 @@ before/after timing comparison.
   rank 0 prints a note when the GPUs in use cannot all read each other
   directly. `Number_of_Datatype_Conversions` of kind-1 runs is larger: the
   conversions of its low-rank GEMMs were not counted.
+
+- New submodule `omnicast/` (OmniCast 2.1.1,
+  https://github.com/QingleiCao/OmniCast): after pulling, run
+  `git submodule update --init --recursive`. An install adds
+  `include/omnicast/omnicast.h` and the OmniCast library, which a static
+  `libhicma_parsec` links against.
+- FP64 -> FP8 (CUDA) and FP64 -> FP16 (HIP) are rounded once instead of
+  through FP32, so single elements can differ from 0.1.0 in rare ties (no
+  test result changed). Float -> integer conversions saturate and map NaN
+  to 0.
+- The operand cache (`--operand_cache`, on by default) takes up to 5 % of
+  PaRSEC's GPU memory per precision (FP8, 2-byte, 4-byte) when first needed;
+  processes without GPUs keep FP32 copies of the panel tiles for kind 10,
+  by default at most a quarter of the process's panel tiles.
+  `--operand_cache 0` turns both off. Results are bit-identical, and
+  `Number_of_Datatype_Conversions` is smaller.
+- CPU threads flush subnormals by default: HiCMA-X sets flush-to-zero and
+  denormals-are-zero on its CPU threads while it runs and restores the main
+  thread's setting at the end. Residuals of mixed-precision CPU runs agree
+  with those of `--flush_subnormals 0` to 4-5 digits; FP64 runs and GPU
+  kernels are unchanged.
+  `--flush_subnormals 0` keeps IEEE subnormals.
+- With MKL, the FP32 GEMMs that kind 10 runs on the CPU for FP64 tiles are
+  computed in 256-column panels (`ACC_DP_PANEL`, set by CMake): the same
+  bits with MKL; with OpenBLAS or BLIS it stays one GEMM.
+- In Cholesky runs with GPUs (kinds 1, 2, 5, 8, 9, 10), a GEMM that a GPU
+  accepts always runs on a GPU, also with
+  `device_load_balance_allow_cpu=1`. Default runs give the same bits.
+- A failed GPU library call (cuBLAS, cuBLASLt, cuSOLVER; hipBLAS, rocSOLVER)
+  or OmniCast call aborts the run with the file, the line, the status and,
+  for OmniCast, the CUDA or HIP call and error.
+- When the MPI library says it cannot read GPU memory, remote transfers go
+  through host memory, and a start-up note says so;
+  `PARSEC_MCA_mpi_gpu_aware` still overrides this. HIP processes with more
+  than one GPU allocate PaRSEC's arena buffers pinned, and the LL^T of
+  `--check` is pinned when GPUs are enabled (pageable if that fails).
+- Kinds 8 to 10 refuse `--enable_stochastic_rounding` at start-up, also
+  where no FP8 GEMM runs (a V100 or A100, or `--fp8 0`).
 
 ## 0.1.0
 
