@@ -85,6 +85,17 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   now give the same bits whatever the caller's FTZ/DAZ or rounding mode
   (some had changed under FTZ/DAZ; QingleiCao/OmniCast#2). Report in
   `docs/omnicast/round4/REPORT.md`.
+- OmniCast 2.1.1 (QingleiCao/OmniCast#3, #4): a failed OmniCast call on the
+  GPU names the CUDA or HIP call and its error, and `HICMA_OMC()` prints it,
+  for instance "OmniCast: device runtime error: launch of k_cvt:
+  cudaErrorInvalidConfiguration (invalid configuration argument)", where it
+  printed only "device runtime error". OmniCast's launch check used to
+  report an error left pending by earlier code as its own launch failure,
+  and clear it. Such an error is now reported as pending, nothing is
+  launched, and the error stays for the code that caused it. "Not ready",
+  which HIP records after PaRSEC polls an unfinished event, is not an error
+  (2.1.0 stopped 11 Radeon VII tests on it;
+  `docs/release-readiness.md`, section 5.25).
 - Host operand cache for kind 10 on CPUs (`--operand_cache`, default on).
   With runtime decisions, every CPU GEMM that picks FP32 converted both of
   its FP64 panel tiles again: 9342 conversions of 496 tiles at N = 16384. A
@@ -232,8 +243,8 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
 - `hicma_parsec_core_memory_allocation` (the LL^T of `--check`, and the tiles
   of the climate emulator and the TRMM performance test) ignored the result
   of `cudaMallocHost`/`hipHostMalloc`: a failure crashed later with no word
-  about memory. It now returns NULL and clears the runtime's error, which a
-  later launch check would otherwise have reported as its own. The check
+  about memory. It now returns NULL and clears the runtime's error, which
+  would otherwise stop the next OmniCast call on the GPU. The check
   falls back to pageable memory as before, and every caller stops with the
   size when no memory is left.
 

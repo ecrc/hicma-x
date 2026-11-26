@@ -524,15 +524,23 @@ int hicma_parsec_Lapack_to_Tile_sym(parsec_context_t *parsec,
    the HiCMA-X conventions (seed per tile, FP8 operand layout of cuBLASLt).
    ============================================================================ */
 
+/** Prints the call site, OmniCast's status and, for a GPU failure, the
+ *  CUDA/HIP call and error OmniCast recorded; then aborts (HICMA_OMC). */
+static inline void hicma_omc_fail(omc_status_t status, const char *file, int line)
+{
+    const char *detail = (OMC_ERROR_DEVICE == status || OMC_ERROR_ALLOCATION == status)
+                         ? omc_last_error_detail() : "";
+    fprintf(stderr, "%s:%d: OmniCast: %s%s%s\n", file, line, omc_status_string(status),
+            detail[0] ? ": " : "", detail);
+    abort();
+}
+
 /** Abort with the call site when an OmniCast call fails: a failure means a
  *  wrong argument or a dead GPU context, not a condition to recover from. */
 #define HICMA_OMC(call) do {                                                       \
         omc_status_t hicma_omc_status_ = (call);                                   \
-        if( OMC_SUCCESS != hicma_omc_status_ ) {                                   \
-            fprintf(stderr, "%s:%d: OmniCast: %s\n", __FILE__, __LINE__,           \
-                    omc_status_string(hicma_omc_status_));                         \
-            abort();                                                               \
-        }                                                                          \
+        if( OMC_SUCCESS != hicma_omc_status_ )                                     \
+            hicma_omc_fail(hicma_omc_status_, __FILE__, __LINE__);                 \
     } while(0)
 
 /** OmniCast options for stochastic rounding with the given seed when `on`,

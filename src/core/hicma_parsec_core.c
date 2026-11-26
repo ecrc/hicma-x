@@ -872,8 +872,8 @@ void hicma_parsec_core_memory_allocation(void **A, size_t nb_elements, char *all
         // Allocate pinned host memory for CUDA GPU acceleration
         // Pinned memory provides better transfer performance between host and GPU
         if( cudaSuccess != cudaMallocHost(A, data_size_) ) {
-            /* Clear the error: a later launch check (cudaGetLastError) would
-             * report it as its own */
+            /* Clear the error: it would stay pending, and the next GPU call
+             * that checks for pending errors (OmniCast's) would fail on it */
             (void)cudaGetLastError();
             *A = NULL;
         }
