@@ -52,8 +52,8 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   and out of place on the host, CUDA and HIP; faster FP8 operands (1.04-1.13x),
   in-place tile conversions (1.04-1.18x) and stochastic rounding from FP32
   sources; a fix for scaled FP32 -> FP16 conversions on AMD GPUs (HiCMA-X
-  scales by powers of two and is not affected). Report in
-  `omnicast/docs/REPORT.md`.
+  scales by powers of two and is not affected). OmniCast's report:
+  `omnicast/docs/omnicast-2.1-report.pdf`.
 - FP16 conversions are available on every CPU (they were Fugaku-only), and
   float -> integer conversions saturate (NaN -> 0) instead of being undefined
   out of range.
