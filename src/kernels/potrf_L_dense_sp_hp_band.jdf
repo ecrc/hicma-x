@@ -107,9 +107,7 @@ BODY
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
     // GPU load balancing: assign optimal GPU device for mixed precision operations
     if( nb_cuda_devices > 0 ) {
-        // Calculate optimal GPU device based on tile position and available devices
-        int g = gpu_load_mixed_precision( m, n, descA->nt, params_tlr->P, nb_cuda_devices, 
-                                         params_tlr->band_size_dense_sp, params_tlr->band_size_dense_sp);
+        int g = hicma_parsec_gpu_of_tile( m, n, params_tlr );
         // Advise runtime to prefer specific GPU device for this data tile to minimize transfers
         parsec_advise_data_on_device( _f_A->original,
                                     cuda_device_index[g],
@@ -197,7 +195,7 @@ BODY [type=CUDA]
     // GPU-accelerated triangular solve: L(m,k) = A(m,k) * L(k,k)^(-T)
     // Uses mixed precision arithmetic for improved performance
     parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, ws_gpu);
-    cublasSetStream( stream_found->handle_cublas, cuda_stream->cuda_stream );
+    HICMA_CUBLAS( cublasSetStream( stream_found->handle_cublas, cuda_stream->cuda_stream ) );
     hicma_parsec_core_trsm_gpu( descA, params_tlr, stream_found, cuda_device, gpu_task, cuda_stream, T, C, m, k );
 #endif
 }

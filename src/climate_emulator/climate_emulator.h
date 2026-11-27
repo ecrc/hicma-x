@@ -23,7 +23,7 @@
  * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
  *                              All rights reserved.
  * 
- * @version 1.0.0
+ * @version 0.2.0
  */
 
 #ifndef HICMA_PARSEC_CLIMATE_EMULATOR_H
@@ -53,22 +53,25 @@ extern "C" {
 /** @brief Total number of input files */
 #define CLIMATE_EMULATOR_NUM_FILE             1 
 /** @brief Enable debug information output */
+#ifndef CLIMATE_EMULATOR_DEBUG_INFO
 #define CLIMATE_EMULATOR_DEBUG_INFO           0
+#endif
 
 /* ============================================================================
  * Feature flags
  * ============================================================================ */
-#undef WRITE_A
-#undef MPIIO 
-#undef CHECKSOLVE 
-#undef PREDICTION 
-
 /** @brief Enable writing output to files */
+#ifndef CLIMATE_EMULATOR_WRITE_TO_FILE
 #define CLIMATE_EMULATOR_WRITE_TO_FILE  0
+#endif
 /** @brief Enable inverse spherical harmonic transform */
+#ifndef CLIMATE_EMULATOR_ENABLE_INVERSE
 #define CLIMATE_EMULATOR_ENABLE_INVERSE 0
+#endif
 /** @brief Enable reading input from files */
+#ifndef CLIMATE_EMULATOR_READ_FROM_FILE
 #define CLIMATE_EMULATOR_READ_FROM_FILE 0
+#endif
 
 #if CLIMATE_EMULATOR_READ_FROM_FILE
 #undef CLIMATE_EMULATOR_WRITE_TO_FILE
@@ -76,7 +79,9 @@ extern "C" {
 #endif
 
 /** @brief Use MPI-IO for file operations */
+#ifndef CLIMATE_EMULATOR_MPIIO
 #define CLIMATE_EMULATOR_MPIIO 1
+#endif
 
 /* ============================================================================
  * GPU support structures
@@ -171,32 +176,26 @@ typedef struct climate_emulator_struct_s {
     int f_data_N;                              /**< Columns in f_data matrix */
 
     parsec_matrix_block_cyclic_t desc_Et1;     /**< Descriptor for Et1 matrix */
-    complex double *Et1;                        /**< Et1 transformation matrix */
     int Et1_M;                                 /**< Rows in Et1 matrix */
     int Et1_N;                                 /**< Columns in Et1 matrix */
 
     parsec_matrix_block_cyclic_t desc_Et2;     /**< Descriptor for Et2 matrix */
-    complex double *Et2;                        /**< Et2 transformation matrix */
     int Et2_M;                                 /**< Rows in Et2 matrix */
     int Et2_N;                                 /**< Columns in Et2 matrix */
 
     parsec_matrix_block_cyclic_t desc_Ep;      /**< Descriptor for Ep matrix */
-    complex double *Ep;                         /**< Ep transformation matrix */
     int Ep_M;                                  /**< Rows in Ep matrix */
     int Ep_N;                                  /**< Columns in Ep matrix */
 
     parsec_matrix_block_cyclic_t desc_Slmn;    /**< Descriptor for Slmn matrix */
-    complex double *Slmn;                       /**< Slmn transformation matrix */
     int Slmn_M;                                /**< Rows in Slmn matrix */
     int Slmn_N;                                /**< Columns in Slmn matrix */
 
     parsec_matrix_block_cyclic_t desc_Ie;      /**< Descriptor for Ie matrix */
-    complex double *Ie;                         /**< Ie transformation matrix (even) */
     int Ie_M;                                  /**< Rows in Ie matrix */
     int Ie_N;                                  /**< Columns in Ie matrix */
 
     parsec_matrix_block_cyclic_t desc_Io;      /**< Descriptor for Io matrix */
-    complex double *Io;                         /**< Io transformation matrix (odd) */
     int Io_M;                                  /**< Rows in Io matrix */
     int Io_N;                                  /**< Columns in Io matrix */
 
@@ -213,7 +212,6 @@ typedef struct climate_emulator_struct_s {
     parsec_matrix_block_cyclic_t desc_flm;     /**< Descriptor for flm matrix */
     parsec_matrix_block_cyclic_t desc_flmERA;  /**< Descriptor for flmERA matrix */
     double *flm;                               /**< Output spherical harmonic coefficients */
-    double *flmERA;                            /**< Reference ERA spherical harmonic coefficients */
     int flm_M;                                 /**< Rows in flm matrices */
     int flm_N;                                 /**< Columns in flm matrices */
 
@@ -221,12 +219,10 @@ typedef struct climate_emulator_struct_s {
      * Backward computation matrices (spectral to spatial)
      * ============================================================================ */
     parsec_matrix_block_cyclic_t desc_Zlm;     /**< Descriptor for Zlm matrix */
-    double *Zlm;                               /**< Zlm transformation matrix */
     int Zlm_M;                                 /**< Rows in Zlm matrix */
     int Zlm_N;                                 /**< Columns in Zlm matrix */
 
     parsec_matrix_block_cyclic_t desc_SC;      /**< Descriptor for SC matrix */
-    double *SC;                                /**< SC transformation matrix */
     int SC_M;                                  /**< Rows in SC matrix */
     int SC_N;                                  /**< Columns in SC matrix */
 
@@ -258,7 +254,6 @@ typedef struct climate_emulator_struct_s {
     /* ============================================================================
      * Performance metrics
      * ============================================================================ */
-    double mse;                                /**< Mean squared error */
     double time_init;                          /**< Initialization time */
     double time_forward;                       /**< Forward computation time */
     double time_forward_reshape;               /**< Forward reshape time */
@@ -267,9 +262,7 @@ typedef struct climate_emulator_struct_s {
     double time_syrk;                          /**< SYRK operation time */
 
     double flops_forward;                      /**< Floating point operations for forward */
-    double perf_forward;                       /**< Forward computation performance (GFlops) */
     double flops_backward;                     /**< Floating point operations for backward */
-    double perf_backward;                      /**< Backward computation performance (GFlops) */
 
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
     climate_emulator_workspace_t *ws;          /**< GPU workspace */
@@ -693,36 +686,6 @@ int climate_emulator_mse(parsec_context_t *parsec,
         hicma_parsec_params_t *params);
 
 /**
- * @brief Print double precision matrix
- * 
- * Debug function to print a tiled matrix in double precision format.
- * Useful for debugging and validation of matrix data.
- * 
- * @param[in] parsec PaRSEC context
- * @param[in] A Matrix to print
- * @param[in] M Number of rows to print
- * @param[in] N Number of columns to print
- * @return 0 on success, non-zero on failure
- */
-int climate_emulator_print_double(parsec_context_t *parsec,
-        parsec_tiled_matrix_t *A, int M, int N);
-
-/**
- * @brief Print complex matrix
- * 
- * Debug function to print a tiled matrix in complex format.
- * Useful for debugging and validation of complex matrix data.
- * 
- * @param[in] parsec PaRSEC context
- * @param[in] A Matrix to print
- * @param[in] M Number of rows to print
- * @param[in] N Number of columns to print
- * @return 0 on success, non-zero on failure
- */
-int climate_emulator_print_complex(parsec_context_t *parsec,
-        parsec_tiled_matrix_t *A, int M, int N);
-
-/**
  * @brief Core function to sum double precision matrix
  * 
  * Utility function to compute the sum of all elements in a double
@@ -747,21 +710,6 @@ double climate_emulator_sum_double_core(double *A, int M, int N);
  * @return Sum of all matrix elements
  */
 complex double climate_emulator_sum_complex_core(complex double *A, int M, int N);
-
-/**
- * @brief Allocate dense tile matrix
- * 
- * Allocates memory for a dense tile matrix in the PaRSEC framework.
- * This is a utility function for matrix memory management.
- * 
- * @param[in] parsec PaRSEC context
- * @param[in] dcA Matrix descriptor
- * @param[in] params_tlr HICMA PaRSEC parameters
- * @return 0 on success, non-zero on failure
- */
-int hicma_parsec_matrix_allocate_dense_tile( parsec_context_t *parsec,
-        parsec_tiled_matrix_t *dcA,
-        hicma_parsec_params_t *params_tlr);
 
 /* ============================================================================
  * I/O functions

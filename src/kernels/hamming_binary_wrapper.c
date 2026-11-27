@@ -72,7 +72,7 @@ hicma_parsec_hamming_binary_default_new(dplasma_enum_t transA, dplasma_enum_t tr
         float beta,  parsec_tiled_matrix_t* C,
         dplasma_info_t opt, hicma_parsec_params_t * params_tlr, hicma_parsec_data_t *data)
 {
-    parsec_taskpool_t* gemm_tp;
+    parsec_taskpool_t* gemm_tp = NULL;
     void** eval_gpu_gemm;
 
     //printf("%d %s \n", __LINE__, __FILE__);
@@ -358,8 +358,10 @@ void hicma_parsec_hamming_binary_Destruct( parsec_taskpool_t *tp )
         parsec_del2arena( &gemm_tp->arenas_datatypes[PARSEC_hamming_binary_FULL_I32_ADT_IDX] );
 
         // Clean up private memory pools
-        parsec_private_memory_fini( gemm_tp->_g_p_work_intA );
-        parsec_private_memory_fini( gemm_tp->_g_p_work_intB );
+        hicma_parsec_memory_pool_fini( gemm_tp->_g_p_work_intA );
+        hicma_parsec_memory_pool_fini( gemm_tp->_g_p_work_intB );
+        free( gemm_tp->_g_p_work_intA );
+        free( gemm_tp->_g_p_work_intB );
 
         // Free the taskpool
         parsec_taskpool_free(tp);

@@ -1,13 +1,13 @@
-1. Merge LAPACK to tile and tile to LAPACK
-2. Merge potrf JDFs
-3. Matrix sum that supports multiple precisions
+1. Merge LAPACK to tile and tile to LAPACK (done for 0.2.0: src/kernels/lapack_tile_convert.jdf, hicma_parsec_lapack_tile_convert)
+2. Merge potrf JDFs (0.2.0: each kind keeps its own JDF, and the CPU low-rank GEMM of kinds 1, 5, 8, 9 and 10 is shared; still open: sharing the code kind 10 has in common with kind 5, and kinds 6 and 7 with kind 2)
+3. Matrix sum that supports multiple precisions (done for 0.2.0: src/kernels/matrix_sum.jdf, hicma_parsec_matrix_sum)
 4. Hide tile size
 5. Better API
 6. Python and Julia interfaces
 7. Remove dependencies to hcore
 8. Fix recursive issue in PaRSEC
 9. Merge GENOMICS and remove the redundant macros
-10. Fix hicma_parsec_init for external users
+10. Fix hicma_parsec_init for external users (0.2.0: accepts argc 0 / argv NULL and read-only argv, leaves an application's MPI initialized, and its internal calls can no longer be replaced by application functions of the same name; still open: setting the parameters without an argument vector)
 11. Add additional params and redesign the structure
-12. Redesign tensor_gemm to tensor_gemm_sp, tensor_gemm_hp, ...
+12. Redesign tensor_gemm to tensor_gemm_sp, tensor_gemm_hp, ... (0.2.0: --tensor_gemm_hp and --tensor_gemm_sp, checked at start-up; --tensor_gemm kept as the combined form; TESTS.md "GPU GEMM variants")
 13. Mememory register vs allocate host for adaptive_decision

@@ -21,14 +21,22 @@ extern "C" %{
  * different strategies for in-band vs off-band regions:
  * - In-band: maintains sequential order
  * - Off-band: reorders based on Arank from n_min (1) to n_max (n-reorder_gemm)
+ *
+ * Status: kept for future use, not wired into the factorization. Nothing calls
+ * hicma_parsec_reorder_gemm (params->reorder_gemm is 0 and has no option), and
+ * potrf_L_dense_tlr_dp.jdf still chains its GEMMs with k_pre = k-1 and
+ * k_next = k+1 (the hook is the commented k_pre/k_next lines there). To use it:
+ * call hicma_parsec_reorder_gemm after hicma_parsec_matrix_pre_analysis (it
+ * reads the gathered params->rank_array), pass dcReorder to the Cholesky and
+ * take k_pre/k_next from reorder_gemm_k_pre/next. Those two answer only on the
+ * process that owns tile (m, n), while PaRSEC also evaluates the dependencies
+ * of remote tasks, so a distributed run needs the order on every process.
  */
 
 /* Input/Output matrix descriptors and parameters */
 descAr          [ type = "parsec_tiled_matrix_t *" ]  /* Input matrix A descriptor */
 descRG          [ type = "parsec_tiled_matrix_t *" ]  /* Reorder matrix descriptor */
-rank_array      [ type = "int *" ]                    /* Array containing matrix ranks */
-disp            [ type = "int *" ]                    /* Displacement array */
-nb_elem_r       [ type = "int *" ]                    /* Number of elements per rank */
+rank_array      [ type = "int *" ]                    /* Gathered tile ranks, rank_array[n*lm+m] */
 band_size_dense [ type = "int" ]                      /* Size of dense band region */
 reorder_gemm    [ type = "int" ]                      /* Reorder parameter for GEMM */
 rows            [ type = "int" hidden = on default = "((parsec_matrix_block_cyclic_t *)descAr)->grid.rows" ]
@@ -158,7 +166,10 @@ BODY
         for( int i = n_min; i <= n_max; i++) {
             for( int j = i+1; j <= n_max; j++) {
                 if( ((int *)A)[i] > ((int *)A)[j] ) {
-                    /* Swap positions in buffer */
+                    /* Swap the keys and their positions */
+                    tmp = ((int *)A)[i];
+                    ((int *)A)[i] = ((int *)A)[j];
+                    ((int *)A)[j] = tmp;
                     tmp = buff[i];
                     buff[i] = buff[j];
                     buff[j] = tmp;
@@ -234,9 +245,7 @@ int reorder_gemm_k_next(parsec_tiled_matrix_t *descRG, int m, int n, int k) {
  * 
  * @param dcAr Input matrix descriptor
  * @param dcRG Reorder matrix descriptor
- * @param rank_array Array containing matrix ranks
- * @param disp Displacement array
- * @param nb_elem_r Number of elements per rank
+ * @param rank_array Gathered tile ranks (params->rank_array)
  * @param band_size_dense Size of dense band region
  * @param reorder_gemm Reorder parameter for GEMM
  * @return New taskpool instance
@@ -244,15 +253,14 @@ int reorder_gemm_k_next(parsec_tiled_matrix_t *descRG, int m, int n, int k) {
 parsec_taskpool_t*
 parsec_reorder_gemm_New(parsec_tiled_matrix_t *dcAr,
                         parsec_tiled_matrix_t *dcRG,
-                        int *rank_array, int *disp,
-                        int *nb_elem_r, int band_size_dense,
+                        int *rank_array, int band_size_dense,
                         int reorder_gemm)
 {
     parsec_taskpool_t* reorder_gemm_taskpool;
     parsec_reorder_gemm_taskpool_t* taskpool = NULL;
 
     /* Create new taskpool instance */
-    taskpool = parsec_reorder_gemm_new(dcAr, dcRG, rank_array, disp, nb_elem_r,
+    taskpool = parsec_reorder_gemm_new(dcAr, dcRG, rank_array,
                                        band_size_dense, reorder_gemm);
     reorder_gemm_taskpool = (parsec_taskpool_t*)taskpool;
 
@@ -279,7 +287,8 @@ void parsec_reorder_gemm_Destruct(parsec_taskpool_t *taskpool)
     parsec_reorder_gemm_taskpool_t *reorder_gemm_taskpool = (parsec_reorder_gemm_taskpool_t *)taskpool;
     
     /* Clean up memory pool */
-    parsec_private_memory_fini( reorder_gemm_taskpool->_g_work_tmp );
+    hicma_parsec_memory_pool_fini( reorder_gemm_taskpool->_g_work_tmp );
+    free( reorder_gemm_taskpool->_g_work_tmp );
     
     /* Remove arena */
     parsec_del2arena(&reorder_gemm_taskpool->arenas_datatypes[PARSEC_reorder_gemm_DEFAULT_ADT_IDX]);
@@ -294,9 +303,7 @@ void parsec_reorder_gemm_Destruct(parsec_taskpool_t *taskpool)
  * @param parsec PaRSEC context
  * @param dcAr Input matrix descriptor
  * @param dcRG Reorder matrix descriptor
- * @param rank_array Array containing matrix ranks
- * @param disp Displacement array
- * @param nb_elem_r Number of elements per rank
+ * @param rank_array Gathered tile ranks (params->rank_array)
  * @param band_size_dense Size of dense band region
  * @param reorder_gemm Reorder parameter for GEMM
  * @return 0 on success
@@ -304,14 +311,13 @@ void parsec_reorder_gemm_Destruct(parsec_taskpool_t *taskpool)
 int parsec_reorder_gemm(parsec_context_t *parsec,
                         parsec_tiled_matrix_t *dcAr,
                         parsec_tiled_matrix_t *dcRG,
-                        int *rank_array, int *disp,
-                        int *nb_elem_r, int band_size_dense,
+                        int *rank_array, int band_size_dense,
                         int reorder_gemm)
 {
     parsec_taskpool_t *parsec_reorder_gemm = NULL;
     
     /* Create taskpool */
-    parsec_reorder_gemm = parsec_reorder_gemm_New(dcAr, dcRG, rank_array, disp, nb_elem_r,
+    parsec_reorder_gemm = parsec_reorder_gemm_New(dcAr, dcRG, rank_array,
                                                   band_size_dense, reorder_gemm);
 
     if( parsec_reorder_gemm != NULL ){

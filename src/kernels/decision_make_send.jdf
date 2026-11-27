@@ -118,12 +118,6 @@ parsec_decision_make_send_New(parsec_tiled_matrix_t *A,
         hicma_parsec_params_t *params,
         uint16_t *new_decisions )
 {
-    /* Validate datatype conversion parameter */
-    if( params->datatype_convert != 0 && params->datatype_convert != 2 ) {
-        if( 0 == params->rank ) printf(RED "datatype_convert is wrong, which should be 0 or 2; set it to 2\n");
-        params->datatype_convert = 2;
-    }
-
     parsec_taskpool_t* decision_make_send_taskpool;
     parsec_decision_make_send_taskpool_t* taskpool = NULL;
 
@@ -156,6 +150,27 @@ int hicma_parsec_decision_make_send(parsec_context_t *parsec,
                          hicma_parsec_params_t *params )
 {
     parsec_taskpool_t *parsec_decision_make_send = NULL;
+
+    /* Sender conversion (1) exists only in DENSE_MP_BAND, which converts in
+     * its own tasks and does not read decisions_send: keep it there (this
+     * used to rewrite it to 2, which DENSE_MP_BAND does not implement, and
+     * the factorization crashed). Elsewhere fall back to the adaptive
+     * strategy, as before. */
+    if( SENDER_CONVERT == params->datatype_convert && DENSE_MP_BAND == params->kind_of_cholesky ) {
+        /* The only reader is the GPU TRSM, through the diagonal entries: the
+         * far-band TRSMs receive the diagonal factor already converted to
+         * FP32 by potrf_hsdpotrf_convert, so it must not convert it again */
+        memcpy( (void *)params->decisions_send, (void *)params->decisions, A->lmt * A->lnt * sizeof(uint16_t) );
+        for( int k = 0; k < A->lmt; k++ )
+            params->decisions_send[k * params->NT + k] = DENSE_SP;
+        return 0;
+    }
+    if( RECEIVER_CONVERT != params->datatype_convert && ADAPTIVE_CONVERT != params->datatype_convert ) {
+        if( 0 == params->rank ) printf(RED "datatype_convert %d is not 0 or 2 for this Cholesky kind; set it to 2\n" RESET,
+                                       params->datatype_convert);
+        params->datatype_convert = ADAPTIVE_CONVERT;
+    }
+
     // Allocate array to store new send decisions
     uint16_t *new_decisions = (uint16_t *)calloc( sizeof(uint16_t), A->lmt * A->lnt );
 

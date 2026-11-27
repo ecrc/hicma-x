@@ -71,7 +71,7 @@ static void climate_emulator_flmT_reshape(double *flmT, climate_emulator_struct_
             Y[j] = flmT[(j+3)*lda_flmT+i]; 
         }
 
-#if DEBUG_INFO_CLIMATE_EMULATOR
+#if CLIMATE_EMULATOR_DEBUG_INFO
         printf("Y\n");
         print_matrix_row_double(Y, 3, 1, 1);
 #endif
@@ -83,7 +83,7 @@ static void climate_emulator_flmT_reshape(double *flmT, climate_emulator_struct_
             X[3*j+2] = flmT[(j+0)*lda_flmT+i];  // Time point j
         }
 
-#if DEBUG_INFO_CLIMATE_EMULATOR
+#if CLIMATE_EMULATOR_DEBUG_INFO
         printf("X\n");
         print_matrix_row_double(X, N, 3, 3);
 
@@ -108,7 +108,7 @@ static void climate_emulator_flmT_reshape(double *flmT, climate_emulator_struct_
                 Y, 1,
                 beta, XtY, 1);
 
-#if DEBUG_INFO_CLIMATE_EMULATOR
+#if CLIMATE_EMULATOR_DEBUG_INFO
         printf("XtX\n");
         print_matrix_row_double(XtX, 3, 3, 3);
 
@@ -144,7 +144,7 @@ static void climate_emulator_flmT_reshape(double *flmT, climate_emulator_struct_
                 XtY, 1,          // phi (stored in XtY)
                 1.0, &flmT[3*lda_flmT+i], lda_flmT);  // + flmT[3:end]
 
-#if DEBUG_INFO_CLIMATE_EMULATOR
+#if CLIMATE_EMULATOR_DEBUG_INFO
         printf("Updated flmT\n");
         print_matrix_row_double(flmT, 1, N+3, lda_flmT);
         print_matrix_row_double(flmT, N+3, 1, lda_flmT);
@@ -306,10 +306,10 @@ void climate_emulator_geqsht_forward_reshape_Destruct(parsec_taskpool_t *taskpoo
     parsec_del2arena(&climate_emulator_geqsht_forward_reshape_taskpool->arenas_datatypes[PARSEC_climate_emulator_geqsht_forward_reshape_DEFAULT_ADT_IDX]);
     
     // Clean up all memory pools
-    parsec_private_memory_fini( climate_emulator_geqsht_forward_reshape_taskpool->_g_p_Gmtheta_r);
-    parsec_private_memory_fini( climate_emulator_geqsht_forward_reshape_taskpool->_g_p_Fmnm);
-    parsec_private_memory_fini( climate_emulator_geqsht_forward_reshape_taskpool->_g_p_work_1);
-    parsec_private_memory_fini( climate_emulator_geqsht_forward_reshape_taskpool->_g_p_work_2);
+    hicma_parsec_memory_pool_fini( climate_emulator_geqsht_forward_reshape_taskpool->_g_p_Gmtheta_r);
+    hicma_parsec_memory_pool_fini( climate_emulator_geqsht_forward_reshape_taskpool->_g_p_Fmnm);
+    hicma_parsec_memory_pool_fini( climate_emulator_geqsht_forward_reshape_taskpool->_g_p_work_1);
+    hicma_parsec_memory_pool_fini( climate_emulator_geqsht_forward_reshape_taskpool->_g_p_work_2);
     
     // Free the taskpool itself
     parsec_taskpool_free(taskpool);
@@ -334,7 +334,7 @@ int climate_emulator_geqsht_forward_reshape(parsec_context_t *parsec,
         climate_emulator_struct_t *gb,
         hicma_parsec_params_t *params)
 {
-#if !READ_FROM_FILE
+#if !CLIMATE_EMULATOR_READ_FROM_FILE
     // Create and execute the forward reshape taskpool
     parsec_taskpool_t *parsec_climate_emulator_geqsht_forward_reshape = NULL;
     parsec_climate_emulator_geqsht_forward_reshape = climate_emulator_geqsht_forward_reshape_New( parsec, gb, params);
@@ -346,20 +346,20 @@ int climate_emulator_geqsht_forward_reshape(parsec_context_t *parsec,
     }
 #endif
 
-#if WRITE_TO_FILE 
+#if CLIMATE_EMULATOR_WRITE_TO_FILE 
     // Store the processed flmT matrix to file for later use
     VERBOSE_PRINT(params->rank, params->verbose, ("Store desc_flmT to file\n"));
     climate_emulator_write(parsec, gb->data_dir, &gb->desc_flmT.super, NULL, params, 0);
 #endif
 
-#if READ_FROM_FILE
+#if CLIMATE_EMULATOR_READ_FROM_FILE
     // Read the A matrix from file instead of computing it
     VERBOSE_PRINT(params->rank, params->verbose, ("Read desc_A from file\n"));
     climate_emulator_read(parsec, gb->data_dir, &gb->desc_A.super, NULL, params, 0);
 #endif
 
 double norm_flmT = 0.0;
-#if !READ_FROM_FILE
+#if !CLIMATE_EMULATOR_READ_FROM_FILE
     // Redistribute data from flmT matrix to A matrix
     // This step transfers the reshaped data to the final destination
     VERBOSE_PRINT(params->rank, params->verbose, ("Redistribute desc_flmT -> desc_A\n"));
@@ -382,7 +382,7 @@ double norm_flmT = 0.0;
     MPI_Allreduce(MPI_IN_PLACE, gb->phi, gb->phi_M*gb->phi_N, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 
     // Clean up memory resources
-#if !READ_FROM_FILE
+#if !CLIMATE_EMULATOR_READ_FROM_FILE
     // Free the flmT matrix data and descriptor since it's no longer needed
     parsec_data_free(gb->desc_flmT.mat);
     parsec_tiled_matrix_destroy((parsec_tiled_matrix_t*)&gb->desc_flmT);

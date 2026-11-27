@@ -7,156 +7,9 @@
 // Thread block size for 2D kernel launches - optimized for GPU memory coalescing
 #define CHUNKSIZE 32
 
-/****************************************************************************************************/
-/**
- * @brief HIP kernel for converting integer array to float array in-place
- * 
- * This kernel performs type conversion from integer to float for matrix elements.
- * Each thread processes one matrix element, converting the integer value to float
- * and storing it back in the same memory location (in-place conversion).
- * 
- * @param nrows Number of rows in the matrix
- * @param ncols Number of columns in the matrix  
- * @param T Input/output matrix (int*) - converted to float* internally
- * @param ldi Leading dimension of the matrix
- */
-__global__ void int_2float_array_kernel_unary(int nrows, int ncols,
-                                        int *T, int ldi){
-
-    // Get thread and block indices for 2D grid
-    const int tx = hipThreadIdx_x;
-    const int ty = hipThreadIdx_y;
-    const int idx = hipBlockIdx_x * hipBlockDim_x + tx;
-    const int idy = hipBlockIdx_y * hipBlockDim_y + ty;
-    
-    // Cast input matrix to float pointer for in-place conversion
-    float *data_s = (float *)T;
-    
-    // Bounds checking - exit if thread is outside matrix dimensions
-    if(idx >= nrows || idy >= ncols) {
-        return;
-    }
-    
-    // Perform in-place type conversion: int -> float
-    data_s[idy * ldi + idx] = (float)T[idy * ldi + idx];
-}
-
-/**
- * @brief HIP wrapper function for integer to float array conversion
- * 
- * Launches the int_2float_array_kernel_unary kernel on GPU with appropriate
- * grid and block dimensions. Uses CHUNKSIZE×CHUNKSIZE thread blocks for
- * optimal memory coalescing and performance.
- * 
- * @param nrows Number of rows in the matrix
- * @param ncols Number of columns in the matrix
- * @param T Input/output matrix (int*) - converted in-place to float*
- * @param ldi Leading dimension of the matrix
- * @param stream HIP stream for asynchronous execution
- */
-extern "C"
-void int_2float_array_unary(int nrows, int ncols,
-                    int *T, int ldi,
-                    hipStream_t stream){
-
-    // Calculate number of thread blocks needed to cover the matrix
-    int nBlockx = (nrows + CHUNKSIZE - 1) / CHUNKSIZE;
-    int nBlocky = (ncols + CHUNKSIZE - 1) / CHUNKSIZE;
-    
-    // Define thread block and grid dimensions
-    dim3 dimBlock(CHUNKSIZE, CHUNKSIZE);
-    dim3 dimGrid(nBlockx, nBlocky);
-    
-    // Launch kernel with calculated dimensions
-    int_2float_array_kernel_unary<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, T, ldi);
-}
-/****************************************************************************************************/
-
 
 /****************************************************************************************************/
-/**
- * @brief HIP kernel for converting float array to integer array in-place
- * 
- * This kernel performs type conversion from float to integer for matrix elements.
- * Each thread processes one matrix element, converting the float value to integer
- * and storing it back in the same memory location (in-place conversion).
- * 
- * @param nrows Number of rows in the matrix
- * @param ncols Number of columns in the matrix
- * @param F Input/output matrix (float*) - converted to int* internally
- * @param ldf Leading dimension of the matrix
- */
-__global__ void float_2int_array_kernel_unary(int nrows, int ncols,
-                                        float *F, int ldf){
 
-    // Get thread and block indices for 2D grid
-    const int tx = hipThreadIdx_x;
-    const int ty = hipThreadIdx_y;
-    const int idx = hipBlockIdx_x * hipBlockDim_x + tx;
-    const int idy = hipBlockIdx_y * hipBlockDim_y + ty;
-    
-    // Cast input matrix to int pointer for in-place conversion
-    int *data_i = (int*) F;
-    
-    // Bounds checking - exit if thread is outside matrix dimensions
-    if(idx >= nrows || idy >= ncols) {
-        return;
-    }
-    
-    // Perform in-place type conversion: float -> int
-    data_i[idy * ldf + idx] = (int)F[idy * ldf + idx];
-}
-
-/**
- * @brief HIP wrapper function for float to integer array conversion
- * 
- * Launches the float_2int_array_kernel_unary kernel on GPU with appropriate
- * grid and block dimensions. Uses CHUNKSIZE×CHUNKSIZE thread blocks for
- * optimal memory coalescing and performance.
- * 
- * @param nrows Number of rows in the matrix
- * @param ncols Number of columns in the matrix
- * @param F Input/output matrix (float*) - converted in-place to int*
- * @param ldf Leading dimension of the matrix
- * @param stream HIP stream for asynchronous execution
- */
-extern "C"
-void float_2int_array_unary(int nrows, int ncols,
-                    float *F, int ldf,
-                    hipStream_t stream){
-
-    // Calculate number of thread blocks needed to cover the matrix
-    int nBlockx = (nrows + CHUNKSIZE - 1) / CHUNKSIZE;
-    int nBlocky = (ncols + CHUNKSIZE - 1) / CHUNKSIZE;
-    
-    // Define thread block and grid dimensions
-    dim3 dimBlock(CHUNKSIZE, CHUNKSIZE);
-    dim3 dimGrid(nBlockx, nBlocky);
-    
-    // Launch kernel with calculated dimensions
-    float_2int_array_kernel_unary<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, F, ldf);
-}
-
-
-/**
- * @brief Host function for converting single float to half precision
- * 
- * Converts a single float value to half precision (16-bit) format
- * and stores it in the provided memory location.
- * 
- * @param F Input float value to convert
- * @param _H Output memory location for half precision result
- */
-extern "C"
-void float2half_host(const float F, void *_H) {
-    // Convert float to half precision
-    __half tmph = __float2half(F);
-    
-    // Copy the half precision value to output memory
-    memcpy(_H, &tmph, sizeof(tmph));
-} 
-/****************************************************************************************************/
-/****************************************************************************************************/
 /**
  * @brief HIP kernel for computing Gaussian kernel matrix
  * 
@@ -235,7 +88,7 @@ void gaussian_gpu(int nrows, int ncols, int m, int n,
     gaussianKernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, m, n, gamma, add_diag, a, lda);
 }
 /****************************************************************************************************/
-/****************************************************************************************************/
+
 /**
  * @brief HIP kernel for Hamming distance binary conversion
  * 
@@ -299,7 +152,6 @@ void hicma_parsec_hamming_subtract_ones_GPU(int nrows, int ncols, int8_t *aout, 
 }
 /****************************************************************************************************/
 
-/****************************************************************************************************/
 /**
  * @brief HIP kernel for Hamming distance identity matrix generation
  * 
@@ -364,7 +216,7 @@ void hicma_parsec_hamming_get_id_matrix_GPU(int nrows, int ncols, int8_t *aout, 
     hamming_get_id_matrix_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, aout, ain, lda, value);
 }
 /****************************************************************************************************/
-/****************************************************************************************************/
+
 /**
  * @brief HIP kernel for Hamming distance matrix merging
  * 
@@ -395,32 +247,6 @@ __global__ void hamming_merge_kernel(int nrows, int ncols, int *aout, int *ain, 
     aout[idy * lda + idx] += ain[idx * lda + idy];
 }
 
-/**
- * @brief HIP wrapper function for Hamming distance matrix merging
- * 
- * Launches the hamming_merge_kernel on GPU with appropriate grid and block dimensions.
- * Uses CHUNKSIZE×CHUNKSIZE thread blocks for optimal performance.
- * 
- * @param nrows Number of rows in the matrices
- * @param ncols Number of columns in the matrices
- * @param aout Output matrix (int) - accumulates the merged result
- * @param ain Input matrix (int) - values to add (transposed)
- * @param lda Leading dimension of both matrices
- * @param stream HIP stream for asynchronous execution
- */
-extern "C"
-void hicma_parsec_hamming_merge_GPU(int nrows, int ncols, int *aout, int *ain, int lda, cudaStream_t stream) {
-    // Calculate grid dimensions based on matrix size and chunk size
-    int nBlockx = (nrows + CHUNKSIZE - 1) / CHUNKSIZE;
-    int nBlocky = (ncols + CHUNKSIZE - 1) / CHUNKSIZE;
-    
-    // Define thread block and grid dimensions
-    dim3 dimBlock(CHUNKSIZE, CHUNKSIZE);
-    dim3 dimGrid(nBlockx, nBlocky);
-    
-    // Launch kernel with calculated dimensions
-    hamming_merge_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, aout, ain, lda);
-}
 /****************************************************************************************************/
 
 
@@ -487,7 +313,6 @@ void climate_emulator_reshape_GPU( double *T, hipDoubleComplex *S,
 }
 /****************************************************************************************************/
 
-/****************************************************************************************************/
 /**
  * @brief HIP kernel for printing complex matrix elements
  * 
@@ -546,7 +371,6 @@ void climate_emulator_print_complex_GPU( hipDoubleComplex *A,
 }
 /****************************************************************************************************/
 
-/****************************************************************************************************/
 /**
  * @brief HIP kernel for printing double matrix elements
  * 
@@ -605,728 +429,12 @@ void climate_emulator_print_double_GPU( double *A,
 }
 /****************************************************************************************************/
 
-
-/****************************************************************************************************/
-/**
- * @brief HIP kernel for converting double precision to bfloat16
- * 
- * Converts a double precision matrix to bfloat16 (Brain Floating Point) format.
- * Each thread processes one matrix element, converting from double to bfloat16
- * with proper rounding.
- * 
- * @param nrows Number of rows in the matrix
- * @param ncols Number of columns in the matrix
- * @param F Input double precision matrix (const double*)
- * @param ldf Leading dimension of input matrix
- * @param H Output bfloat16 matrix (hip_bfloat16*)
- * @param ldh Leading dimension of output matrix
+/*
+ * H = half(scale * F) for FP64 or FP32 F. The FP16 matrix instructions of
+ * gfx90a flush FP16 subnormal inputs (|x| < 6.1e-5) to zero; callers pass a
+ * power of two (exact) that keeps the operand in the normal range and divide
+ * the GEMM's alpha by it.
  */
-__global__ void double2bf_GPU_kernel( int nrows, int ncols,
-                const double *F, int ldf,
-                hip_bfloat16 *H, int ldh ) {
-    // Get thread and block indices for 2D grid
-    const int tx = hipThreadIdx_x;
-    const int ty = hipThreadIdx_y;
-    const int idx = hipBlockIdx_x * hipBlockDim_x + tx;
-    const int idy = hipBlockIdx_y * hipBlockDim_y + ty;
-
-    // Bounds checking - exit if thread is outside matrix dimensions
-    if( idx >= nrows || idy >= ncols ) { 
-        return; 
-    }
-    
-    // Convert double to bfloat16 with proper rounding
-    H[idy * ldh + idx] = H[idy * ldh + idx].round_to_bfloat16( (float)(F[idy * ldf + idx]) );
-}
-
-/**
- * @brief HIP wrapper function for double to bfloat16 conversion
- * 
- * Launches the double2bf_GPU_kernel on GPU with appropriate grid and block dimensions.
- * Converts a double precision matrix to bfloat16 format for reduced memory usage.
- * 
- * @param nrows Number of rows in the matrix
- * @param ncols Number of columns in the matrix
- * @param F Input double precision matrix (const double*)
- * @param ldf Leading dimension of input matrix
- * @param _H Output bfloat16 matrix (void* - cast to hip_bfloat16*)
- * @param ldh Leading dimension of output matrix
- * @param stream HIP stream for asynchronous execution
- */
-extern "C"
-void double2bf_GPU( int nrows, int ncols,
-                const double *F, int ldf,
-                void *_H, int ldh,
-                hipStream_t stream ) {
-    // Calculate number of thread blocks needed to cover the matrix
-    int nBlockx = (nrows + CHUNKSIZE - 1) / CHUNKSIZE;
-    int nBlocky = (ncols + CHUNKSIZE - 1) / CHUNKSIZE;
-    
-    // Define thread block and grid dimensions
-    dim3 dimBlock(CHUNKSIZE, CHUNKSIZE);
-    dim3 dimGrid(nBlockx, nBlocky);
-    
-    // Cast void pointer to bfloat16 pointer
-    hip_bfloat16 *H = (hip_bfloat16 *)_H;
-    
-    // Launch kernel with calculated dimensions
-    double2bf_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, F, ldf, H, ldh);
-}
-/****************************************************************************************************/
-/****************************************************************************************************/
-/**
- * @brief HIP kernel for converting single precision to bfloat16
- * 
- * Converts a single precision (float) matrix to bfloat16 format.
- * Each thread processes one matrix element, converting from float to bfloat16
- * with proper rounding.
- * 
- * @param nrows Number of rows in the matrix
- * @param ncols Number of columns in the matrix
- * @param F Input single precision matrix (const float*)
- * @param ldf Leading dimension of input matrix
- * @param H Output bfloat16 matrix (hip_bfloat16*)
- * @param ldh Leading dimension of output matrix
- */
-__global__ void float2bf_GPU_kernel( int nrows, int ncols,
-                const float *F, int ldf,
-                hip_bfloat16 *H, int ldh ) {
-    // Get thread and block indices for 2D grid
-    const int tx = hipThreadIdx_x;
-    const int ty = hipThreadIdx_y;
-    const int idx = hipBlockIdx_x * hipBlockDim_x + tx;
-    const int idy = hipBlockIdx_y * hipBlockDim_y + ty;
-
-    // Bounds checking - exit if thread is outside matrix dimensions
-    if( idx >= nrows || idy >= ncols ) { 
-        return; 
-    }
-    
-    // Convert float to bfloat16 with proper rounding
-    H[idy * ldh + idx] = H[idy * ldh + idx].round_to_bfloat16( F[idy * ldf + idx] );
-}
-
-/**
- * @brief HIP wrapper function for float to bfloat16 conversion
- * 
- * Launches the float2bf_GPU_kernel on GPU with appropriate grid and block dimensions.
- * Converts a single precision matrix to bfloat16 format for reduced memory usage.
- * 
- * @param nrows Number of rows in the matrix
- * @param ncols Number of columns in the matrix
- * @param F Input single precision matrix (const float*)
- * @param ldf Leading dimension of input matrix
- * @param _H Output bfloat16 matrix (void* - cast to hip_bfloat16*)
- * @param ldh Leading dimension of output matrix
- * @param stream HIP stream for asynchronous execution
- */
-extern "C"
-void float2bf_GPU( int nrows, int ncols,
-                const float *F, int ldf,
-                void *_H, int ldh,
-                hipStream_t stream ) {
-    // Calculate number of thread blocks needed to cover the matrix
-    int nBlockx = (nrows + CHUNKSIZE - 1) / CHUNKSIZE;
-    int nBlocky = (ncols + CHUNKSIZE - 1) / CHUNKSIZE;
-    
-    // Define thread block and grid dimensions
-    dim3 dimBlock(CHUNKSIZE, CHUNKSIZE);
-    dim3 dimGrid(nBlockx, nBlocky);
-    
-    // Cast void pointer to bfloat16 pointer
-    hip_bfloat16 *H = (hip_bfloat16 *)_H;
-    
-    // Launch kernel with calculated dimensions
-    float2bf_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, F, ldf, H, ldh);
-}
-/****************************************************************************************************/
-
-/**
- * @brief HIP kernel for converting bfloat16 to single precision
- * 
- * Converts a bfloat16 matrix to single precision (float) format.
- * Each thread processes one matrix element, converting from bfloat16 to float.
- * 
- * @param nrows Number of rows in the matrix
- * @param ncols Number of columns in the matrix
- * @param H Input bfloat16 matrix (const hip_bfloat16*)
- * @param ldh Leading dimension of input matrix
- * @param F Output single precision matrix (float*)
- * @param ldf Leading dimension of output matrix
- */
-__global__ void bf2float_GPU_kernel( int nrows, int ncols,
-                const hip_bfloat16 *H, int ldh,
-                float *F, int ldf ) {
-    // Get thread and block indices for 2D grid
-    const int tx = hipThreadIdx_x;
-    const int ty = hipThreadIdx_y;
-    const int idx = hipBlockIdx_x * hipBlockDim_x + tx;
-    const int idy = hipBlockIdx_y * hipBlockDim_y + ty;
-
-    // Bounds checking - exit if thread is outside matrix dimensions
-    if( idx >= nrows || idy >= ncols ) { 
-        return; 
-    }
-
-    // Convert bfloat16 to float
-    F[idy * ldf + idx] = (float)( H[idy * ldh + idx] );
-}
-
-/**
- * @brief HIP wrapper function for bfloat16 to float conversion
- * 
- * Launches the bf2float_GPU_kernel on GPU with appropriate grid and block dimensions.
- * Converts a bfloat16 matrix to single precision format.
- * 
- * @param nrows Number of rows in the matrix
- * @param ncols Number of columns in the matrix
- * @param _H Input bfloat16 matrix (const void* - cast to hip_bfloat16*)
- * @param ldh Leading dimension of input matrix
- * @param F Output single precision matrix (float*)
- * @param ldf Leading dimension of output matrix
- * @param stream HIP stream for asynchronous execution
- */
-extern "C"
-void bf2float_GPU( int nrows, int ncols,
-                const void *_H, int ldh,
-                float *F, int ldf,
-                hipStream_t stream ) {
-    // Calculate number of thread blocks needed to cover the matrix
-    int nBlockx = (nrows + CHUNKSIZE - 1) / CHUNKSIZE;
-    int nBlocky = (ncols + CHUNKSIZE - 1) / CHUNKSIZE;
-    
-    // Define thread block and grid dimensions
-    dim3 dimBlock(CHUNKSIZE, CHUNKSIZE);
-    dim3 dimGrid(nBlockx, nBlocky);
-    
-    // Cast void pointer to bfloat16 pointer
-    hip_bfloat16 *H = (hip_bfloat16 *)_H;
-    
-    // Launch kernel with calculated dimensions
-    bf2float_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, H, ldh, F, ldf);
-}
-/****************************************************************************************************/
-
-/**
- * @brief HIP kernel for copying bfloat16 matrix
- * 
- * Copies elements from source bfloat16 matrix to destination bfloat16 matrix.
- * Each thread processes one matrix element, performing element-wise copy operation.
- * 
- * @param nrows Number of rows in the matrix
- * @param ncols Number of columns in the matrix
- * @param src Source bfloat16 matrix (hip_bfloat16*)
- * @param dest Destination bfloat16 matrix (hip_bfloat16*)
- */
-__global__ void memcpy_bf_GPU_kernel( int nrows, int ncols,
-                hip_bfloat16 *src, hip_bfloat16 *dest ) {
-    // Get thread and block indices for 2D grid
-    const int tx = hipThreadIdx_x;
-    const int ty = hipThreadIdx_y;
-    const int idx = hipBlockIdx_x * hipBlockDim_x + tx;
-    const int idy = hipBlockIdx_y * hipBlockDim_y + ty;
-
-    // Bounds checking - exit if thread is outside matrix dimensions
-    if( idx >= nrows || idy >= ncols ) { 
-        return; 
-    }
-
-    // Copy element from source to destination
-    dest[idy * nrows + idx] = src[idy * nrows + idx];
-}
-
-/**
- * @brief HIP wrapper function for bfloat16 matrix copy
- * 
- * Launches the memcpy_bf_GPU_kernel on GPU with appropriate grid and block dimensions.
- * Performs element-wise copy of bfloat16 matrix from source to destination.
- * 
- * @param nrows Number of rows in the matrix
- * @param ncols Number of columns in the matrix
- * @param _src Source bfloat16 matrix (void* - cast to hip_bfloat16*)
- * @param _dest Destination bfloat16 matrix (void* - cast to hip_bfloat16*)
- * @param stream HIP stream for asynchronous execution
- */
-extern "C"
-void memcpy_bf_GPU( int nrows, int ncols, void *_src, void *_dest, hipStream_t stream ) {
-    // Calculate number of thread blocks needed to cover the matrix
-    int nBlockx = (nrows + CHUNKSIZE - 1) / CHUNKSIZE;
-    int nBlocky = (ncols + CHUNKSIZE - 1) / CHUNKSIZE;
-    
-    // Define thread block and grid dimensions
-    dim3 dimBlock(CHUNKSIZE, CHUNKSIZE);
-    dim3 dimGrid(nBlockx, nBlocky);
-    
-    // Cast void pointers to bfloat16 pointers
-    hip_bfloat16 *src = (hip_bfloat16 *)_src;
-    hip_bfloat16 *dest = (hip_bfloat16 *)_dest;
-    
-    // Launch kernel with calculated dimensions
-    memcpy_bf_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, src, dest);
-}
-/****************************************************************************************************/
-/****************************************************************************************************/
-
-/**
- * @brief HIP kernel for converting single precision to double precision
- * 
- * Converts a single precision (float) matrix to double precision format.
- * Each thread processes one matrix element, converting from float to double.
- * 
- * @param nrows Number of rows in the matrix
- * @param ncols Number of columns in the matrix
- * @param F Input single precision matrix (const float*)
- * @param ldf Leading dimension of input matrix
- * @param D Output double precision matrix (double*)
- * @param ldh Leading dimension of output matrix
- */
-__global__ void float2double_GPU_kernel( int nrows, int ncols,
-                const float *F, int ldf,
-                double *D, int ldh ) {
-    // Get thread and block indices for 2D grid
-    const int tx = hipThreadIdx_x;
-    const int ty = hipThreadIdx_y;
-    const int idx = hipBlockIdx_x * hipBlockDim_x + tx;
-    const int idy = hipBlockIdx_y * hipBlockDim_y + ty;
-
-    // Bounds checking - exit if thread is outside matrix dimensions
-    if( idx >= nrows || idy >= ncols ) { 
-        return; 
-    }
-
-    // Convert float to double
-    D[idy * ldh + idx] = (double)F[idy * ldf + idx];
-}
-
-/**
- * @brief HIP wrapper function for float to double conversion
- * 
- * Launches the float2double_GPU_kernel on GPU with appropriate grid and block dimensions.
- * Converts a single precision matrix to double precision format.
- * 
- * @param nrows Number of rows in the matrix
- * @param ncols Number of columns in the matrix
- * @param F Input single precision matrix (const float*)
- * @param ldf Leading dimension of input matrix
- * @param D Output double precision matrix (double*)
- * @param ldh Leading dimension of output matrix
- * @param stream HIP stream for asynchronous execution
- */
-extern "C"
-void float2double_GPU( int nrows, int ncols,
-                const float *F, int ldf,
-                double *D, int ldh,
-                hipStream_t stream ) {
-    // Calculate number of thread blocks needed to cover the matrix
-    int nBlockx = (nrows + CHUNKSIZE - 1) / CHUNKSIZE;
-    int nBlocky = (ncols + CHUNKSIZE - 1) / CHUNKSIZE;
-    
-    // Define thread block and grid dimensions
-    dim3 dimBlock(CHUNKSIZE, CHUNKSIZE);
-    dim3 dimGrid(nBlockx, nBlocky);
-    
-    // Launch kernel with calculated dimensions
-    float2double_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, F, ldf, D, ldh);
-}
-
-/****************************************************************************************************/
-
-/**
- * @brief HIP kernel for converting double precision to single precision
- * 
- * Converts a double precision matrix to single precision (float) format.
- * Each thread processes one matrix element, converting from double to float
- * with proper rounding using __double2float_rn.
- * 
- * @param nrows Number of rows in the matrix
- * @param ncols Number of columns in the matrix
- * @param D Input double precision matrix (const double*)
- * @param ldh Leading dimension of input matrix
- * @param F Output single precision matrix (float*)
- * @param ldf Leading dimension of output matrix
- */
-__global__ void double2float_GPU_kernel( int nrows, int ncols,
-                const double *D, int ldh,
-                float *F, int ldf ) {
-    // Get thread and block indices for 2D grid
-    const int tx = hipThreadIdx_x;
-    const int ty = hipThreadIdx_y;
-    const int idx = hipBlockIdx_x * hipBlockDim_x + tx;
-    const int idy = hipBlockIdx_y * hipBlockDim_y + ty;
-
-    // Bounds checking - exit if thread is outside matrix dimensions
-    if( idx >= nrows || idy >= ncols ) { 
-        return; 
-    }
-
-    // Convert double to float with proper rounding
-    F[idy * ldf + idx] = __double2float_rn( D[idy * ldh + idx] ); 
-}
-
-/**
- * @brief HIP wrapper function for double to float conversion
- * 
- * Launches the double2float_GPU_kernel on GPU with appropriate grid and block dimensions.
- * Converts a double precision matrix to single precision format with proper rounding.
- * 
- * @param nrows Number of rows in the matrix
- * @param ncols Number of columns in the matrix
- * @param D Input double precision matrix (const double*)
- * @param ldh Leading dimension of input matrix
- * @param F Output single precision matrix (float*)
- * @param ldf Leading dimension of output matrix
- * @param stream HIP stream for asynchronous execution
- */
-extern "C"
-void double2float_GPU( int nrows, int ncols,
-                const double *D, int ldh,
-                float *F, int ldf,
-                hipStream_t stream ) {
-
-    // Calculate number of thread blocks needed to cover the matrix
-    int nBlockx = (nrows + CHUNKSIZE - 1) / CHUNKSIZE;
-    int nBlocky = (ncols + CHUNKSIZE - 1) / CHUNKSIZE;
-    
-    // Define thread block and grid dimensions
-    dim3 dimBlock(CHUNKSIZE, CHUNKSIZE);
-    dim3 dimGrid(nBlockx, nBlocky);
-    
-    // Launch kernel with calculated dimensions
-    double2float_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, D, ldh, F, ldf);
-}
-
-/****************************************************************************************************/
-
-/**
- * @brief HIP kernel for converting half precision to single precision
- * 
- * Converts a half precision (__half) matrix to single precision (float) format.
- * Each thread processes one matrix element, converting from half to float.
- * 
- * @param nrows Number of rows in the matrix
- * @param ncols Number of columns in the matrix
- * @param H Input half precision matrix (const __half*)
- * @param ldh Leading dimension of input matrix
- * @param F Output single precision matrix (float*)
- * @param ldf Leading dimension of output matrix
- */
-__global__ void half2float_GPU_kernel( int nrows, int ncols,
-                const __half *H, int ldh,
-                float *F, int ldf ) {
-    // Get thread and block indices for 2D grid
-    const int tx = hipThreadIdx_x;
-    const int ty = hipThreadIdx_y;
-    const int idx = hipBlockIdx_x * hipBlockDim_x + tx;
-    const int idy = hipBlockIdx_y * hipBlockDim_y + ty;
-
-    // Bounds checking - exit if thread is outside matrix dimensions
-    if( idx >= nrows || idy >= ncols ) { 
-        return; 
-    }
-
-    // Convert half to float
-    F[idy * ldf + idx] = __half2float( H[idy * ldh + idx] );
-}
-
-/**
- * @brief HIP wrapper function for half to float conversion
- * 
- * Launches the half2float_GPU_kernel on GPU with appropriate grid and block dimensions.
- * Converts a half precision matrix to single precision format.
- * 
- * @param nrows Number of rows in the matrix
- * @param ncols Number of columns in the matrix
- * @param _H Input half precision matrix (const void* - cast to __half*)
- * @param ldh Leading dimension of input matrix
- * @param F Output single precision matrix (float*)
- * @param ldf Leading dimension of output matrix
- * @param stream HIP stream for asynchronous execution
- */
-extern "C"
-void half2float_GPU( int nrows, int ncols,
-                const void *_H, int ldh,
-                float *F, int ldf,
-                hipStream_t stream ) {
-    // Calculate number of thread blocks needed to cover the matrix
-    int nBlockx = (nrows + CHUNKSIZE - 1) / CHUNKSIZE;
-    int nBlocky = (ncols + CHUNKSIZE - 1) / CHUNKSIZE;
-    
-    // Define thread block and grid dimensions
-    dim3 dimBlock(CHUNKSIZE, CHUNKSIZE);
-    dim3 dimGrid(nBlockx, nBlocky);
-    
-    // Cast void pointer to half pointer
-    __half *H = (__half *)_H;
-    
-    // Launch kernel with calculated dimensions
-    half2float_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, H, ldh, F, ldf);
-}
-
-/****************************************************************************************************/
-
-/**
- * @brief HIP kernel for converting single precision to half precision
- * 
- * Converts a single precision (float) matrix to half precision (__half) format.
- * Each thread processes one matrix element, converting from float to half
- * with proper rounding using __float2half_rn.
- * 
- * @param nrows Number of rows in the matrix
- * @param ncols Number of columns in the matrix
- * @param F Input single precision matrix (const float*)
- * @param ldf Leading dimension of input matrix
- * @param H Output half precision matrix (__half*)
- * @param ldh Leading dimension of output matrix
- */
-__global__ void float2half_GPU_kernel( int nrows, int ncols,
-                const float *F, int ldf,
-                __half *H, int ldh ) {
-    // Get thread and block indices for 2D grid
-    const int tx = hipThreadIdx_x;
-    const int ty = hipThreadIdx_y;
-    const int idx = hipBlockIdx_x * hipBlockDim_x + tx;
-    const int idy = hipBlockIdx_y * hipBlockDim_y + ty;
-
-    // Bounds checking - exit if thread is outside matrix dimensions
-    if( idx >= nrows || idy >= ncols ) { 
-        return; 
-    }
-
-    // Convert float to half with proper rounding
-    H[idy * ldh + idx] = __float2half_rn( F[idy * ldf + idx] );
-}
-
-/**
- * @brief HIP wrapper function for float to half conversion
- * 
- * Launches the float2half_GPU_kernel on GPU with appropriate grid and block dimensions.
- * Converts a single precision matrix to half precision format with proper rounding.
- * 
- * @param nrows Number of rows in the matrix
- * @param ncols Number of columns in the matrix
- * @param F Input single precision matrix (const float*)
- * @param ldf Leading dimension of input matrix
- * @param _H Output half precision matrix (void* - cast to __half*)
- * @param ldh Leading dimension of output matrix
- * @param stream HIP stream for asynchronous execution
- */
-extern "C"
-void float2half_GPU( int nrows, int ncols,
-                const float *F, int ldf,
-                void *_H, int ldh,
-                hipStream_t stream ) {
-    // Calculate number of thread blocks needed to cover the matrix
-    int nBlockx = (nrows + CHUNKSIZE - 1) / CHUNKSIZE;
-    int nBlocky = (ncols + CHUNKSIZE - 1) / CHUNKSIZE;
-    
-    // Define thread block and grid dimensions
-    dim3 dimBlock(CHUNKSIZE, CHUNKSIZE);
-    dim3 dimGrid(nBlockx, nBlocky);
-    
-    // Cast void pointer to half pointer
-    __half *H = (__half *)_H;
-    
-    // Launch kernel with calculated dimensions
-    float2half_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, F, ldf, H, ldh);
-}
-
-
-/****************************************************************************************************/
-
-/**
- * @brief HIP kernel for converting half precision to double precision
- * 
- * Converts a half precision (__half) matrix to double precision format.
- * Each thread processes one matrix element, converting from half to double.
- * 
- * @param nrows Number of rows in the matrix
- * @param ncols Number of columns in the matrix
- * @param H Input half precision matrix (const __half*)
- * @param ldh Leading dimension of input matrix
- * @param F Output double precision matrix (double*)
- * @param ldf Leading dimension of output matrix
- */
-__global__ void half2double_GPU_kernel( int nrows, int ncols,
-                const __half *H, int ldh,
-                double *F, int ldf ) {
-    // Get thread and block indices for 2D grid
-    const int tx = hipThreadIdx_x;
-    const int ty = hipThreadIdx_y;
-    const int idx = hipBlockIdx_x * hipBlockDim_x + tx;
-    const int idy = hipBlockIdx_y * hipBlockDim_y + ty;
-
-    // Bounds checking - exit if thread is outside matrix dimensions
-    if( idx >= nrows || idy >= ncols ) { 
-        return; 
-    }
-
-    // Convert half to double
-    F[idy * ldf + idx] = (double)( H[idy * ldh + idx] );
-}
-
-/**
- * @brief HIP wrapper function for half to double conversion
- * 
- * Launches the half2double_GPU_kernel on GPU with appropriate grid and block dimensions.
- * Converts a half precision matrix to double precision format.
- * 
- * @param nrows Number of rows in the matrix
- * @param ncols Number of columns in the matrix
- * @param _H Input half precision matrix (const void* - cast to __half*)
- * @param ldh Leading dimension of input matrix
- * @param F Output double precision matrix (double*)
- * @param ldf Leading dimension of output matrix
- * @param stream HIP stream for asynchronous execution
- */
-extern "C"
-void half2double_GPU( int nrows, int ncols,
-                const void *_H, int ldh,
-                double *F, int ldf,
-                hipStream_t stream ) {
-    // Calculate number of thread blocks needed to cover the matrix
-    int nBlockx = (nrows + CHUNKSIZE - 1) / CHUNKSIZE;
-    int nBlocky = (ncols + CHUNKSIZE - 1) / CHUNKSIZE;
-    
-    // Define thread block and grid dimensions
-    dim3 dimBlock(CHUNKSIZE, CHUNKSIZE);
-    dim3 dimGrid(nBlockx, nBlocky);
-    
-    // Cast void pointer to half pointer
-    __half *H = (__half *)_H;
-    
-    // Launch kernel with calculated dimensions
-    half2double_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, H, ldh, F, ldf);
-}
-
-/****************************************************************************************************/
-
-/**
- * @brief HIP kernel for converting double precision to half precision
- * 
- * Converts a double precision matrix to half precision (__half) format.
- * Each thread processes one matrix element, converting from double to half
- * via intermediate float conversion for better precision control.
- * 
- * @param nrows Number of rows in the matrix
- * @param ncols Number of columns in the matrix
- * @param F Input double precision matrix (const double*)
- * @param ldf Leading dimension of input matrix
- * @param H Output half precision matrix (__half*)
- * @param ldh Leading dimension of output matrix
- */
-__global__ void double2half_GPU_kernel( int nrows, int ncols,
-                const double *F, int ldf,
-                __half *H, int ldh ) {
-    // Get thread and block indices for 2D grid
-    const int tx = hipThreadIdx_x;
-    const int ty = hipThreadIdx_y;
-    const int idx = hipBlockIdx_x * hipBlockDim_x + tx;
-    const int idy = hipBlockIdx_y * hipBlockDim_y + ty;
-
-    // Bounds checking - exit if thread is outside matrix dimensions
-    if( idx >= nrows || idy >= ncols ) { 
-        return; 
-    }
-
-    // Convert double to half via float for better precision control
-    // Note: Direct __double2half may not be available, so use float intermediate
-    H[idy * ldh + idx] = __float2half( (float)(F[idy * ldf + idx]) );
-}
-
-/**
- * @brief HIP wrapper function for double to half conversion
- * 
- * Launches the double2half_GPU_kernel on GPU with appropriate grid and block dimensions.
- * Converts a double precision matrix to half precision format via float intermediate.
- * 
- * @param nrows Number of rows in the matrix
- * @param ncols Number of columns in the matrix
- * @param F Input double precision matrix (const double*)
- * @param ldf Leading dimension of input matrix
- * @param _H Output half precision matrix (void* - cast to __half*)
- * @param ldh Leading dimension of output matrix
- * @param stream HIP stream for asynchronous execution
- */
-extern "C"
-void double2half_GPU( int nrows, int ncols,
-                const double *F, int ldf,
-                void *_H, int ldh,
-                hipStream_t stream ) {
-    // Calculate number of thread blocks needed to cover the matrix
-    int nBlockx = (nrows + CHUNKSIZE - 1) / CHUNKSIZE;
-    int nBlocky = (ncols + CHUNKSIZE - 1) / CHUNKSIZE;
-    
-    // Define thread block and grid dimensions
-    dim3 dimBlock(CHUNKSIZE, CHUNKSIZE);
-    dim3 dimGrid(nBlockx, nBlocky);
-    
-    // Cast void pointer to half pointer
-    __half *H = (__half *)_H;
-    
-    // Launch kernel with calculated dimensions
-    double2half_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, F, ldf, H, ldh);
-}
-
-
-/****************************************************************************************************/
-
-/**
- * @brief HIP kernel for copying half precision matrix
- * 
- * Copies elements from source half precision matrix to destination half precision matrix.
- * Each thread processes one matrix element, performing element-wise copy operation.
- * 
- * @param nrows Number of rows in the matrix
- * @param ncols Number of columns in the matrix
- * @param src Source half precision matrix (__half*)
- * @param dest Destination half precision matrix (__half*)
- */
-__global__ void memcpy_half_GPU_kernel( int nrows, int ncols,
-                __half *src, __half *dest ) {
-    // Get thread and block indices for 2D grid
-    const int tx = hipThreadIdx_x;
-    const int ty = hipThreadIdx_y;
-    const int idx = hipBlockIdx_x * hipBlockDim_x + tx;
-    const int idy = hipBlockIdx_y * hipBlockDim_y + ty;
-
-    // Bounds checking - exit if thread is outside matrix dimensions
-    if( idx >= nrows || idy >= ncols ) { 
-        return; 
-    }
-
-    // Copy element from source to destination
-    dest[idy * nrows + idx] = src[idy * nrows + idx];
-}
-
-/**
- * @brief HIP wrapper function for half precision matrix copy
- * 
- * Launches the memcpy_half_GPU_kernel on GPU with appropriate grid and block dimensions.
- * Performs element-wise copy of half precision matrix from source to destination.
- * 
- * @param nrows Number of rows in the matrix
- * @param ncols Number of columns in the matrix
- * @param _src Source half precision matrix (void* - cast to __half*)
- * @param _dest Destination half precision matrix (void* - cast to __half*)
- * @param stream HIP stream for asynchronous execution
- */
-extern "C"
-void memcpy_half_GPU( int nrows, int ncols, void *_src, void *_dest, hipStream_t stream ) { 
-    // Calculate number of thread blocks needed to cover the matrix
-    int nBlockx = (nrows + CHUNKSIZE - 1) / CHUNKSIZE;
-    int nBlocky = (ncols + CHUNKSIZE - 1) / CHUNKSIZE;
-    
-    // Define thread block and grid dimensions
-    dim3 dimBlock(CHUNKSIZE, CHUNKSIZE);
-    dim3 dimGrid(nBlockx, nBlocky);
-    
-    // Cast void pointers to half pointers
-    __half *src = (__half *)_src;
-    __half *dest = (__half *)_dest;
-    
-    // Launch kernel with calculated dimensions
-    memcpy_half_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, src, dest);
-}
 
 
 /**
@@ -1355,35 +463,6 @@ void hicma_parsec_tril_mask_float_GPU( int n, float *L, int ldl, int unit, hipSt
         hicma_parsec_tril_mask_float_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(n, L, ldl, unit);
 }
 
-/****************************************************************************************************/
-
-/**
- * @brief HIP kernel for copying double precision matrix data
- */
-__global__ void memcpy_double_GPU_kernel( int nrows, int ncols,
-                const double *src, double *dest ) {
-    const int idx = hipBlockIdx_x * hipBlockDim_x + hipThreadIdx_x;
-    const int idy = hipBlockIdx_y * hipBlockDim_y + hipThreadIdx_y;
-
-    if( idx >= nrows || idy >= ncols ) {
-        return;
-    }
-
-    dest[idy * nrows + idx] = src[idy * nrows + idx];
-}
-
-extern "C"
-void memcpy_double_GPU( int nrows, int ncols, void *_src, void *_dest,
-                        hipStream_t stream ) {
-    const dim3 dimBlock(CHUNKSIZE, CHUNKSIZE);
-    const dim3 dimGrid((nrows + CHUNKSIZE - 1) / CHUNKSIZE,
-                       (ncols + CHUNKSIZE - 1) / CHUNKSIZE);
-
-    const double *src = (const double *)_src;
-    double *dest = (double *)_dest;
-
-    memcpy_double_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, src, dest);
-}
 
 /****************************************************************************************************/
 
@@ -1415,246 +494,8 @@ void sub_float_from_double_GPU( int nrows, int ncols, void *_src, void *_dest,
     sub_float_from_double_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, src, dest);
 }
 
-/****************************************************************************************************/
-
-/**
- * @brief HIP kernel for copying single precision matrix
- * 
- * Copies elements from source single precision matrix to destination single precision matrix.
- * Each thread processes one matrix element, performing element-wise copy operation.
- * 
- * @param nrows Number of rows in the matrix
- * @param ncols Number of columns in the matrix
- * @param src Source single precision matrix (float*)
- * @param dest Destination single precision matrix (float*)
- */
-__global__ void memcpy_float_GPU_kernel( int nrows, int ncols,
-               float *src, float *dest ) {
-    // Get thread and block indices for 2D grid
-    const int tx = hipThreadIdx_x;
-    const int ty = hipThreadIdx_y;
-    const int idx = hipBlockIdx_x * hipBlockDim_x + tx;
-    const int idy = hipBlockIdx_y * hipBlockDim_y + ty;
                            
-    // Bounds checking - exit if thread is outside matrix dimensions
-    if( idx >= nrows || idy >= ncols ) { 
-        return; 
-    }
-                           
-    // Copy element from source to destination
-    dest[idy * nrows + idx] = src[idy * nrows + idx];
-}                          
-                           
-/**
- * @brief HIP wrapper function for single precision matrix copy
- * 
- * Launches the memcpy_float_GPU_kernel on GPU with appropriate grid and block dimensions.
- * Performs element-wise copy of single precision matrix from source to destination.
- * 
- * @param nrows Number of rows in the matrix
- * @param ncols Number of columns in the matrix
- * @param _src Source single precision matrix (void* - cast to float*)
- * @param _dest Destination single precision matrix (void* - cast to float*)
- * @param stream HIP stream for asynchronous execution
- */
-extern "C"                 
-void memcpy_float_GPU( int nrows, int ncols, void *_src, void *_dest, hipStream_t stream ) {                         
-    // Calculate number of thread blocks needed to cover the matrix
-    int nBlockx = (nrows + CHUNKSIZE - 1) / CHUNKSIZE;
-    int nBlocky = (ncols + CHUNKSIZE - 1) / CHUNKSIZE;
-    
-    // Define thread block and grid dimensions
-    dim3 dimBlock(CHUNKSIZE, CHUNKSIZE);
-    dim3 dimGrid(nBlockx, nBlocky);
-    
-    // Cast void pointers to float pointers
-    float *src = (float *)_src;
-    float *dest = (float *)_dest;
-    
-    // Launch kernel with calculated dimensions
-    memcpy_float_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, src, dest);
-}
 
-/****************************************************************************************************/
-
-/**
- * @brief HIP kernel for printing single precision matrix elements
- * 
- * Debug kernel that prints single precision matrix elements to stdout. Each thread
- * prints one matrix element with its coordinates and value.
- * Note: This is for debugging purposes only and should be used sparingly.
- * 
- * @param nrows Number of rows in the matrix
- * @param ncols Number of columns in the matrix
- * @param A Input single precision matrix (float*)
- */
-__global__ void matrix_print_float_GPU_kernel( int nrows, int ncols, float *A ) {
-    // Get thread and block indices for 2D grid
-    const int tx = hipThreadIdx_x;
-    const int ty = hipThreadIdx_y;
-    const int idx = hipBlockIdx_x * hipBlockDim_x + tx;
-    const int idy = hipBlockIdx_y * hipBlockDim_y + ty;
-
-    // Bounds checking - exit if thread is outside matrix dimensions
-    if( idx >= nrows || idy >= ncols ) { 
-        return; 
-    }
-
-    // Print matrix element with coordinates and value
-    printf("SINGLE_PRINT %d %d : %g\n", idx, idy, A[idy * nrows + idx]);
-}
-
-/**
- * @brief HIP wrapper function for printing single precision matrix
- * 
- * Launches the matrix_print_float_GPU_kernel for debugging purposes.
- * Prints all elements of a single precision matrix to stdout.
- * 
- * @param nrows Number of rows in the matrix
- * @param ncols Number of columns in the matrix
- * @param A Input single precision matrix (float*)
- * @param stream HIP stream for asynchronous execution
- */
-extern "C"
-void matrix_print_float_GPU( int nrows, int ncols, float *A, hipStream_t stream ) {
-    // Calculate number of thread blocks needed to cover the matrix
-    int nBlockx = (nrows + CHUNKSIZE - 1) / CHUNKSIZE;
-    int nBlocky = (ncols + CHUNKSIZE - 1) / CHUNKSIZE;
-    
-    // Define thread block and grid dimensions
-    dim3 dimBlock(CHUNKSIZE, CHUNKSIZE);
-    dim3 dimGrid(nBlockx, nBlocky);
-
-    // Launch kernel with calculated dimensions
-    matrix_print_float_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, A);
-}
-
-/****************************************************************************************************/
-
-/**
- * @brief HIP kernel for printing double precision matrix elements
- * 
- * Debug kernel that prints double precision matrix elements to stdout. Each thread
- * prints one matrix element with its coordinates and value.
- * Note: This is for debugging purposes only and should be used sparingly.
- * 
- * @param nrows Number of rows in the matrix
- * @param ncols Number of columns in the matrix
- * @param A Input double precision matrix (double*)
- */
-__global__ void matrix_print_double_GPU_kernel( int nrows, int ncols, double *A ) {
-    // Get thread and block indices for 2D grid
-    const int tx = hipThreadIdx_x;
-    const int ty = hipThreadIdx_y;
-    const int idx = hipBlockIdx_x * hipBlockDim_x + tx;
-    const int idy = hipBlockIdx_y * hipBlockDim_y + ty;
-
-    // Bounds checking - exit if thread is outside matrix dimensions
-    if( idx >= nrows || idy >= ncols ) { 
-        return; 
-    }
-
-    // Print matrix element with coordinates and value
-    printf("DOUBLE_PRINT %d %d : %g\n", idx, idy, A[idy * nrows + idx]);
-}
-
-/**
- * @brief HIP wrapper function for printing double precision matrix
- * 
- * Launches the matrix_print_double_GPU_kernel for debugging purposes.
- * Prints all elements of a double precision matrix to stdout.
- * 
- * @param nrows Number of rows in the matrix
- * @param ncols Number of columns in the matrix
- * @param A Input double precision matrix (double*)
- * @param stream HIP stream for asynchronous execution
- */
-extern "C"
-void matrix_print_double_GPU( int nrows, int ncols, double *A, hipStream_t stream ) {
-    // Calculate number of thread blocks needed to cover the matrix
-    int nBlockx = (nrows + CHUNKSIZE - 1) / CHUNKSIZE;
-    int nBlocky = (ncols + CHUNKSIZE - 1) / CHUNKSIZE;
-    
-    // Define thread block and grid dimensions
-    dim3 dimBlock(CHUNKSIZE, CHUNKSIZE);
-    dim3 dimGrid(nBlockx, nBlocky);
-
-    // Launch kernel with calculated dimensions
-    matrix_print_double_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, A);
-}
-
-/****************************************************************************************************/
-/**
- * @brief HIP wrapper function for mixed-precision GEMM operation
- * 
- * Custom wrapper for hipblasGemmEx that handles mixed-precision matrix multiplication.
- * Converts float alpha and beta parameters to half precision for the GEMM operation.
- * 
- * Note: There is a known issue with NaN results when matrix size is large.
- * TODO: Investigate and fix the NaN issue for large matrices.
- * 
- * @param handle HIPBLAS handle
- * @param transa Operation on matrix A (transpose, conjugate, etc.)
- * @param transb Operation on matrix B (transpose, conjugate, etc.)
- * @param m Number of rows of matrix A and C
- * @param n Number of columns of matrix B and C
- * @param k Number of columns of matrix A and rows of matrix B
- * @param alpha Scalar multiplier for matrix A*B (const void* - cast to float*)
- * @param A Input matrix A (const void*)
- * @param Atype Data type of matrix A
- * @param lda Leading dimension of matrix A
- * @param B Input matrix B (const void*)
- * @param Btype Data type of matrix B
- * @param ldb Leading dimension of matrix B
- * @param beta Scalar multiplier for matrix C (const void* - cast to float*)
- * @param C Input/output matrix C (void*)
- * @param Ctype Data type of matrix C
- * @param ldc Leading dimension of matrix C
- * @param computeType Compute precision for the operation
- * @param algo Algorithm to use for the GEMM operation
- * @return HIPBLAS status code
- */
-extern "C"
-hipblasStatus_t my_cublasGemmEx(hipblasHandle_t handle,
-                           hipblasOperation_t transa,
-                           hipblasOperation_t transb,
-                           int m,
-                           int n,
-                           int k,
-                           const void    *alpha,
-                           const void     *A, 
-                           hipblasDatatype_t Atype,
-                           int lda,
-                           const void     *B,
-                           hipblasDatatype_t Btype,  
-                           int ldb,
-                           const void    *beta, 
-                           void           *C,
-                           hipblasDatatype_t Ctype,
-                           int ldc,
-                           hipblasDatatype_t computeType,
-                           hipblasGemmAlgo_t algo)
-{
-    // Convert float alpha and beta to half precision
-    __half alpha_h = (__half)(((float *)alpha)[0]);
-    __half beta_h = (__half)(((float *)beta)[0]);
-    
-    // Call HIPBLAS GEMM with converted parameters
-    return hipblasGemmEx(handle, transa, transb, m, n, k,  
-                        &alpha_h, A, Atype, lda,
-                                  B, Btype, ldb,
-                        &beta_h,  C, Ctype, ldc,
-                        computeType, algo);
-}
-
-/****************************************************************************************************/
-
-__global__ void store_float_as_double_kernel(double* dst, float x)
-{
-  if (hipThreadIdx_x == 0 && hipBlockIdx_x == 0) {
-    dst[0] = (double)x;
-  }
-}
 
 __global__ void store_double_kernel(double* dst, double x)
 {
@@ -1663,77 +504,128 @@ __global__ void store_double_kernel(double* dst, double x)
   }
 }
 
-__global__ void store_device_float_as_double_kernel(double* dst, const float* src)
-{
-  if (hipThreadIdx_x == 0 && hipBlockIdx_x == 0) {
-    dst[0] = (double)src[0];
-  }
-}
 
 // d_dst: device pointer to 1 double (cudaMalloc)
 // x: host float
 // stream: stream to enqueue the kernel (0 = default)
-extern "C" void copy_float_to_device_double(double* d_dst, float x, cudaStream_t stream)
-{
-  if (!d_dst) return;
-  store_float_as_double_kernel<<<1, 1, 0, stream>>>(d_dst, x);
-}
-
 extern "C" void set_device_double(double* d_dst, double x, cudaStream_t stream)
 {
   if (!d_dst) return;
   store_double_kernel<<<1, 1, 0, stream>>>(d_dst, x);
 }
 
-extern "C" void copy_device_float_to_device_double(double* d_dst, const float* d_src, cudaStream_t stream)
-{
-  if (!d_dst || !d_src) return;
-  store_device_float_as_double_kernel<<<1, 1, 0, stream>>>(d_dst, d_src);
-}
 
 /****************************************************************************************************/
 
-#if 0
-__global__ void dcmg_array_GPU_kernel(double *A, int m, int n, int m0,
-        int n0, double* l1_x_cuda, double* l1_y_cuda, double* l2_x_cuda, double* l2_y_cuda,
-        double localtheta0, double localtheta1, double localtheta2, int distance_metric, int lda)
+
+/****************************************************************************************************/
+/* Lower Cholesky of a tile without rocSOLVER (hicma_potrf_lower_hip_d/_s)
+ *
+ * rocSOLVER's ?potrf factors its diagonal blocks (127 columns in double, 180 in single) with the
+ * potf2 kernel of roclapack_potf2_specialized_kernels.hpp (potf2_simple). There every thread reads
+ * the pivot A(k,k) from shared memory and thread 0 then overwrites it with its square root before
+ * the first barrier, so a wave that reads late scales its part of column k by the fourth root of the
+ * pivot, and info stays 0. It is in ROCm 6.3 (rocSOLVER 3.27) and later releases; upstream added the
+ * barrier in March 2026 (ROCm/rocm-libraries#3794), and ROCm 6.4 and later no longer support gfx906.
+ * The waves drift apart when other kernels run on the GPU, which the tile Cholesky always does
+ * (TRSMs, SYRKs and GEMMs on the other streams): about one POTRF in a thousand was wrong on a
+ * Radeon VII, and the factorization with it, now and then without failing its check.
+ *
+ * Here a single workgroup factors each block of HICMA_POTF2_NB columns in shared memory, with a
+ * barrier between reading the pivot and writing it, and hipBLAS does the TRSM and SYRK in between.
+ * Same contract as rocsolver_?potrf (lower, info on the device: 0, or the 1-based column of the
+ * first pivot that is not positive), on the stream of the hipBLAS handle. */
+#define HICMA_POTF2_NB      64
+#define HICMA_POTF2_THREADS 256
+
+template <typename T>
+__global__ void hicma_potf2_lower_kernel(int n, T *A, int lda, int *info, int offset)
 {
-	const int tx  = hipThreadIdx_x;
-	const int ty  = hipThreadIdx_y;
-	const int idx = hipBlockIdx_x * hipBlockDim_x + tx;
-	const int idy = hipBlockIdx_y * hipBlockDim_y + ty;
-	if(idx>=m || idy >=n){return;}
+    __shared__ T s[HICMA_POTF2_NB * HICMA_POTF2_NB];
+    const int tid = hipThreadIdx_x, nt = hipBlockDim_x;
 
-	//double x0, y0;
-	double expr  = 0.0;
-	double expr1 = 0.0;
+    for( int idx = tid; idx < n * n; idx += nt ) {
+        const int i = idx % n, j = idx / n;
+        s[i + j * HICMA_POTF2_NB] = (i >= j) ? A[i + (size_t)j * lda] : T(0);
+    }
+    __syncthreads();
 
-	double sigma_square = localtheta0;// * localtheta[0];
+    for( int k = 0; k < n; k++ ) {
+        const T akk = s[k + k * HICMA_POTF2_NB];
+        __syncthreads();   /* every thread has read the pivot before thread 0 replaces it */
+        if( !(akk > T(0)) || !isfinite(akk) ) {
+            /* every thread read the same value: they all leave here */
+            if( 0 == tid && 0 == *info ) *info = offset + k + 1;
+            return;        /* the block keeps its input values; the factorization has failed (info) */
+        }
+        const T lkk = sqrt(akk);
+        for( int i = k + 1 + tid; i < n; i += nt ) s[i + k * HICMA_POTF2_NB] /= lkk;
+        if( 0 == tid ) s[k + k * HICMA_POTF2_NB] = lkk;
+        __syncthreads();
+        const int m = n - k - 1;
+        for( int idx = tid; idx < m * m; idx += nt ) {
+            const int i = k + 1 + idx % m, j = k + 1 + idx / m;
+            if( i >= j ) s[i + j * HICMA_POTF2_NB] -= s[i + k * HICMA_POTF2_NB] * s[j + k * HICMA_POTF2_NB];
+        }
+        __syncthreads();
+    }
 
-	expr = sqrt(pow((l2_x_cuda[idx] - l1_x_cuda[idy]), 2) +
-			pow((l2_y_cuda[idx] - l1_y_cuda[idy]), 2));
-
-	expr1 = pow(expr, localtheta2);
-	if(expr == 0)
-		A[idx + idy * lda] = sigma_square /*+ 1e-4*/;
-	else
-		A[idx + idy * lda] = sigma_square *  exp(-(expr1/localtheta1)); // power-exp kernel
-
-
-
+    for( int idx = tid; idx < n * n; idx += nt ) {
+        const int i = idx % n, j = idx / n;
+        if( i >= j ) A[i + (size_t)j * lda] = s[i + j * HICMA_POTF2_NB];
+    }
 }
 
-extern "C"
-void dcmg_array_GPU( double *A, int m, int n, int m0,
-		int n0, double* l1_x_cuda, double* l1_y_cuda, double* l2_x_cuda, double* l2_y_cuda,
-		double *localtheta, int distance_metric, int lda, hipStream_t stream){
-
-	int nBlockx= (m+CHUNKSIZE-1)/CHUNKSIZE;
-	int nBlocky= (n+CHUNKSIZE-1)/CHUNKSIZE;
-	dim3 dimBlock(CHUNKSIZE,CHUNKSIZE);
-	dim3 dimGrid(nBlockx,nBlocky);
-
-	dcmg_array_GPU_kernel<<<dimGrid,dimBlock,0,stream>>>(A, m, n, m0, n0, l1_x_cuda, l1_y_cuda, l2_x_cuda, l2_y_cuda, localtheta[0],localtheta[1],localtheta[2], distance_metric, lda);
+static hipblasStatus_t hicma_potrf_trsm(hipblasHandle_t h, int m, int n, const double *L, int lda, double *B)
+{
+    const double one = 1.0;
+    return hipblasDtrsm(h, HIPBLAS_SIDE_RIGHT, HIPBLAS_FILL_MODE_LOWER, HIPBLAS_OP_T, HIPBLAS_DIAG_NON_UNIT, m, n, &one, L, lda, B, lda);
+}
+static hipblasStatus_t hicma_potrf_trsm(hipblasHandle_t h, int m, int n, const float *L, int lda, float *B)
+{
+    const float one = 1.0f;
+    return hipblasStrsm(h, HIPBLAS_SIDE_RIGHT, HIPBLAS_FILL_MODE_LOWER, HIPBLAS_OP_T, HIPBLAS_DIAG_NON_UNIT, m, n, &one, L, lda, B, lda);
+}
+static hipblasStatus_t hicma_potrf_syrk(hipblasHandle_t h, int n, int k, const double *A, int lda, double *C)
+{
+    const double one = 1.0, mone = -1.0;
+    return hipblasDsyrk(h, HIPBLAS_FILL_MODE_LOWER, HIPBLAS_OP_N, n, k, &mone, A, lda, &one, C, lda);
+}
+static hipblasStatus_t hicma_potrf_syrk(hipblasHandle_t h, int n, int k, const float *A, int lda, float *C)
+{
+    const float one = 1.0f, mone = -1.0f;
+    return hipblasSsyrk(h, HIPBLAS_FILL_MODE_LOWER, HIPBLAS_OP_N, n, k, &mone, A, lda, &one, C, lda);
 }
 
-#endif
+template <typename T>
+static hipblasStatus_t hicma_potrf_lower_hip(hipblasHandle_t handle, int n, T *A, int lda, int *info)
+{
+    hipStream_t stream = NULL;
+    hipblasStatus_t st = hipblasGetStream(handle, &stream);
+    if( HIPBLAS_STATUS_SUCCESS != st ) return st;
+    if( hipSuccess != hipMemsetAsync(info, 0, sizeof(int), stream) ) return HIPBLAS_STATUS_EXECUTION_FAILED;
+    for( int j = 0; j < n; j += HICMA_POTF2_NB ) {
+        const int jb = (n - j < HICMA_POTF2_NB) ? n - j : HICMA_POTF2_NB;
+        const int r = n - j - jb;
+        T *Ajj = A + j + (size_t)j * lda;
+        hipLaunchKernelGGL(hicma_potf2_lower_kernel<T>, dim3(1), dim3(HICMA_POTF2_THREADS), 0, stream, jb, Ajj, lda, info, j);
+        if( hipSuccess != hipGetLastError() ) return HIPBLAS_STATUS_EXECUTION_FAILED;
+        if( r <= 0 ) break;
+        T *Arj = Ajj + jb, *Arr = Ajj + jb + (size_t)jb * lda;
+        st = hicma_potrf_trsm(handle, r, jb, Ajj, lda, Arj);
+        if( HIPBLAS_STATUS_SUCCESS != st ) return st;
+        st = hicma_potrf_syrk(handle, r, jb, Arj, lda, Arr);
+        if( HIPBLAS_STATUS_SUCCESS != st ) return st;
+    }
+    return HIPBLAS_STATUS_SUCCESS;
+}
+
+extern "C" hipblasStatus_t hicma_potrf_lower_hip_d(hipblasHandle_t handle, int n, double *A, int lda, int *info)
+{
+    return hicma_potrf_lower_hip<double>(handle, n, A, lda, info);
+}
+
+extern "C" hipblasStatus_t hicma_potrf_lower_hip_s(hipblasHandle_t handle, int n, float *A, int lda, int *info)
+{
+    return hicma_potrf_lower_hip<float>(handle, n, A, lda, info);
+}

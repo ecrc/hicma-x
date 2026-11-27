@@ -87,7 +87,6 @@ p_work_mbr   [ type = "parsec_memory_pool_t *" hidden = on default = NULL ]  /* 
 p_work_full_dp        [ type = "parsec_memory_pool_t *" hidden = on default = NULL ]  /* Double precision full matrix memory pool */
 p_work_full_sp        [ type = "parsec_memory_pool_t *" hidden = on default = NULL ]  /* Single precision full matrix memory pool */
 p_work_full_hp        [ type = "parsec_memory_pool_t *" hidden = on default = NULL ]  /* Half precision full matrix memory pool */
-p_work_full_fp8       [ type = "parsec_memory_pool_t *" hidden = on default = NULL ]  /* FP8 precision full matrix memory pool */
 p_work_uv_dp          [ type = "parsec_memory_pool_t *" hidden = on default = NULL ]  /* Double precision U/V factor memory pool */
 p_work_uv_sp          [ type = "parsec_memory_pool_t *" hidden = on default = NULL ]  /* Single precision U/V factor memory pool */
 
@@ -176,7 +175,7 @@ BODY
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)  || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
     /* GPU load balancing and data placement optimization */
     if( nb_cuda_devices > 0 ) {
-        int g = gpu_load_balance_2d( m, n, params_tlr );
+        int g = hicma_parsec_gpu_of_tile( m, n, params_tlr );
         parsec_advise_data_on_device( _f_A->original,
                                     cuda_device_index[g],
                                     PARSEC_DEV_DATA_ADVICE_PREFERRED_DEVICE );
@@ -246,7 +245,7 @@ info = 0  /* Return code for recursive calls */
 
 // Data dependencies and flow
 RW T <- (k == 0) ? A potrf_bind_A(k, k) : T potrf_dsyrk(k-1, k)   [ type_remote = FULL_DP ] 
-     -> T0 potrf_dpotrf_send(k)                                   [ type_remote = FULL_DP ] 
+     -> (k < descA->mt-1) ? T0 potrf_dpotrf_send(k)                                   [ type_remote = FULL_DP ] 
      -> descA(k, k)                       
 
 // Termination control - last diagonal block triggers termination
@@ -345,7 +344,7 @@ END
 potrf_dpotrf_send(k) [high_priority = on]
 
 // Execution space - one task per diagonal block
-k = 0 .. descA->mt-1
+k = 0 .. descA->mt-2  /* potrf_dpotrf_send(mt-1) would have no successor: a sink still queued when TERMINATE fires outlives the taskpool */
 
 // Parallel partitioning - operates on diagonal blocks
 :descA(k, k)
@@ -365,7 +364,7 @@ BODY [type=CUDA]
     /* GPU-accelerated precision conversion from double to single precision */
     if( params_tlr->decisions_send[k*params_tlr->NT+k] != DENSE_DP ) {
         hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
-        double2float_GPU( descA->mb, descA->nb, T0, descA->mb, T, descA->mb, cuda_stream->cuda_stream );
+        HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, T0, descA->mb, OMC_FP32, T, descA->mb, descA->mb, descA->nb, NULL, cuda_stream->cuda_stream) );
         this_task->data._f_T.data_out->original->span = descA->mb * descA->nb * sizeof(float);
         /* Remote TRSMs read the host copy of this NEW buffer */
         HICMA_PARSEC_GPU_PUSHOUT(gpu_task, "T");
@@ -380,7 +379,7 @@ BODY [type=HIP]
     /* HIP-accelerated precision conversion from double to single precision */
     if( params_tlr->decisions_send[k*params_tlr->NT+k] != DENSE_DP ) {
         hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
-        double2float_GPU( descA->mb, descA->nb, T0, descA->mb, T, descA->mb, cuda_stream->cuda_stream );
+        HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, T0, descA->mb, OMC_FP32, T, descA->mb, descA->mb, descA->nb, NULL, cuda_stream->cuda_stream) );
         this_task->data._f_T.data_out->original->span = descA->mb * descA->nb * sizeof(float);
         /* Remote TRSMs read the host copy of this NEW buffer */
         HICMA_PARSEC_GPU_PUSHOUT(gpu_task, "T");
@@ -394,7 +393,7 @@ BODY
     /* CPU-based precision conversion from double to single precision */
     if( params_tlr->decisions_send[k*params_tlr->NT+k] != DENSE_DP ) {
         hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
-        LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, T0, descA->mb, T, descA->mb );
+        HICMA_OMC( omc_convert_2d(OMC_FP64, T0, descA->mb, OMC_FP32, T, descA->mb, descA->mb, descA->nb, NULL) );
         this_task->data._f_T.data_out->original->span = descA->mb * descA->nb * sizeof(float);
     }
 }
@@ -445,13 +444,13 @@ RW    C <- (k == 0 && m-k < params_tlr->band_size_dense) ? A potrf_bind_A(m, k) 
         -> A potrf_dsyrk(k, m)                                                  [ type_remote = BYTE layout_remote = MPI_BYTE count_remote = size ]
         -> (params_tlr->adaptive_decision_runtime) ? A potrf_dgemm(m, k+1..m-1, k)         [ type_remote = BYTE layout_remote = MPI_BYTE count_remote = size ]
         -> (params_tlr->adaptive_decision_runtime) ? B potrf_dgemm(m+1..descA->mt-1, m, k) [ type_remote = BYTE layout_remote = MPI_BYTE count_remote = size ]
-        -> (!params_tlr->adaptive_decision_runtime) ? C0 potrf_dtrsm_send(m, k)            [ type_remote = BYTE layout_remote = MPI_BYTE count_remote = size ]
+        -> (!params_tlr->adaptive_decision_runtime && !(m == descA->mt-1 && k == descA->mt-2)) ? C0 potrf_dtrsm_send(m, k)            [ type_remote = BYTE layout_remote = MPI_BYTE count_remote = size ]
         -> descA(m, k)                                                         
 
 READ  Cr <- (k == 0 && m-k >= params_tlr->band_size_dense) ? descAr(m, k)  
          <- (k != 0 && m-k >= params_tlr->band_size_dense) ? Cr potrf_dgemm(m, k, k-1): NULL   [ type_remote = AR ]
          -> (m-k >= params_tlr->band_size_dense) ? Ar potrf_dsyrk(k, m)                        [ type_remote = AR ]
-         -> (m-k >= params_tlr->band_size_dense) ? Cr potrf_dtrsm_send(m, k)                   [ type_remote = AR ]
+         -> (m-k >= params_tlr->band_size_dense && !(m == descA->mt-1 && k == descA->mt-2)) ? Cr potrf_dtrsm_send(m, k)                   [ type_remote = AR ]
          -> (m-k >= params_tlr->band_size_dense) ? Ar potrf_dgemm(m, k+1..m-1, k)              [ type_remote = AR ]
          -> (m-k >= params_tlr->band_size_dense) ? Br potrf_dgemm(m+1..descA->mt-1, m, k)      [ type_remote = AR ]
          -> (m-k >= params_tlr->band_size_dense) ? descAr(m, k)               
@@ -474,7 +473,7 @@ CTL ctl_left  -> (params_tlr->left_looking > 0)? ctl_left potrf_dgemm(m, k+param
 ; (m >= (descA->mt - PRI_CHANGE)) ? (descA->mt - m) * (descA->mt - m) * (descA->mt - m) + 3 * ((2 * descA->mt) - k - m - 1) * (m - k) : PRI_MAX
 
 
-BODY [type=CUDA]
+BODY [type=CUDA stage_in=hicma_gpu_stage_in]
 {
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
     /* Skip GPU execution for low-rank blocks */
@@ -483,7 +482,7 @@ BODY [type=CUDA]
     }
 
     parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, ws_gpu);
-    cublasSetStream( stream_found->handle_cublas, cuda_stream->cuda_stream );
+    HICMA_CUBLAS( cublasSetStream( stream_found->handle_cublas, cuda_stream->cuda_stream ) );
 
     /* Column 0 (no GEMM updates C before this TRSM): decide from the norm
      * of C whether to store C in SP before the solve. */
@@ -505,9 +504,8 @@ BODY [type=CUDA]
                    m, k, C_norm_host, decision, params_tlr->decisions[idx_C]);
         }
         if( DENSE_DP != decision ) {
-            double2float_GPU(descA->mb, descA->nb, C, descA->mb, C_s, descA->mb,
-                             cuda_stream->cuda_stream);
-            memcpy_float_GPU(descA->mb, descA->nb, C_s, C, cuda_stream->cuda_stream);
+            /* in place, single pass */
+            HICMA_OMC( omc_gpu_convert_inplace(OMC_FP64, OMC_FP32, C, (size_t)(descA->mb) * (descA->nb), NULL, cuda_stream->cuda_stream) );
             this_task->data._f_C.data_out->original->span = (size_t)tile_elems * sizeof(float);
             gpu_task->flow_info[0].flow_span = (size_t)tile_elems * sizeof(float);
             params_tlr->decisions[idx_C] = DENSE_SP;
@@ -521,13 +519,13 @@ BODY [type=CUDA]
     if(params_tlr->adaptive_decision_runtime) {
         if( DENSE_DP == decision ) {
             double C_precision_dp = (double)DENSE_DP;
-            cublasDnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, &((hicma_tile_meta_t *)C_norm)->norm);
+            HICMA_CUBLAS( cublasDnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, &((hicma_tile_meta_t *)C_norm)->norm) );
             set_device_double(&((hicma_tile_meta_t *)C_norm)->precision, C_precision_dp, cuda_stream->cuda_stream);
         } else {
             double C_precision_sp = (double)DENSE_SP;
             float *norm_sp_device = (float *)stream_found->gpu_buffer_C;
-            cublasSnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, norm_sp_device);
-            copy_device_float_to_device_double(&((hicma_tile_meta_t *)C_norm)->norm, norm_sp_device, cuda_stream->cuda_stream);
+            HICMA_CUBLAS( cublasSnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, norm_sp_device) );
+            HICMA_OMC( omc_gpu_convert(OMC_FP32, norm_sp_device, OMC_FP64, &((hicma_tile_meta_t *)C_norm)->norm, 1, NULL, cuda_stream->cuda_stream) );
             set_device_double(&((hicma_tile_meta_t *)C_norm)->precision, C_precision_sp, cuda_stream->cuda_stream);
         }
         /* C_norm is a NEW buffer with no write-back to a collection, so PaRSEC
@@ -545,7 +543,7 @@ BODY [type=CUDA]
 }
 END
 
-BODY [type=HIP]
+BODY [type=HIP stage_in=hicma_gpu_stage_in]
 {
 #if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
     /* Skip GPU execution for low-rank blocks */
@@ -554,7 +552,7 @@ BODY [type=HIP]
     }
 
     parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, ws_gpu);
-    cublasSetStream( stream_found->handle_cublas, cuda_stream->cuda_stream );
+    HICMA_CUBLAS( cublasSetStream( stream_found->handle_cublas, cuda_stream->cuda_stream ) );
 
     /* Column 0 (no GEMM updates C before this TRSM): decide from the norm
      * of C whether to store C in SP before the solve. */
@@ -576,9 +574,8 @@ BODY [type=HIP]
                    m, k, C_norm_host, decision, params_tlr->decisions[idx_C]);
         }
         if( DENSE_DP != decision ) {
-            double2float_GPU(descA->mb, descA->nb, C, descA->mb, C_s, descA->mb,
-                             cuda_stream->cuda_stream);
-            memcpy_float_GPU(descA->mb, descA->nb, C_s, C, cuda_stream->cuda_stream);
+            /* in place, single pass */
+            HICMA_OMC( omc_gpu_convert_inplace(OMC_FP64, OMC_FP32, C, (size_t)(descA->mb) * (descA->nb), NULL, cuda_stream->cuda_stream) );
             this_task->data._f_C.data_out->original->span =
                 (size_t)tile_elems * sizeof(float);
             gpu_task->flow_info[0].flow_span = (size_t)tile_elems * sizeof(float);
@@ -593,13 +590,13 @@ BODY [type=HIP]
     if(params_tlr->adaptive_decision_runtime) {
         if( DENSE_DP == decision ) {
             double C_precision_dp = (double)DENSE_DP;
-            cublasDnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, &((hicma_tile_meta_t *)C_norm)->norm);
+            HICMA_CUBLAS( cublasDnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, &((hicma_tile_meta_t *)C_norm)->norm) );
             set_device_double(&((hicma_tile_meta_t *)C_norm)->precision, C_precision_dp, cuda_stream->cuda_stream);
         } else {
             double C_precision_sp = (double)DENSE_SP;
             float *norm_sp_device = (float *)stream_found->gpu_buffer_C;
-            cublasSnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, norm_sp_device);
-            copy_device_float_to_device_double(&((hicma_tile_meta_t *)C_norm)->norm, norm_sp_device, cuda_stream->cuda_stream);
+            HICMA_CUBLAS( cublasSnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, norm_sp_device) );
+            HICMA_OMC( omc_gpu_convert(OMC_FP32, norm_sp_device, OMC_FP64, &((hicma_tile_meta_t *)C_norm)->norm, 1, NULL, cuda_stream->cuda_stream) );
             set_device_double(&((hicma_tile_meta_t *)C_norm)->precision, C_precision_sp, cuda_stream->cuda_stream);
         }
         /* C_norm is a NEW buffer with no write-back to a collection, so PaRSEC
@@ -726,7 +723,7 @@ potrf_dtrsm_send(m, k) [high_priority = on]
 // Execution space - off-diagonal blocks below the diagonal; empty in runtime
 // mode, where TRSM sends its output to the GEMMs directly
 m = 1 .. %{ return params_tlr->adaptive_decision_runtime ? 0 : descA->mt-1; %}
-k = 0 .. m-1
+k = 0 .. %{ return (m == descA->mt-1) ? m-2 : m-1; %}  /* potrf_dtrsm_send(mt-1, mt-2) would have no successor, see potrf_dpotrf_send */
 
 // Communication size must be valid even when conversion is disabled and this
 // task is only forwarding the TRSM output. Runtime TRSM stores non-DP tiles in
@@ -791,14 +788,14 @@ BODY [type=CUDA]
         /* GPU-accelerated precision conversion */
         if( DENSE_SP == params_tlr->decisions_send[k*params_tlr->NT+m] && DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
             hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
-            double2float_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
+            HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, C0, descA->mb, OMC_FP32, C, descA->mb, descA->mb, descA->nb, NULL, cuda_stream->cuda_stream) );
         } else if( DENSE_HP == params_tlr->decisions_send[k*params_tlr->NT+m] ) {
             if( DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
                 hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
-                double2half_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
+                HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, C0, descA->mb, OMC_FP16, C, descA->mb, descA->mb, descA->nb, NULL, cuda_stream->cuda_stream) );
             } else {
                 hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
-                float2half_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
+                HICMA_OMC( omc_gpu_convert_2d(OMC_FP32, C0, descA->mb, OMC_FP16, C, descA->mb, descA->mb, descA->nb, NULL, cuda_stream->cuda_stream) );
             }
         } else if( DENSE_FP8 == params_tlr->decisions_send[k*params_tlr->NT+m] ) {
 #if HAVE_FP8
@@ -807,7 +804,7 @@ BODY [type=CUDA]
             int tempmm = (m == descA->mt-1) ? descA->m - m*descA->mb : descA->mb;
             int fp8_ld = hicma_fp8_ld(descA->mb);
             hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
-            hicma_fp8_scaled_convert_GPU( (DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m]) ? (int)sizeof(double) : (int)sizeof(float),
+            hicma_parsec_fp8_operand_GPU( (DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m]) ? OMC_FP64 : OMC_FP32,
                     tempmm, descA->nb, C0, descA->mb, C, fp8_ld, fp8_ld, fp8_ld,
                     hicma_fp8_tile_scale(C, descA->mb), params_tlr->fp8_scaling, cuda_stream->cuda_stream );
 #endif
@@ -853,14 +850,14 @@ BODY [type=HIP]
         /* HIP-accelerated precision conversion */
         if( DENSE_SP == params_tlr->decisions_send[k*params_tlr->NT+m] && DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
             hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
-            double2float_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
+            HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, C0, descA->mb, OMC_FP32, C, descA->mb, descA->mb, descA->nb, NULL, cuda_stream->cuda_stream) );
         } else if( DENSE_HP == params_tlr->decisions_send[k*params_tlr->NT+m] ) {
             if( DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
                 hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
-                double2half_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
+                HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, C0, descA->mb, OMC_FP16, C, descA->mb, descA->mb, descA->nb, NULL, cuda_stream->cuda_stream) );
             } else {
                 hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
-                float2half_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
+                HICMA_OMC( omc_gpu_convert_2d(OMC_FP32, C0, descA->mb, OMC_FP16, C, descA->mb, descA->mb, descA->nb, NULL, cuda_stream->cuda_stream) );
             }
         } else if( DENSE_FP8 == params_tlr->decisions_send[k*params_tlr->NT+m] ) {
 #if HAVE_FP8
@@ -869,7 +866,7 @@ BODY [type=HIP]
             int tempmm = (m == descA->mt-1) ? descA->m - m*descA->mb : descA->mb;
             int fp8_ld = hicma_fp8_ld(descA->mb);
             hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
-            hicma_fp8_scaled_convert_GPU( (DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m]) ? (int)sizeof(double) : (int)sizeof(float),
+            hicma_parsec_fp8_operand_GPU( (DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m]) ? OMC_FP64 : OMC_FP32,
                     tempmm, descA->nb, C0, descA->mb, C, fp8_ld, fp8_ld, fp8_ld,
                     hicma_fp8_tile_scale(C, descA->mb), params_tlr->fp8_scaling, cuda_stream->cuda_stream );
 #endif
@@ -939,7 +936,7 @@ CTL ctl -> (params_tlr->lookahead == 1 && m == k+1)? ctl potrf_dtrsm(params_tlr-
 ; (m >= (descA->mt - PRI_CHANGE)) ? (descA->mt - m) * (descA->mt - m) * (descA->mt - m) + 3 * (m - k) : PRI_MAX
 
 
-BODY [type=CUDA]
+BODY [type=CUDA stage_in=hicma_gpu_stage_in]
 {
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
     /* Extract rank information for low-rank blocks */
@@ -957,7 +954,7 @@ BODY [type=CUDA]
 }
 END
 
-BODY [type=HIP]
+BODY [type=HIP stage_in=hicma_gpu_stage_in]
 {
 #if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
     /* Extract rank information for low-rank blocks */
@@ -1111,7 +1108,7 @@ CTL ctl_left <- (params_tlr->left_looking > 0 && k == 0 && n >= params_tlr->Q*pa
 ; (m >= (descA->mt - PRI_CHANGE)) ? (descA->mt - m) * (descA->mt - m) * (descA->mt - m) + 3 * ((2 * descA->mt) - m - n - 3) * (m - n) + 6 * (m - k) : PRI_MAX
 
 
-BODY [type=CUDA]
+BODY [type=CUDA stage_in=hicma_gpu_stage_in]
 {
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
     /* Skip GPU execution for low-rank C blocks */
@@ -1176,7 +1173,7 @@ BODY [type=CUDA]
 }
 END
 
-BODY [type=HIP]
+BODY [type=HIP stage_in=hicma_gpu_stage_in]
 {
 #if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
     /* Skip GPU execution for low-rank C blocks */
@@ -1316,11 +1313,6 @@ BODY
     double Bnorm = (params_tlr->adaptive_decision_runtime)? hicma_tile_meta_norm(B_norm): 0; 
 
     /* Calculate actual matrix dimensions */
-    int tempmm = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
-    void *A_use = A;
-    void *B_use = B;
-    void *A_d, *A_s, *B_d, *B_s, *A_h, *B_h;
-
 #if PRINT_RANK
     /* Gather rank information for debugging and analysis */
     hicma_parsec_gather_rank_initial( descA, descRank, params_tlr, m, n, k, Crank );
@@ -1334,7 +1326,7 @@ BODY
             hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( descA, descRank, params_tlr, es,
                     p_work, p_work_full_dp, p_work_full_sp, p_work_full_hp,
                     p_work_uv_dp, p_work_uv_sp, p_work_mbr, p_work_rr,
-                    C, A, B, m, n, k, Crank, Arank, Brank, A_norm, B_norm);
+                    this_task->data._f_C.data_out, C, A, B, m, n, k, Crank, Arank, Brank, A_norm, B_norm);
         } else {
             hicma_parsec_core_gemm_denseC_denseA_denseB_cpu( descA, descRank, params_tlr, es,
                     p_work, p_work_full_dp, p_work_full_sp, p_work_full_hp,
@@ -1368,656 +1360,29 @@ BODY
             p_work_uv_dp, p_work_uv_sp, p_work_mbr, p_work_rr,
             C, A, B, m, n, k, Crank, Arank, Brank );
     }
-    /* Case 4: C is low-rank, A is low-rank, B is dense - low-rank update */
+    /* C is low-rank, A is low-rank, B is dense */
     else if( !IS_DENSE(m, n) && !IS_DENSE(m, k) && IS_DENSE(n, k) ) 
     {
-        if(DEBUG_INFO) printf("GEMM (%d, %d, %d) : %d %d %d : C_LOW_RANK, A_LOW_RANK, B_DENSE\n",
-            m, n, k, params_tlr->decisions[n*descA->lmt+m], params_tlr->decisions[k*descA->lmt+m], params_tlr->decisions[k*descA->lmt+n]);
-
-        int tempmmu = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
-        int tempmmv = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
-        int ldamu = BLKLDD( descA, m );
-        int ldamv = BLKLDD( descA, m );
-        int ldanu = BLKLDD( descA, n );
-        int ldanv = BLKLDD( descA, n );
-
-        int Crank_old = ((int*)Cr)[0];
-        void *Au, *Av, *Cu, *Cv;
-
         /* If rank is 0, return */
         if( 0 == Arank ) {
             return PARSEC_HOOK_RETURN_DONE;
         }
 
-        void *p_elem_work = NULL;
-        p_elem_work = parsec_private_memory_pop( p_work );
-        int new_Crank = ((int*)Cr)[0];
-
-        if( LOW_RANK_DP == params_tlr->decisions[n*descA->lmt+m] )
-        {
-            /* Convert datatype, A */
-            if( LOW_RANK_SP == params_tlr->decisions[k*descA->lmt+m] ) {
-                A_d = parsec_private_memory_pop( p_work_uv_dp );
-                hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
-                LAPACKE_slag2d( LAPACK_COL_MAJOR, descA->mb, Arank * 2, A, descA->mb, A_d, descA->mb );
-                A_use = A_d;
-            }
-
-            /* Convert datatype, B */
-            if( DENSE_SP == params_tlr->decisions[k*descA->lmt+n] || DENSE_HP == params_tlr->decisions[k*descA->lmt+n] ) {
-                B_d = parsec_private_memory_pop( p_work_full_dp );
-                hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
-                LAPACKE_slag2d( LAPACK_COL_MAJOR, descA->mb, descA->nb, B, descA->mb, B_d, descA->mb );
-                B_use = B_d;
-            }
-
-            /* U and V pointer */
-            Au = (void *)A_use;
-            Av = (void *)A_use + descA->mb * Arank * sizeof(double);
-
-            Cu = (void *)C;
-            Cv = (void *)C + descA->mb * Crank_old * sizeof(double);
-
-            /** Calls two-step hcore_gemm.
-              First step reveals ACTUAL_RANK.
-              Second step constructs new CU and CV.
-              Provided CU and CV buffers must have at least ACTUAL_RANK number of columns.
-             */
-            double* work_new;
-            double* _CU;
-            double* _CV;
-            int CU_ncols;
-            int new_UVrk;
-            double* newU;
-            int ld_newU;
-            double* qrtauA;
-            int CV_ncols;
-            double* newV;
-            int ld_newV;
-            double* qrtauB;
-            int use_CUV_clone;
-            double* CUclone;
-            int ld_CUclone;
-            double *_CU_save;
-            double* CVclone;
-            int ld_CVclone;
-            double* _CV_save;
-            flop_counter flops;
-            HCORE_dgemm_qr_svd_b_dense( PlasmaNoTrans, PlasmaTrans,
-                    tempmmv, // ASSUMPTION: For a tile, if nrows<ncols, storage is ncols for both U and V
-                    tempmmv,
-                    (double)-1.0,
-                    Au, Av, Ar, ldamu,
-                    B_use, ldamv,
-                    (double)1.0,
-                    Cu, Cv, &new_Crank, ldamu,
-                    params_tlr->fixedrk, params_tlr->maxrank, params_tlr->compmaxrank, params_tlr->fixedacc, p_elem_work,
-                    &flops,
-                    /** parameters that will be passed to HCORE_dgemm_ormqr */
-                    &work_new,
-                    &_CU,
-                    &_CV,
-                    &CU_ncols,
-                    &new_UVrk,
-                    &newU,
-                    &ld_newU,
-                    &qrtauA,
-                    &CV_ncols,
-                    &newV,
-                    &ld_newV,
-                    &qrtauB,
-                    &use_CUV_clone,
-                    &CUclone,
-                    &ld_CUclone,
-                    &_CU_save,
-                    &CVclone,
-                    &ld_CVclone,
-                    &_CV_save
-                        );
-
-            /* If new_UVrk > Crank_old, re-allocate */
-            if( new_UVrk > Crank_old && !params_tlr->send_full_tile ) {
-                if( DEBUG_INFO ) printf("Reallocate %d %d %d : C_LOW_RANK_DP, A_LOW_RANK, B_DENSE\n", m, n, k);
-                if( NULL != this_task->data._f_C.data_out->device_private )
-                    free( this_task->data._f_C.data_out->device_private ); 
-                this_task->data._f_C.data_out->device_private = calloc( descA->mb * new_UVrk * 2, sizeof(double) );
-                this_task->data._f_C.data_out->original->span = descA->mb * new_UVrk * 2 * sizeof(double);
-            }
-
-            /* Address for Cu and Cv to be copied to */
-            _CU_save = this_task->data._f_C.data_out->device_private;
-            _CV_save = this_task->data._f_C.data_out->device_private + descA->mb * new_UVrk * sizeof(double);
-
-            HCORE_dgemm_ormqr( PlasmaNoTrans, PlasmaTrans,
-                    tempmmv, // ASSUMPTION: For a tile, if nrows<ncols, storage is ncols for both U and V
-                    tempmmv,
-                    (double)-1.0,
-                    Au, Av, Ar, ldamu,
-                    (double)1.0,
-                    Cu, Cv, &new_Crank, ldamu,
-                    params_tlr->fixedrk, params_tlr->maxrank, params_tlr->compmaxrank, params_tlr->fixedacc, work_new,
-                    &flops,
-                    /** parameters coming from HCORE_dgemm_qr_svd */
-                    _CU,
-                    _CV,
-                    CU_ncols,
-                    new_UVrk,
-                    newU,
-                    ld_newU,
-                    qrtauA,
-                    CV_ncols,
-                    newV,
-                    ld_newV,
-                    qrtauB,
-                    use_CUV_clone,
-                    CUclone,
-                    ld_CUclone,
-                    _CU_save,
-                    CVclone,
-                    ld_CVclone,
-                    _CV_save
-                        );
-
-            /* Update send size, how many bytes */
-            this_task->locals.size.value = descA->mb * ((int *)Cr)[0] * 2 * sizeof(double);
-
-            /* Push back to mempool */
-            if( LOW_RANK_SP == params_tlr->decisions[k*descA->lmt+m] )
-                parsec_private_memory_push( p_work_uv_dp, A_d );
-
-            if( DENSE_SP == params_tlr->decisions[k*descA->lmt+n] || DENSE_HP == params_tlr->decisions[k*descA->lmt+n] )
-                parsec_private_memory_push( p_work_full_dp, B_d );
-        }
-        else
-        {
-            /* Convert datatype, A */
-            if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+m] ) {
-                A_s = parsec_private_memory_pop( p_work_uv_sp );
-                hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
-                LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, Arank * 2, A, descA->mb, A_s, descA->mb );
-                A_use = A_s;
-            }
-
-            /* Convert datatype, B */
-            if( DENSE_DP == params_tlr->decisions[k*descA->lmt+n] ) {
-                B_s = parsec_private_memory_pop( p_work_full_sp );
-                hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
-                LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, B, descA->mb, B_s, descA->mb );
-                B_use = B_s;
-            }
-
-            /* U and V pointer */
-            Au = (void *)A_use;
-            Av = (void *)A_use + descA->mb * Arank * sizeof(float);
-
-            Cu = (void *)C;
-            Cv = (void *)C + descA->mb * Crank_old * sizeof(float);
-
-            /** Calls two-step hcore_gemm.
-              First step reveals ACTUAL_RANK.
-              Second step constructs new CU and CV.
-              Provided CU and CV buffers must have at least ACTUAL_RANK number of columns.
-             */
-
-            float* work_new;
-            float* _CU;
-            float* _CV;
-            int CU_ncols;
-            int new_UVrk;
-            float* newU;
-            int ld_newU;
-            float* qrtauA;
-            int CV_ncols;
-            float* newV;
-            int ld_newV;
-            float* qrtauB;
-            int use_CUV_clone;
-            float* CUclone;
-            int ld_CUclone;
-            float* _CU_save;
-            float* CVclone;
-            int ld_CVclone;
-            float* _CV_save;
-            flop_counter flops;
-            HCORE_sgemm_qr_svd_b_dense( PlasmaNoTrans, PlasmaTrans,
-                    tempmmv,
-                    tempmmv,
-                    (float)-1.0, 
-                    Au, Av, Ar, ldamu,
-                    B_use, ldamv,
-                    (float)1.0,
-                    Cu, Cv, &new_Crank, ldamu,
-                    params_tlr->fixedrk, params_tlr->maxrank, params_tlr->compmaxrank, params_tlr->fixedacc, p_elem_work,
-                    &flops,
-                    /** parameters that will be passed to HCORE_dgemm_ormqr */
-                    &work_new,
-                    &_CU,
-                    &_CV,
-                    &CU_ncols,
-                    &new_UVrk,
-                    &newU,
-                    &ld_newU,
-                    &qrtauA,
-                    &CV_ncols,
-                    &newV,
-                    &ld_newV,
-                    &qrtauB,
-                    &use_CUV_clone,
-                    &CUclone,
-                    &ld_CUclone,
-                    &_CU_save,
-                    &CVclone,
-                    &ld_CVclone,
-                    &_CV_save
-                        );
-
-            /* If new_UVrk > Crank_old, re-allocate */
-            if( new_UVrk > Crank_old && !params_tlr->send_full_tile ) {
-                if( DEBUG_INFO ) printf("Reallocate %d %d %d : C_LOW_RANK_SP, A_LOW_RANK, B_DENSE\n", m, n, k);
-                if( NULL != this_task->data._f_C.data_out->device_private )
-                    free( this_task->data._f_C.data_out->device_private ); 
-                this_task->data._f_C.data_out->device_private = calloc( descA->mb * new_UVrk * 2, sizeof(float) );
-                this_task->data._f_C.data_out->original->span = descA->mb * new_UVrk * 2 * sizeof(float);
-            }
-
-            /* Address for Cu and Cv to be copied to */
-            _CU_save = this_task->data._f_C.data_out->device_private;
-            _CV_save = this_task->data._f_C.data_out->device_private + descA->mb * new_UVrk * sizeof(float);
-
-            HCORE_sgemm_ormqr( PlasmaNoTrans, PlasmaTrans,
-                    tempmmv, // ASSUMPTION: For a tile, if nrows<ncols, storage is ncols for both U and V
-                    tempmmv,
-                    (float)-1.0,
-                    Au, Av, Ar, ldamu,
-                    (float)1.0,
-                    Cu, Cv, &new_Crank, ldamu,
-                    params_tlr->fixedrk, params_tlr->maxrank, params_tlr->compmaxrank, params_tlr->fixedacc, work_new,
-                    &flops,
-                    /** parameters coming from HCORE_dgemm_qr_svd */
-                    _CU,
-                    _CV,
-                    CU_ncols,
-                    new_UVrk,
-                    newU,
-                    ld_newU,
-                    qrtauA,
-                    CV_ncols,
-                    newV,
-                    ld_newV,
-                    qrtauB,
-                    use_CUV_clone,
-                    CUclone,
-                    ld_CUclone,
-                    _CU_save,
-                    CVclone,
-                    ld_CVclone,
-                    _CV_save
-                        );
-
-            /* Update send size, how many bytes */
-            this_task->locals.size.value = descA->mb * ((int *)Cr)[0] * 2 * sizeof(float);
-
-            /* Push back to mempool */
-            if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+m] )
-                parsec_private_memory_push( p_work_uv_sp, A_s );
-
-            if( DENSE_DP == params_tlr->decisions[k*descA->lmt+n] )
-                parsec_private_memory_push( p_work_full_sp, B_s );
-        }
-
-        ((int*)Cr)[0] = new_Crank;
-        parsec_private_memory_push( p_work, p_elem_work );
-
-        /* Operation count */
-        int Crank_old__Arank = Crank_old + Arank;
-        unsigned long int cnt = 0;
-
-        /// QR([CU AU])
-        unsigned long int qraflop = hicma_parsec_op_counts('q', tempmmv, Crank_old__Arank, 0, 0);///ASSUMPTION:tempmmv is not totally correct if nrowsC<ncolsC
-        unsigned long int qrbflop = hicma_parsec_op_counts('q', tempmmv, Crank_old__Arank, 0, 0);
-        /// Au * B
-        qrbflop += hicma_parsec_op_counts('m', Arank, tempmmv, tempmmv, 0);
-        int rA_nrows  = tempmmv < Crank_old__Arank ? tempmmv : Crank_old__Arank;
-        unsigned long int svdflop = hicma_parsec_op_counts('r', Crank_old__Arank, Crank_old__Arank, 2, 0);// trmm is used
-        svdflop += hicma_parsec_op_counts('s', Crank_old__Arank, 0, 0, 0);
-        svdflop += Crank_old__Arank * new_Crank;
-        unsigned long int newuflop = hicma_parsec_op_counts('o', tempmmv, new_Crank, Crank_old__Arank, 1);
-        unsigned long int newvflop = hicma_parsec_op_counts('o', new_Crank, tempmmv, Crank_old__Arank, 2);
-
-        cnt = qraflop + qrbflop + svdflop + newuflop + newvflop;
-        params_tlr->op_offband[es->th_id] += cnt;
-        params_tlr->op_offpath[es->th_id] += cnt;
-
+        this_task->locals.size.value = hicma_parsec_core_gemm_lrC_lrA_denseB_cpu( descA, params_tlr, es,
+            p_work, p_work_full_dp, p_work_full_sp, p_work_uv_dp, p_work_uv_sp,
+            this_task->data._f_C.data_out, C, A, B, Cr, Ar, Br, m, n, k, Arank, Brank );
     }
-    /* Case 5: C is low-rank, A is low-rank, B is low-rank - low-rank GEMM */
+    /* C is low-rank, A is low-rank, B is low-rank */
     else if( !IS_DENSE(m, n) && !IS_DENSE(m, k) && !IS_DENSE(n, k) ) 
     {
-        if(DEBUG_INFO) printf("GEMM (%d, %d, %d) : %d %d %d : C_LOW_RANK, A_LOW_RANK, B_LOW_RANK\n",
-            m, n, k, params_tlr->decisions[n*descA->lmt+m], params_tlr->decisions[k*descA->lmt+m], params_tlr->decisions[k*descA->lmt+n]);
-
-        int tempmmu = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
-        int tempmmv = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
-        int ldamu = BLKLDD( descA, m );
-        int ldamv = BLKLDD( descA, m );
-        int ldanu = BLKLDD( descA, n );
-        int ldanv = BLKLDD( descA, n );
-
-        int Crank_old = ((int*)Cr)[0];
-        void *Au, *Av, *Bu, *Bv, *Cu, *Cv;
-
         /* If rank is 0, return */
         if( 0 == Arank || 0 == Brank ) {
             return PARSEC_HOOK_RETURN_DONE;
         }
 
-        void *p_elem_work = NULL;
-        p_elem_work = parsec_private_memory_pop( p_work );
-
-        if( LOW_RANK_DP == params_tlr->decisions[n*descA->lmt+m] )
-        {
-            /* Convert datatype, A */
-            if( LOW_RANK_SP == params_tlr->decisions[k*descA->lmt+m] ) {
-                A_d = parsec_private_memory_pop( p_work_uv_dp );
-                hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
-                LAPACKE_slag2d( LAPACK_COL_MAJOR, descA->mb, Arank * 2, A, descA->mb, A_d, descA->mb );
-                A_use = A_d;
-            }
-
-            /* Convert datatype, B */
-            if( LOW_RANK_SP == params_tlr->decisions[k*descA->lmt+n] ) {
-                B_d = parsec_private_memory_pop( p_work_uv_dp );
-                hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
-                LAPACKE_slag2d( LAPACK_COL_MAJOR, descA->mb, Brank * 2, B, descA->mb, B_d, descA->mb );
-                B_use = B_d;
-            }
-
-            /* U and V pointer */
-            Au = (void *)A_use;
-            Av = (void *)A_use + descA->mb * Arank * sizeof(double);
-            Bu = (void *)B_use;
-            Bv = (void *)B_use + descA->mb * Brank * sizeof(double);
-            Cu = (void *)C;
-            Cv = (void *)C + descA->mb * Crank_old * sizeof(double);
-
-            /** Calls two-step hcore_gemm.
-              First step reveals ACTUAL_RANK.
-              Second step constructs new CU and CV.
-              Provided CU and CV buffers must have at least ACTUAL_RANK number of columns.
-             */
-            double* work_new;
-            double* _CU;
-            double* _CV;
-            int CU_ncols;
-            int new_UVrk;
-            double* newU;
-            int ld_newU;
-            double* qrtauA;
-            int CV_ncols;
-            double* newV;
-            int ld_newV;
-            double* qrtauB;
-            int use_CUV_clone;
-            double* CUclone;
-            int ld_CUclone;
-            double *_CU_save;
-            double* CVclone;
-            int ld_CVclone;
-            double* _CV_save;
-            flop_counter flops;
-            HCORE_dgemm_qr_svd( PlasmaNoTrans, PlasmaTrans,
-                    tempmmv, // ASSUMPTION: For a tile, if nrows<ncols, storage is ncols for both U and V
-                    tempmmv,
-                    (double)-1.0,
-                    Au, Av, Ar, ldamu,
-                    Bu, Bv, Br, ldamv,
-                    (double)1.0,
-                    Cu, Cv, Cr, ldamu,
-                    params_tlr->fixedrk, params_tlr->maxrank, params_tlr->compmaxrank, params_tlr->fixedacc, p_elem_work,
-                    &flops,
-                    /** parameters that will be passed to HCORE_dgemm_ormqr */
-                    &work_new,
-                    &_CU,
-                    &_CV,
-                    &CU_ncols,
-                    &new_UVrk,
-                    &newU,
-                    &ld_newU,
-                    &qrtauA,
-                    &CV_ncols,
-                    &newV,
-                    &ld_newV,
-                    &qrtauB,
-                    &use_CUV_clone,
-                    &CUclone,
-                    &ld_CUclone,
-                    &_CU_save,
-                    &CVclone,
-                    &ld_CVclone,
-                    &_CV_save
-                        );
-
-            /* If new_UVrk > Crank_old, re-allocate */
-            if( new_UVrk > Crank_old && !params_tlr->send_full_tile ) {
-                if( DEBUG_INFO ) printf("\nReallocate %d %d %d : C_LOW_RANK_DP, A_LOW_RANK, B_LOW_RANK\n\n", m, n, k);
-                if( NULL != this_task->data._f_C.data_out->device_private )
-                    free( this_task->data._f_C.data_out->device_private ); 
-                this_task->data._f_C.data_out->device_private = calloc( descA->mb * new_UVrk * 2, sizeof(double) );
-                this_task->data._f_C.data_out->original->span = descA->mb * new_UVrk * 2 * sizeof(double);
-            }
-
-            /* Address for Cu and Cv to be copied to */
-            _CU_save = this_task->data._f_C.data_out->device_private;
-            _CV_save = this_task->data._f_C.data_out->device_private + descA->mb * new_UVrk * sizeof(double);
-
-            HCORE_dgemm_ormqr( PlasmaNoTrans, PlasmaTrans,
-                    tempmmv, // ASSUMPTION: For a tile, if nrows<ncols, storage is ncols for both U and V
-                    tempmmv,
-                    (double)-1.0,
-                    Au, Av, Ar, ldamu,
-                    (double)1.0,
-                    Cu, Cv, Cr, ldamu,
-                    params_tlr->fixedrk, params_tlr->maxrank, params_tlr->compmaxrank, params_tlr->fixedacc, work_new,
-                    &flops,
-                    /** parameters coming from HCORE_dgemm_qr_svd */
-                    _CU,
-                    _CV,
-                    CU_ncols,
-                    new_UVrk,
-                    newU,
-                    ld_newU,
-                    qrtauA,
-                    CV_ncols,
-                    newV,
-                    ld_newV,
-                    qrtauB,
-                    use_CUV_clone,
-                    CUclone,
-                    ld_CUclone,
-                    _CU_save,
-                    CVclone,
-                    ld_CVclone,
-                    _CV_save
-                        );
-
-            Cu = _CU_save;
-            Cv = _CV_save;
-
-            /* Update send size, how many bytes */
-            this_task->locals.size.value = descA->mb * ((int *)Cr)[0] * 2 * sizeof(double);
-
-            /* Push back to mempool */
-            if( LOW_RANK_SP == params_tlr->decisions[k*descA->lmt+m] )
-                parsec_private_memory_push( p_work_uv_dp, A_d );
-
-            if( LOW_RANK_SP == params_tlr->decisions[k*descA->lmt+n] )
-                parsec_private_memory_push( p_work_uv_dp, B_d );
-        }
-        else
-        {
-            /* Convert datatype, A */
-            if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+m] ) {
-                A_s = parsec_private_memory_pop( p_work_uv_sp );
-                hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
-                LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, Arank * 2, A, descA->mb, A_s, descA->mb );
-                A_use = A_s;
-            }
-
-            /* Convert datatype, B */
-            if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+n] ) {
-                B_s = parsec_private_memory_pop( p_work_uv_sp );
-                hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
-                LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, Brank * 2, B, descA->mb, B_s, descA->mb );
-                B_use = B_s;
-            }
-
-            /* U and V pointer */
-            Au = (void *)A_use;
-            Av = (void *)A_use + descA->mb * Arank * sizeof(float);
-            Bu = (void *)B_use;
-            Bv = (void *)B_use + descA->mb * Brank * sizeof(float);
-            Cu = (void *)C;
-            Cv = (void *)C + descA->mb * Crank_old * sizeof(float);
-
-            /** Calls two-step hcore_gemm.
-              First step reveals ACTUAL_RANK.
-              Second step constructs new CU and CV.
-              Provided CU and CV buffers must have at least ACTUAL_RANK number of columns.
-             */
-            float* work_new;
-            float* _CU;
-            float* _CV;
-            int CU_ncols;
-            int new_UVrk;
-            float* newU;
-            int ld_newU;
-            float* qrtauA;
-            int CV_ncols;
-            float* newV;
-            int ld_newV;
-            float* qrtauB;
-            int use_CUV_clone;
-            float* CUclone;
-            int ld_CUclone;
-            float* _CU_save;
-            float* CVclone;
-            int ld_CVclone;
-            float* _CV_save;
-            flop_counter flops;
-            HCORE_sgemm_qr_svd( PlasmaNoTrans, PlasmaTrans,
-                    tempmmv, // ASSUMPTION: For a tile, if nrows<ncols, storage is ncols for both U and V
-                    tempmmv,
-                    (float)-1.0,
-                    Au, Av, Ar, ldamu,
-                    Bu, Bv, Br, ldamv,
-                    (float)1.0,
-                    Cu, Cv, Cr, ldamu,
-                    params_tlr->fixedrk, params_tlr->maxrank, params_tlr->compmaxrank, params_tlr->fixedacc, p_elem_work,
-                    &flops,
-                    /** parameters that will be passed to HCORE_dgemm_ormqr */
-                    &work_new,
-                    &_CU,
-                    &_CV,
-                    &CU_ncols,
-                    &new_UVrk,
-                    &newU,
-                    &ld_newU,
-                    &qrtauA,
-                    &CV_ncols,
-                    &newV,
-                    &ld_newV,
-                    &qrtauB,
-                    &use_CUV_clone,
-                    &CUclone,
-                    &ld_CUclone,
-                    &_CU_save,
-                    &CVclone,
-                    &ld_CVclone,
-                    &_CV_save
-                        );
-
-            /* If new_UVrk > Crank_old, re-allocate */
-            if( new_UVrk > Crank_old && !params_tlr->send_full_tile ) {
-                if( DEBUG_INFO ) printf("\nReallocate %d %d %d : C_LOW_RANK_SP, A_LOW_RANK, B_LOW_RANK\n\n", m, n, k);
-                if( NULL != this_task->data._f_C.data_out->device_private )
-                    free( this_task->data._f_C.data_out->device_private ); 
-                this_task->data._f_C.data_out->device_private = calloc( descA->mb * new_UVrk * 2, sizeof(float) );
-                this_task->data._f_C.data_out->original->span = descA->mb * new_UVrk * 2 * sizeof(float);
-            }
-
-            /* Address for Cu and Cv to be copied to */
-            _CU_save = this_task->data._f_C.data_out->device_private;
-            _CV_save = this_task->data._f_C.data_out->device_private + descA->mb * new_UVrk * sizeof(float);
-
-            HCORE_sgemm_ormqr( PlasmaNoTrans, PlasmaTrans,
-                    tempmmv, // ASSUMPTION: For a tile, if nrows<ncols, storage is ncols for both U and V
-                    tempmmv,
-                    (float)-1.0,
-                    Au, Av, Ar, ldamu,
-                    (float)1.0,
-                    Cu, Cv, Cr, ldamu,
-                    params_tlr->fixedrk, params_tlr->maxrank, params_tlr->compmaxrank, params_tlr->fixedacc, work_new,
-                    &flops,
-                    /** parameters coming from HCORE_dgemm_qr_svd */
-                    _CU,
-                    _CV,
-                    CU_ncols,
-                    new_UVrk,
-                    newU,
-                    ld_newU,
-                    qrtauA,
-                    CV_ncols,
-                    newV,
-                    ld_newV,
-                    qrtauB,
-                    use_CUV_clone,
-                    CUclone,
-                    ld_CUclone,
-                    _CU_save,
-                    CVclone,
-                    ld_CVclone,
-                    _CV_save
-                        );
-
-            Cu = _CU_save;
-            Cv = _CV_save;
-
-            /* Update send size, how many bytes */
-            this_task->locals.size.value = descA->mb * ((int *)Cr)[0] * 2 * sizeof(float);
-
-            /* Push back to mempool */
-            if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+m] )
-                parsec_private_memory_push( p_work_uv_sp, A_s );
-
-            if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+n] )
-                parsec_private_memory_push( p_work_uv_sp, B_s );
-        }
-
-        /* Update new rank */
-        parsec_private_memory_push( p_work, p_elem_work );
-        int Crank_new = ((int*)Cr)[0];
-        if(DEBUG_INFO) printf("Cr value in DGEMM (%d, %d, %d): %d\n", m, n, k, ((int *)Cr)[0]);
-
-        /* Operation count */
-        int Crank_old__Arank = Crank_old + Arank;
-        unsigned long int cnt = 0;
-        /// QR([CU AU])
-        unsigned long int qraflop = hicma_parsec_op_counts('q', tempmmv, Crank_old__Arank, 0, 0);///ASSUMPTION:tempmmv is not totally correct if nrowsC<ncolsC
-        /// AV*BV^T
-        unsigned long int qrbflop = hicma_parsec_op_counts('m', Arank, Brank, tempmmv, 0);
-        /// (AV*BV^T) * BU^T
-        qrbflop += hicma_parsec_op_counts('m', Arank, tempmmv, Brank, 0);
-        qrbflop += hicma_parsec_op_counts('q', tempmmv, Crank_old__Arank, 0, 0);  
-        int rA_nrows  = tempmmv < Crank_old__Arank ? tempmmv : Crank_old__Arank;
-        unsigned long int svdflop = hicma_parsec_op_counts('r', Crank_old__Arank, Crank_old__Arank, 2, 0);// trmm is used
-        svdflop += hicma_parsec_op_counts('s', Crank_old__Arank, 0, 0, 0);
-        svdflop += Crank_old__Arank * Crank_new; 
-        unsigned long int newuflop = hicma_parsec_op_counts('o', tempmmv, Crank_new, Crank_old__Arank, 1);  
-        unsigned long int newvflop = hicma_parsec_op_counts('o', Crank_new, tempmmv, Crank_old__Arank, 2); 
-
-        cnt = qraflop + qrbflop + svdflop + newuflop + newvflop;
-
-        params_tlr->op_offband[es->th_id] += cnt;
-        params_tlr->op_offpath[es->th_id] += cnt;
+        this_task->locals.size.value = hicma_parsec_core_gemm_lrC_lrA_lrB_cpu( descA, params_tlr, es,
+            p_work, p_work_full_dp, p_work_full_sp, p_work_uv_dp, p_work_uv_sp,
+            this_task->data._f_C.data_out, C, A, B, Cr, Ar, Br, m, n, k, Arank, Brank );
     }
     /* Unsupported data structure combination */
     else

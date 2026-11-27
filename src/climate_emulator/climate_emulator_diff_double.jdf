@@ -34,7 +34,7 @@ static double diff_double_core(double *A, double *B, int M, int N) {
             
             // Early termination if difference exceeds threshold
             if( result > 1.0e-4 ) {
-#if DEBUG_INFO_CLIMATE_EMULATOR
+#if CLIMATE_EMULATOR_DEBUG_INFO
                 // Print detailed error information in debug mode
                 printf("DIFF_ERROR %d %d : %.16lf %.16lf\n", i, j, A[j*M+i], B[j*M+i]);
 #endif
@@ -69,7 +69,7 @@ BODY
     // Compute the maximum difference between corresponding tiles
     double diff = diff_double_core(A, B, descA->mb, descA->nb);
     
-#if DEBUG_INFO_CLIMATE_EMULATOR
+#if CLIMATE_EMULATOR_DEBUG_INFO
     // Print difference information for debugging
     printf("DIFF m %d n %d mb %d nb %d : %.16le\n", m, n, descA->mb, descA->nb, diff);
 #endif

@@ -290,7 +290,7 @@ void climate_emulator_geqsht_forward_pre_computed_version_gpu_core(
     cuDoubleComplex *tmp1 = (cuDoubleComplex *)stream_found->tmp1;
     cuDoubleComplex *tmp2 = (cuDoubleComplex *)stream_found->tmp2;
 
-#if DEBUG_INFO_CLIMATE_EMULATOR
+#if CLIMATE_EMULATOR_DEBUG_INFO
     climate_emulator_print_complex_GPU(f_data, 10, 10, gb->f_data_M, cuda_stream->cuda_stream);
     climate_emulator_print_double_GPU((double *)f_data, 10, 10, gb->f_data_M, cuda_stream->cuda_stream);
 #endif
@@ -312,7 +312,7 @@ void climate_emulator_geqsht_forward_pre_computed_version_gpu_core(
                             Ep, Gmtheta_r_K,
             &beta_complex, Gmtheta_r, Gmtheta_r_M);
 
-#if DEBUG_INFO_CLIMATE_EMULATOR
+#if CLIMATE_EMULATOR_DEBUG_INFO
     printf("Gmtheta_r\n");
     climate_emulator_sum_complex_core(Gmtheta_r, Gmtheta_r_M, Gmtheta_r_N);
     climate_emulator_print_complex_GPU(Gmtheta_r, 10, 10, Gmtheta_r_M, cuda_stream->cuda_stream);
@@ -334,7 +334,7 @@ void climate_emulator_geqsht_forward_pre_computed_version_gpu_core(
                             Gmtheta_r, Fmnm_K,
             &beta_complex, Fmnm, Fmnm_M);
 
-#if DEBUG_INFO_CLIMATE_EMULATOR
+#if CLIMATE_EMULATOR_DEBUG_INFO
     printf("Et1*Gmtheta_r\n");
     climate_emulator_sum_complex_core(Fmnm, Fmnm_M, Fmnm_N);
 #endif
@@ -358,7 +358,7 @@ void climate_emulator_geqsht_forward_pre_computed_version_gpu_core(
                            P, tmp1_K,
             &beta_complex, tmp1, tmp1_M); 
 
-#if DEBUG_INFO_CLIMATE_EMULATOR
+#if CLIMATE_EMULATOR_DEBUG_INFO
     printf("Et2*P\n");
     climate_emulator_sum_complex_core(tmp1, tmp1_M, tmp1_N);
 #endif
@@ -375,7 +375,7 @@ void climate_emulator_geqsht_forward_pre_computed_version_gpu_core(
                             Gmtheta_r, tmp2_K,
             &beta_complex,  tmp2, tmp2_M);
 
-#if DEBUG_INFO_CLIMATE_EMULATOR
+#if CLIMATE_EMULATOR_DEBUG_INFO
     printf("Et2*P*Gmtheta_r\n");
     climate_emulator_sum_complex_core(tmp2, tmp2_M, tmp2_N);
 #endif
@@ -393,7 +393,7 @@ void climate_emulator_geqsht_forward_pre_computed_version_gpu_core(
                            D, Fmnm_K,
             &beta_complex, Fmnm, Fmnm_M);
 
-#if DEBUG_INFO_CLIMATE_EMULATOR
+#if CLIMATE_EMULATOR_DEBUG_INFO
     printf("Fmnm\n");
     climate_emulator_sum_complex_core(Fmnm, Fmnm_M, Fmnm_N);
     climate_emulator_print_complex_GPU(Fmnm, 10, 10, Fmnm_M, cuda_stream->cuda_stream); 
@@ -456,7 +456,7 @@ void climate_emulator_geqsht_forward_pre_computed_version_gpu_core(
 		}
 	}
 
-#if DEBUG_INFO_CLIMATE_EMULATOR
+#if CLIMATE_EMULATOR_DEBUG_INFO
     printf("flmn_matrix\n");
     climate_emulator_sum_complex_core(flmn_matrix, flmn_matrix_M, flmn_matrix_N);
     climate_emulator_print_matrix_col_complex(flmn_matrix, 10, 10, flmn_matrix_M);
@@ -468,7 +468,7 @@ void climate_emulator_geqsht_forward_pre_computed_version_gpu_core(
 	 * ============================================================================ */
     climate_emulator_reshape_GPU(flm, flmn_matrix, L, flmn_matrix_M, cuda_stream->cuda_stream);
 
-#if DEBUG_INFO_CLIMATE_EMULATOR
+#if CLIMATE_EMULATOR_DEBUG_INFO
     printf("flm\n");
     climate_emulator_sum_double_core(flm, gb->flm_M, gb->flm_N);
 	climate_emulator_print_matrix_col_double(flm, 1, 20, 1); 

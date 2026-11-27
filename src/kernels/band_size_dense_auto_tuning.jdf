@@ -550,9 +550,7 @@ void hicma_parsec_performance_testing_cpu_gpu( hicma_parsec_params_t * params ) 
 static void band_size_auto_tuning_termination_gpu(
         hicma_parsec_params_t * params, int band_size_dense,
         long long int sum_Brank,
-        long long int sum_count_Brank,
-        long long int sum_tlr,
-        long long int sum_dense ) {
+        long long int sum_count_Brank ) {
 
     /* If not on GPU */
     if( 0 == params->gpus ) {
@@ -569,7 +567,7 @@ static void band_size_auto_tuning_termination_gpu(
     double num_gemm_nb_nb_r = num_gemm_2 * 2 + num_gemm_3;
     double num_gemm_nb_r_r = 2 * num_gemm_3;
 
-    double avg_Brank, gpu_perf, flop_gemm_nb_nb_r, flop_gemm_nb_r_r;
+    double avg_Brank = 0.0, gpu_perf, flop_gemm_nb_nb_r, flop_gemm_nb_r_r;
     if( 0 == sum_count_Brank ) {
         gpu_perf = params->gpu_perf_nb_nb_r;
     } else {
@@ -578,21 +576,6 @@ static void band_size_auto_tuning_termination_gpu(
         flop_gemm_nb_r_r = (double)num_gemm_nb_r_r * avg_Brank;
         gpu_perf = ( flop_gemm_nb_nb_r + flop_gemm_nb_r_r ) / ( flop_gemm_nb_nb_r/params->gpu_perf_nb_nb_r + flop_gemm_nb_r_r / params->gpu_perf_nb_r_r );
     }
-
-#if 0
-    double time_tlr = (double)sum_tlr / 1.0e9 / (params->cpu_perf / 3);
-    double ratio_flops = (double)NB / avg_Brank;
-    double ratio_num = num_gemm_nb_nb_r / num_gemm_nb_r_r;  
-    double sum_nb_r_r = (double)sum_dense / (1.0 + ratio_flops * ratio_num);
-    double sum_nb_nb_r = (double)sum_dense - sum_nb_r_r;
-    double time_nb_nb_r = sum_nb_nb_r / 1.0e9 / (params->gpu_perf_nb_nb_r * params->gpus);
-    double time_nb_r_r = sum_nb_r_r / 1.0e9 / (params->gpu_perf_nb_r_r * params->gpus);
-    double time_dense = time_nb_nb_r + time_nb_r_r; 
-    params->band_size_auto_tuning_termination = time_tlr / time_dense; 
-    if( 0 == params->rank && print_more_info ) {
-        fprintf(stderr, RED "time_tlr= %lf time_dense= %lf time_nb_nb_r= %lf time_nb_r_r=%lf sum_nb_r_r= %lf sum_nb_nb_r= %lf\n" RESET, time_tlr, time_dense, time_nb_nb_r, time_nb_r_r, sum_nb_r_r, sum_nb_nb_r );
-    }
-#endif
 
     params->band_size_auto_tuning_termination = (gpu_perf * params->gpus * FLUCTUATION) / (params->cpu_perf / 3); 
 
@@ -770,7 +753,7 @@ int parsec_band_size_dense_auto_tuning(parsec_context_t *parsec,
                 ("***************** END Check band_size_dense %d : %d ******************\n", band_size_dense, band_maxrank));
 
         /* Update the termination factor if on GPU */
-        band_size_auto_tuning_termination_gpu( params, band_size_dense, sum_Brank, sum_count_Brank, sum_tlr, sum_dense );
+        band_size_auto_tuning_termination_gpu( params, band_size_dense, sum_Brank, sum_count_Brank );
 
         /* Find the result */
         if( sum_tlr * params->band_size_auto_tuning_termination <= sum_dense ) { 
@@ -939,7 +922,7 @@ int parsec_band_size_dense_auto_tuning_binary_search(parsec_context_t *parsec,
         }
 
         /* Update the termination factor if on GPU */
-        band_size_auto_tuning_termination_gpu( params, band_size_dense, sum_Brank, sum_count_Brank, sum_tlr, sum_dense );
+        band_size_auto_tuning_termination_gpu( params, band_size_dense, sum_Brank, sum_count_Brank );
 
         if( sum_tlr * params->band_size_auto_tuning_termination > sum_dense )
             left = band_size_dense + 1;

@@ -23,6 +23,9 @@
  **/
 
 #include "hicma_parsec.h"
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+#include "hicma_parsec_gpu.h"
+#endif
 #include "hicma_parsec_sparse_analysis.h"
 
 /* =============================================================================
@@ -30,14 +33,47 @@
  * ============================================================================= */
 
 /* Enable/disable process execution time printing for performance analysis */
+#ifndef PRINT_PROCESS_EXE_TIME
 #define PRINT_PROCESS_EXE_TIME 0
+#endif
 
 /* Enable/disable thread execution time printing for fine-grained profiling */
+#ifndef PRINT_THREAD_EXE_TIME
 #define PRINT_THREAD_EXE_TIME 0
+#endif
+
+/* SYRK of the genomics drivers: 0 computes it with hicma_parsec_syrk (the GEMM
+ * taskpools, full product); 1 with dplasma_isyrk (lower triangle, 8-bit
+ * integer isyrk_LT.jdf) */
+#ifndef GENOMICS_SYRK_ISYRK
+#define GENOMICS_SYRK_ISYRK 0
+#endif
 
 /* =============================================================================
  * Core Function Implementations
  * ============================================================================= */
+
+/**
+ * The Cholesky path (matrix generation, --check, the low-rank kernels) assumes
+ * square tiles: matrix_compress.jdf and band_regenerate.jdf generate band tiles
+ * as tempmm x tempmm, matrix_uncompress.jdf copies them the same way, and the
+ * HCORE low-rank storage uses one leading dimension for U and V. With
+ * N % NB != 0 the last tile row is only partially generated and the results are
+ * wrong (3e+3 residuals on a dense FP64 run, an abort in HCORE for TLR), so
+ * refuse it here. The TRMM path handles partial tiles and does not go through
+ * this function.
+ */
+static void hicma_parsec_require_full_tiles(const hicma_parsec_params_t *params, const char *what)
+{
+    if( 0 != params->N % params->NB ) {
+        if( 0 == params->rank ) {
+            fprintf(stderr, RED "%s requires N to be a multiple of NB (N= %d, NB= %d): "
+                    "the Cholesky drivers do not support a partial last tile\n" RESET,
+                    what, params->N, params->NB);
+        }
+        exit(1);
+    }
+}
 
 /**
  * @brief Initialize HiCMA PaRSEC environment and data structures
@@ -139,6 +175,8 @@ int hicma_parsec_matrix_generation( parsec_context_t *parsec,
         hicma_parsec_params_t *params,
         starsh_params_t *params_kernel )
 {
+    hicma_parsec_require_full_tiles(params, "matrix generation");
+
     /* Start matrix generation timer for performance measurement */
     SYNC_TIME_START();
     
@@ -219,7 +257,7 @@ int hicma_parsec_matrix_pre_analysis( parsec_context_t *parsec,
     /* Step 5: Calculate memory requirements for matrix allocation */
     SYNC_TIME_START();
     hicma_parsec_memory_calculation( parsec, params );
-    SYNC_TIME_PRINT(params->rank, ("Memory for matrix allocatiion" "\tactual= %lf GB maxrank= %lf GB\n",
+    SYNC_TIME_PRINT(params->rank, ("Memory for matrix allocation" "\tactual= %lf GB maxrank= %lf GB\n",
                 params->memory_per_node, params->memory_per_node_maxrank));
 
     /* Step 6: Perform sparse matrix analysis for workload optimization */
@@ -252,6 +290,57 @@ int hicma_parsec_matrix_pre_analysis( parsec_context_t *parsec,
     SYNC_TIME_START();
     hicma_parsec_decisions_update( parsec, data, params );
     SYNC_TIME_PRINT(params->rank, ("Decision update: %d\n", params->adaptive_decision));
+
+#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    /* The FP16 matrix instructions of AMD gfx90a (MI200) flush FP16 subnormal
+     * inputs (|x| < 6.1e-5) to zero, and FP16 tiles are chosen for their small
+     * entries: at N=30720 the FP16 tiles of an adaptive kind-5 run gave
+     * ||LL^T-A||/||A|| = 1.0e-5 for --fixedacc 1e-8, the same tiles in BF16
+     * (FP32's exponent range) 1.2e-8. --tensor_gemm chooses; say so when the
+     * decisions produced FP16 tiles. The run-time decision (kind 10) scales its
+     * FP16 operands and is not concerned. gfx906 (Radeon VII, MI50/60), which
+     * has no matrix cores, keeps FP16 subnormals in rocBLAS's FP16 GEMMs (FP32
+     * and FP16 C, measured) and has no BF16 hardware (BF16 GEMMs made an
+     * adaptive kind-5 run 6x slower): no note there. */
+    int fp16_flushes = 1;
+    hipDeviceProp_t prop;
+    if( params->gpus > 0 && hipSuccess == hipGetDeviceProperties(&prop, 0)
+        && 0 == strncmp(prop.gcnArchName, "gfx906", 6) )
+        fp16_flushes = 0;
+    if( fp16_flushes && params->gpus > 0 && 0 == params->rank && !params->adaptive_decision_runtime
+        && (MASK_TF16_A16_B16_C32_OP32 == HICMA_FP16_GEMM(params) || MASK_TF16_A16_B16_C16_OP16 == HICMA_FP16_GEMM(params)) ) {
+        const int NT = params->NT;
+        int nb_hp = 0;
+        for( int k = 0; k < NT; k++ )
+            for( int m = k; m < NT; m++ )
+                nb_hp += DENSE_HP == params->decisions[k*NT+m];
+        if( nb_hp > 0 )
+            fprintf(stderr, YEL "%d FP16 tiles on an AMD GPU, whose FP16 GEMMs flush entries below 6.1e-5 to zero: "
+                    "they can lose accuracy; --tensor_gemm_hp 0x20 (BF16) avoids it when every tile is dense\n" RESET, nb_hp);
+    }
+#endif
+
+    /* Step 10b: with FP16 C (--tensor_gemm_hp 0x10) a dense FP16 tile goes to
+     * FP16 at its first update and back at its last, which a rank-0 low-rank
+     * operand skips: refuse it on GPUs when a low-rank tile has rank 0 (the
+     * decisions are final and the same on every rank) */
+    if( params->gpus > 0 && 0 == params->iminrk && MASK_TF16_A16_B16_C16_OP16 == HICMA_FP16_GEMM(params)
+        && (params->band_size_dense < params->NT || params->auto_band) ) {
+        const int NT = params->NT;
+        int has_lr = 0, has_hp = 0;
+        for( int k = 0; k < NT; k++ ) {
+            for( int m = k+1; m < NT; m++ ) {
+                has_lr |= LOW_RANK_DP == params->decisions[k*NT+m] || LOW_RANK_SP == params->decisions[k*NT+m];
+                has_hp |= DENSE_HP == params->decisions[k*NT+m];
+            }
+        }
+        if( has_lr && has_hp ) {
+            if( 0 == params->rank )
+                fprintf(stderr, RED "a low-rank tile has rank 0, which skips the FP16 conversion of C under "
+                        "--tensor_gemm_hp 0x10: use 0x8\n" RESET);
+            exit(1);
+        }
+    }
 
     /* Step 11: Convert double precision to single precision for mixed precision operations */
 #if !GENOMICS
@@ -286,7 +375,6 @@ int hicma_parsec_matrix_pre_analysis( parsec_context_t *parsec,
             A = (parsec_tiled_matrix_t *)&data->dcAd;
         }
         SYNC_TIME_START();
-        //hicma_parsec_warmup_potrf(params->rank, params->uplo, 3872, parsec);
         hicma_parsec_potrf_L_warmup_dense( parsec, A, params );
         SYNC_TIME_PRINT(params->rank, ("Warmup\n"));
     }
@@ -338,6 +426,20 @@ int hicma_parsec_potrf( parsec_context_t *parsec,
     /* Validation: Currently only lower triangular matrices are supported */
     assert( params->uplo == PlasmaLower );
 
+    hicma_parsec_require_full_tiles(params, "Cholesky factorization");
+
+    /* FP16 C with FP32 accumulation exists in the TRMM GEMMs only; the dense
+     * FP16 Cholesky GEMM aborts on it (hicma_parsec_core.c). An invalid
+     * parameter, like those hicma_parsec_init rejects: the drivers ignored the
+     * former return value and exited 0 without a factorization. */
+    if( MASK_TF16_A16_B16_C16_OP32 == HICMA_FP16_GEMM(params) ) {
+        if( 0 == params->rank ) {
+            fprintf(stderr, RED "--tensor_gemm 0x80 (FP16 C, FP32 accumulation) is supported by the TRMM only, "
+                    "not by the Cholesky GEMMs\n" RESET);
+        }
+        exit(1);
+    }
+
     /* Auto-configure lookahead parameter if not specified (-1 means auto) */
     assert( params->lookahead >= -1 );
     if( -1 == params->lookahead ) {
@@ -368,6 +470,16 @@ int hicma_parsec_potrf( parsec_context_t *parsec,
                (size_t)params->counter_stride * sizeof(uint64_t));
     }
 
+    /* GEMM operands cached by an earlier factorization (or the warmup) are
+     * stale: tiles of this one have other values */
+    params->operand_cache_epoch++;
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    {
+        uint64_t operand_cache_stats[5];
+        hicma_operand_cache_stats(data, operand_cache_stats, 1);
+    }
+#endif
+
     /* Synchronize all processes and start timing for accurate measurement */
     MPI_Barrier( MPI_COMM_WORLD );
     SYNC_TIME_START();
@@ -381,63 +493,74 @@ int hicma_parsec_potrf( parsec_context_t *parsec,
             (size_t)params->MT * params->NT * sizeof(uint16_t));
 
     /* Execute the appropriate Cholesky factorization algorithm based on configuration */
+    int rc = 0;
     switch( params->kind_of_cholesky ) {
         case DENSE_TLR_MP:
             /* Mixed precision tile low-rank Cholesky factorization */
-            potrf_L_dense_tlr_mp( parsec, data, params );
+            rc = potrf_L_dense_tlr_mp( parsec, data, params );
             break;
 
         case DENSE_TLR_DP:
             /* Double precision tile low-rank Cholesky */
-            potrf_L_dense_tlr_dp( parsec, data, params );
+            rc = potrf_L_dense_tlr_dp( parsec, data, params );
             break;
 
         case DENSE_MP_BAND:
             /* Mixed precision band-based Cholesky */
-            hicma_parsec_hsdpotrf( parsec, data, params );
+            rc = hicma_parsec_hsdpotrf( parsec, data, params );
             break;
 
         case DENSE_SP_HP_BAND:
             /* Single precision half precision band-based Cholesky */
-            hicma_parsec_shpotrf( parsec, data, params );
+            rc = hicma_parsec_shpotrf( parsec, data, params );
             break;
 
         case DENSE_MP_GPU:
             /* Mixed precision GPU-accelerated Cholesky */
-            potrf_L_dense_mp_gpu( parsec, data, params );
+            rc = potrf_L_dense_mp_gpu( parsec, data, params );
             break;
 
         case SPARSE_TLR_DP_GENERAL:
             /* Sparse tile low-rank double precision general Cholesky */
-            potrf_L_sparse_tlr_dp_general( parsec, data, params, analysis );
+            rc = potrf_L_sparse_tlr_dp_general( parsec, data, params, analysis );
             break;
 
         case SPARSE_TLR_DP_BALANCE:
             /* Sparse tile low-rank double precision balanced Cholesky */
-            potrf_L_sparse_tlr_dp_balance( parsec, data, params, analysis );
+            rc = potrf_L_sparse_tlr_dp_balance( parsec, data, params, analysis );
             break;
 
         case DENSE_MP_GPU_FP8:
             /* Mixed precision GPU-accelerated Cholesky with FP8 */
-            potrf_L_dense_mp_gpu_fp8( parsec, data, params );
+            rc = potrf_L_dense_mp_gpu_fp8( parsec, data, params );
             break;
 
         case DENSE_MP_GPU_FP8_SP:
             /* Mixed precision GPU-accelerated Cholesky with FP8 and single precision */
-            potrf_L_dense_mp_gpu_fp8_sp( parsec, data, params );
+            rc = potrf_L_dense_mp_gpu_fp8_sp( parsec, data, params );
             break;
 
         case DENSE_MP_GPU_FP8_ADAPTIVE: 
             /* Mixed precision GPU-accelerated Cholesky with FP8 */
-            potrf_L_dense_mp_gpu_fp8_adaptive( parsec, data, params );
+            rc = potrf_L_dense_mp_gpu_fp8_adaptive( parsec, data, params );
             break;
 
         default:
-            /* Invalid Cholesky type specified */
+            /* Invalid Cholesky type: every rank has the same parameters */
             if( 0 == params->rank ) {
-                fprintf(stderr, RED "ERROR: Cholesky is not called. Make sure the right parameters are used !!!\n\n");
+                fprintf(stderr, RED "ERROR: --kind_of_cholesky %d is not one of 1 to 10; no factorization run\n" RESET,
+                        params->kind_of_cholesky);
             }
-            return 1;
+            exit(1);
+    }
+
+    if( 0 != rc ) {
+        /* The kind refused the parameters (message printed by its New); every
+         * rank sees the same parameters, so every rank is here */
+        if( 0 == params->rank ) {
+            fprintf(stderr, RED "ERROR: the Cholesky taskpool could not be created, see above\n" RESET);
+        }
+        exit(1);
     }
 
     /* Synchronize and measure total Cholesky execution time */
@@ -540,6 +663,30 @@ int hicma_parsec_potrf( parsec_context_t *parsec,
                     params->nb_gemms[DENSE_DP*counter_stride], params->nb_gemms[DENSE_SP*counter_stride], params->nb_gemms[DENSE_HP*counter_stride],
                     params->nb_gemms[DENSE_FP8*counter_stride], params->nb_gemms[LOW_RANK_DP*counter_stride], params->nb_gemms[LOW_RANK_SP*counter_stride], params->nb_datatype_conversions[0]);
         }
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+        if( params->gpus > 0 ) {
+            uint64_t operand_cache_stats[5];
+            hicma_operand_cache_stats(data, operand_cache_stats, 1);
+            MPI_Allreduce(MPI_IN_PLACE, operand_cache_stats, 5, MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+            if( 0 == params->rank ) {
+                fprintf(stderr, GRN"GPU_operand_cache: conversions= %lu reuses= %lu fallbacks= %lu slots= %lu MB= %.1f\n"RESET,
+                        operand_cache_stats[0], operand_cache_stats[1], operand_cache_stats[2],
+                        operand_cache_stats[3], (double)operand_cache_stats[4] / 1.0e6);
+            }
+        }
+#endif
+        if( params->adaptive_decision_runtime ) {
+            /* Every rank takes part; ranks with GPUs have no host cache and add zeros */
+            uint64_t host_cache_stats[8];
+            hicma_host_operand_cache_stats(params->host_operand_cache, host_cache_stats, 1);
+            host_cache_stats[7] = NULL != params->host_operand_cache;
+            MPI_Allreduce(MPI_IN_PLACE, host_cache_stats, 8, MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+            if( 0 == params->rank && host_cache_stats[7] > 0 ) {
+                fprintf(stderr, GRN"CPU_operand_cache: conversions= %lu reuses= %lu fallbacks= %lu evictions= %lu tiles= %lu MB= %.1f held= %lu\n"RESET,
+                        host_cache_stats[0], host_cache_stats[1], host_cache_stats[2], host_cache_stats[3],
+                        host_cache_stats[4], (double)host_cache_stats[5] / 1.0e6, host_cache_stats[6]);
+            }
+        }
     }
 
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
@@ -620,18 +767,6 @@ int hicma_parsec_matrix_post_analysis( parsec_context_t *parsec,
                 (size_t)params->MT * params->NT, decision_desc);
         print_final_storage_decisions(params);
     }
-
-#if 0
-    /* Debug code for matrix sum calculation (currently disabled) */
-    double total = hicma_parsec_matrix_dsum( parsec, (parsec_tiled_matrix_t*)&data->dcAd,
-            (parsec_tiled_matrix_t*)&data->dcAr, params->decisions );
-    if( 0 == params->rank ) {
-        fprintf(stderr, "sum of matrix %lf\n", total);
-    }
-
-    /* Debug code for matrix printing (currently disabled) */
-    dplasma_dprint(parsec, params->uplo, (parsec_tiled_matrix_t *)&data->dcAd);
-#endif
 
     /* Collect final rank statistics after Cholesky factorization */
     SYNC_TIME_START();
@@ -725,90 +860,6 @@ void hicma_parsec_fini( parsec_context_t* parsec,
 }
 
 /**
- * @brief Write matrix A to file in various formats
- * 
- * This function writes the matrix A to a file using either MPI-IO for distributed
- * output or standard file I/O for single-node output. The matrix can be written
- * in symmetric or general format depending on the symm parameter.
- * 
- * @param[in] parsec PaRSEC execution context
- * @param[in] filename Output filename
- * @param[in] AA Reference matrix (unused in current implementation)
- * @param[in] data HiCMA data structures containing the matrix to write
- * @param[in] params HiCMA parameters for matrix dimensions and distribution
- * @param[in] symm Flag indicating if matrix should be written in symmetric format
- */
-void hicma_parsec_writeA(parsec_context_t *parsec,
-        const char *filename,
-        parsec_tiled_matrix_t *AA,
-        hicma_parsec_data_t *data,
-        hicma_parsec_params_t *params,
-        int symm)
-{
-    /* Extract matrix A from data structures */
-    parsec_tiled_matrix_t* A = (parsec_tiled_matrix_t *)&data->dcAd;
-    parsec_tiled_matrix_t* X = (parsec_tiled_matrix_t *)&data->dcX;
-    
-    /* Extract matrix distribution parameters */
-    int rank = params->rank;
-    int nodes = params->nodes;
-    int P = params->P;  /* Grid rows */
-    int Q = params->Q;  /* Grid columns */
-    int MB = A->mb;     /* Block size in rows */
-    int NB = A->nb;     /* Block size in columns */
-    int NT = params->NT; /* Number of tiles */
-    int M = A->lm;      /* Local matrix rows */
-    int N = A->ln;      /* Local matrix columns */
-    
-    /* Display write operation start message */
-    if(rank == 0) fprintf(stderr, RED "\nWrite matrix A to file:\n" RESET);
-  
-#if MPIIO
-    /* Use MPI-IO for distributed file writing */
-    MPI_Datatype darrayA;
-
-    /* Create MPI datatype for 2D cyclic distribution */
-    Creating_MPI_Datatype_2D(nodes, rank,
-            N, M, MPI_DISTRIBUTE_CYCLIC, MPI_DISTRIBUTE_CYCLIC,
-            NB, NB, P, Q,
-            MPI_DOUBLE, &darrayA);
-
-    /* Allocate buffer for matrix data */
-    double* DA = (double *) malloc( A->llm*A->lln * sizeof(double));
-
-    /* Convert from tile format to LAPACK format */
-    if(symm)
-        hicma_parsec_Tile_to_Lapack_sym( parsec, (parsec_tiled_matrix_t *)A, DA, P, nodes/P);
-    else
-        hicma_parsec_Tile_to_Lapack( parsec, (parsec_tiled_matrix_t *)A, DA, P, nodes/P);
-
-    /* Debug output for matrix dimensions */
-    printf("\n %d, %d, %d, %d, %d, %d\n", A->llm, A->llm, M, N, MB, NB);
-    
-    /* Write matrix using MPI-IO */
-    MPI_Writing_dfile(filename, rank, DA, A->llm*A->llm, MPI_DOUBLE, darrayA);
-    
-    /* Clean up allocated memory */
-    parsec_data_free(DA);
-#else
-    /* Use standard file I/O for single-node output */
-    double* DA = (double *)malloc((size_t)A->llm*(size_t)A->lln*
-                                    (size_t)parsec_datadist_getsizeoftype(A->mtype));
-
-    /* Convert from tile format to LAPACK format */
-    if(symm)
-        hicma_parsec_Tile_to_Lapack_sym( parsec, (parsec_tiled_matrix_t *)A, DA, P, nodes/P);
-    else
-        hicma_parsec_Tile_to_Lapack( parsec, (parsec_tiled_matrix_t *)A, DA, P, nodes/P);
-    
-    /* Write matrix to binary file */
-    writeMatrixToBinaryFile(filename, N, N, DA);
-
-    /* Clean up allocated memory */
-    free(DA);
-#endif
-}
-/**
  * @brief Write matrix B to file in various formats
  * 
  * This function writes matrix B to a file using either MPI-IO for distributed
@@ -858,10 +909,11 @@ void hicma_parsec_writeB(parsec_context_t *parsec,
                                     (size_t)parsec_datadist_getsizeoftype(B->mtype));
 
     /* Convert from tile format to LAPACK format in single precision */
-    if(symm)
-        hicma_parsec_Tile_to_Lapack_sym_single( parsec, (parsec_tiled_matrix_t *)B, DB, P, nodes/P);
-    else
-        hicma_parsec_Tile_to_Lapack_single( parsec, (parsec_tiled_matrix_t *)B, DB, P, nodes/P);
+    if(symm) {
+        if( 0 != hicma_parsec_Tile_to_Lapack_sym_single( parsec, (parsec_tiled_matrix_t *)B, DB, P, nodes/P) ) exit(1);  /* message printed by the conversion */
+    } else {
+        if( 0 != hicma_parsec_Tile_to_Lapack_single( parsec, (parsec_tiled_matrix_t *)B, DB, P, nodes/P) ) exit(1);  /* message printed by the conversion */
+    }
     
     /* Write matrix using MPI-IO with float precision */
     MPI_Writing_sfile(filename, rank, DB, B->llm*B->lln, MPI_FLOAT, darrayB);
@@ -874,10 +926,11 @@ void hicma_parsec_writeB(parsec_context_t *parsec,
                                     (size_t)parsec_datadist_getsizeoftype(B->mtype));
 
     /* Convert from tile format to LAPACK format in single precision */
-    if(symm)
-        hicma_parsec_Tile_to_Lapack_sym_single( parsec, (parsec_tiled_matrix_t *)B, DB, P, nodes/P);
-    else
-        hicma_parsec_Tile_to_Lapack_single( parsec, (parsec_tiled_matrix_t *)B, DB, P, nodes/P);
+    if(symm) {
+        if( 0 != hicma_parsec_Tile_to_Lapack_sym_single( parsec, (parsec_tiled_matrix_t *)B, DB, P, nodes/P) ) exit(1);  /* message printed by the conversion */
+    } else {
+        if( 0 != hicma_parsec_Tile_to_Lapack_single( parsec, (parsec_tiled_matrix_t *)B, DB, P, nodes/P) ) exit(1);  /* message printed by the conversion */
+    }
 
     /* Write matrix directly to binary file */
     FILE *FY;
@@ -957,18 +1010,6 @@ void hicma_parsec_kernel_matrix(parsec_context_t *parsec,
 #endif
     SYNC_TIME_PRINT(params->rank, ("sqr_sum_vec\n"));
 
-#if 0
-    for(int i = 0; i < params->N; i++) {
-        if(vec[i] != vec1[i]) printf("ERROR %d %f %f\n", i, vec[i], vec1[i]);
-    } 
-#endif
-
-    //float totalA1 = hicma_parsec_matrix_ssum( parsec, (parsec_tiled_matrix_t *)&A,
-    //       (parsec_tiled_matrix_t*)&data->dcAr, params->decisions );
-    //if( 0 == params->rank ) {
-    //    fprintf(stderr, "sum of totalA1 matrix %e\n", totalA1);
-    // }
-
 #if GENOMICS_ALLOCATE_SP
     SYNC_TIME_START();
     parsec_convert_s2i(parsec, (parsec_tiled_matrix_t *)&A, 8);
@@ -991,19 +1032,17 @@ void hicma_parsec_kernel_matrix(parsec_context_t *parsec,
         gettimeofday(&tstart, NULL);
         params->start_time_syrk = tstart.tv_sec + tstart.tv_usec / 1.0e6;
 
-#if 1
+#if GENOMICS_SYRK_ISYRK
+        dplasma_isyrk(parsec, params->uplo, PlasmaTrans,
+                -2.0, (parsec_tiled_matrix_t *)&A,
+                0.0,  (parsec_tiled_matrix_t *)AA, 8,
+                params, data);
+#else
         hicma_parsec_syrk(parsec,
                 PlasmaTrans, PlasmaNoTrans,
                 -2.0, (parsec_tiled_matrix_t *)&A,
                 (parsec_tiled_matrix_t *)&A,
                 0.0,  (parsec_tiled_matrix_t *)AA, params, data);
-#else
-    dplasma_isyrk(parsec, params->uplo, PlasmaTrans,
-               -2.0,
-               (parsec_tiled_matrix_t *)&A,
-               0.0,
-               (parsec_tiled_matrix_t *)AA, 8,
-               params, data);
 #endif
       //parsec_print_cm_sym(parsec, AA,  params->nodes,  params->P, params->Q);
 
@@ -1015,8 +1054,6 @@ void hicma_parsec_kernel_matrix(parsec_context_t *parsec,
         SYNC_TIME_PRINT(params->rank, ("hicma_parsec_syrk nodes %d gpus %d N %d SNP %d lookahead %d\t : %lf Gflop/s P %d Q %d NB %d\n",
                     params->nodes, params->gpus, params->N, params->nsnp, params->lookahead, flops, params->P, params->Q, params->NB));
     }
-
-    //parsec_convert_i2s(parsec, (parsec_tiled_matrix_t *)&A, 8);
 
     //parsec_data_free(A.mat);
     parsec_memory_free_tile(parsec, (parsec_tiled_matrix_t*)&A, params, 0); 
@@ -1037,12 +1074,6 @@ void hicma_parsec_kernel_matrix(parsec_context_t *parsec,
     double iadd_kernel_time = tend.tv_sec + tend.tv_usec / 1.0e6 - params->start_time_kernel_add;
 
     SYNC_TIME_PRINT(params->rank, ("hicma_parsec_kernel_add \n"));
-
-    /*float totalA2 = hicma_parsec_matrix_ssum( parsec, (parsec_tiled_matrix_t *)&A,
-      (parsec_tiled_matrix_t*)&data->dcAr, params->decisions );
-      if( 0 == params->rank ) {
-      fprintf(stderr, "sum of totalA2 matrix %e\n", totalA2);
-      }*/
 }
 
 
@@ -1111,7 +1142,7 @@ void hicma_parsec_kernel_matrix_file(parsec_context_t *parsec,
         
         MPI_Reading_sfile(params->pheno_file, params->rank, phenoB, B->llm*B->lln, MPI_FLOAT, darrayB);
         
-        hicma_parsec_Lapack_to_Tile_Single( parsec, (parsec_tiled_matrix_t *)B, phenoB, params->P, params->nodes/params->P);
+        if( 0 != hicma_parsec_Lapack_to_Tile_Single( parsec, (parsec_tiled_matrix_t *)B, phenoB, params->P, params->nodes/params->P) ) exit(1);  /* message printed by the conversion */
         
         free(phenoB);
 
@@ -1127,9 +1158,8 @@ void hicma_parsec_kernel_matrix_file(parsec_context_t *parsec,
         if(params->rank == 0) fprintf(stderr, RED "\nSTART READING B:\n" RESET); 
         read_file(params->pheno_file, params->RHS, params->N, phenoB);
         
-        hicma_parsec_Lapack_to_Tile_Single( parsec, (parsec_tiled_matrix_t *)B, phenoB, params->P, params->nodes/params->P);
+        if( 0 != hicma_parsec_Lapack_to_Tile_Single( parsec, (parsec_tiled_matrix_t *)B, phenoB, params->P, params->nodes/params->P) ) exit(1);  /* message printed by the conversion */
             
-        //parsec_print_cm(parsec, (parsec_tiled_matrix_t *)B,  nodes, P, Q);
         parsec_data_free(phenoB);
 
     
@@ -1158,7 +1188,7 @@ void hicma_parsec_kernel_matrix_file(parsec_context_t *parsec,
 
     read_file(gene_file, params->N, params->nsnp, geneA); //This is only for single precsion 
         
-    hicma_parsec_Lapack_to_Tile_Single( parsec, (parsec_tiled_matrix_t *)&A, geneA, params->P, params->Q); //This is only for single precsion 
+    if( 0 != hicma_parsec_Lapack_to_Tile_Single( parsec, (parsec_tiled_matrix_t *)&A, geneA, params->P, params->Q) ) exit(1);  /* message printed by the conversion */ //This is only for single precsion 
     parsec_data_free(geneA);
 
     #if PREDICTION 
@@ -1172,9 +1202,8 @@ void hicma_parsec_kernel_matrix_file(parsec_context_t *parsec,
         if(params->rank == 0) fprintf(stderr, RED "\nSTART READING B:\n" RESET); 
         read_file(params->pheno_file, params->RHS, params->N, phenoB);
         
-        hicma_parsec_Lapack_to_Tile_Single( parsec, (parsec_tiled_matrix_t *)B, phenoB, params->P, params->nodes/params->P);
+        if( 0 != hicma_parsec_Lapack_to_Tile_Single( parsec, (parsec_tiled_matrix_t *)B, phenoB, params->P, params->nodes/params->P) ) exit(1);  /* message printed by the conversion */
             
-        //parsec_print_cm(parsec, (parsec_tiled_matrix_t *)B,  nodes, P, Q);
         parsec_data_free(phenoB);
 
     #endif
@@ -1186,7 +1215,6 @@ void hicma_parsec_kernel_matrix_file(parsec_context_t *parsec,
 
 #endif
 
-    //parsec_print_cm(parsec, &A,  params->nodes,  params->P, params->Q);
     
     SYNC_TIME_START();
     float *vec = (float *)malloc(sizeof(float)*params->N);
@@ -1206,36 +1234,11 @@ void hicma_parsec_kernel_matrix_file(parsec_context_t *parsec,
 #endif
     SYNC_TIME_PRINT(params->rank, ("sqr_sum_vec\n"));
 
-#if 0
-    for(int i = 0; i < params->N; i++) {
-        if(vec[i] != vec1[i]) printf("ERROR %d %f %f\n", i, vec[i], vec1[i]);
-    } 
-#endif
-
-#if 0
-    for(int i = 0; i < params->N; i++) {
-        printf("%f ", vec[i]);
-    }
-#endif
-    //float totalA1 = hicma_parsec_matrix_ssum( parsec, (parsec_tiled_matrix_t *)&A,
-    //       (parsec_tiled_matrix_t*)&data->dcAr, params->decisions );
-    //if( 0 == params->rank ) {
-    //    fprintf(stderr, "sum of totalA1 matrix %e\n", totalA1);
-    // }
-
 #if GENOMICS_ALLOCATE_SP
     SYNC_TIME_START();
     parsec_convert_s2i(parsec, (parsec_tiled_matrix_t *)&A, 8);
     SYNC_TIME_PRINT(params->rank, ("s2i\n"));
 #endif
-    #if 0
-    if(params->gpus > 0) {
-        SYNC_TIME_START();
-        hicma_parsec_potrf_L_warmup( parsec, (parsec_tiled_matrix_t *)&A, params, 0);
-        hicma_parsec_potrf_L_warmup( parsec, (parsec_tiled_matrix_t *)AA, params, 1);
-        SYNC_TIME_PRINT(params->rank, ("warmup\n"));
-    }
-    #endif
 
     struct timeval tstart;
     struct timeval tend;
@@ -1246,19 +1249,17 @@ void hicma_parsec_kernel_matrix_file(parsec_context_t *parsec,
         gettimeofday(&tstart, NULL);
         params->start_time_syrk = tstart.tv_sec + tstart.tv_usec / 1.0e6;
 
-#if 1
+#if GENOMICS_SYRK_ISYRK
+        dplasma_isyrk(parsec, params->uplo, PlasmaTrans,
+                -2.0, (parsec_tiled_matrix_t *)&A,
+                0.0,  (parsec_tiled_matrix_t *)AA, 8,
+                params, data);
+#else
         hicma_parsec_syrk(parsec,
                 PlasmaTrans, PlasmaNoTrans,
                 -2.0, (parsec_tiled_matrix_t *)&A,
                 (parsec_tiled_matrix_t *)&A,
                 0.0,  (parsec_tiled_matrix_t *)AA, params, data);
-#else
-    dplasma_isyrk(parsec, params->uplo, PlasmaTrans,
-               -2.0,
-               (parsec_tiled_matrix_t *)&A,
-               0.0,
-               (parsec_tiled_matrix_t *)AA, 8,
-               params, data);
 #endif
 
         /* Timer ends */
@@ -1272,8 +1273,6 @@ void hicma_parsec_kernel_matrix_file(parsec_context_t *parsec,
 
     //parsec_print_cm_sym(parsec, AA,  params->nodes,  params->P, params->Q);
     
-
-    //parsec_convert_i2s(parsec, (parsec_tiled_matrix_t *)&A, 8);
 
     //parsec_data_free(A.mat);
     parsec_memory_free_tile(parsec, (parsec_tiled_matrix_t*)&A, params, 0); 
@@ -1294,12 +1293,6 @@ void hicma_parsec_kernel_matrix_file(parsec_context_t *parsec,
     double iadd_kernel_time = tend.tv_sec + tend.tv_usec / 1.0e6 - params->start_time_kernel_add;
 
     SYNC_TIME_PRINT(params->rank, ("hicma_parsec_kernel_add \n"));
-
-    /*float totalA2 = hicma_parsec_matrix_ssum( parsec, (parsec_tiled_matrix_t *)&A,
-      (parsec_tiled_matrix_t*)&data->dcAr, params->decisions );
-      if( 0 == params->rank ) {
-      fprintf(stderr, "sum of totalA2 matrix %e\n", totalA2);
-      }*/
 }
 
 void hicma_kernal_matrix(parsec_context_t *parsec,
@@ -1394,8 +1387,7 @@ void hicma_kernal_matrix(parsec_context_t *parsec,
                 dgeneA[i] = (double) sgeneA[i];
             }
         
-            hicma_parsec_Lapack_to_Tile( parsec, (parsec_tiled_matrix_t *)&A, dgeneA, P, nodes/P);
-            //parsec_print_cm( parsec, (parsec_tiled_matrix_t *)&A, rank, P, nodes/P);
+            if( 0 != hicma_parsec_Lapack_to_Tile( parsec, (parsec_tiled_matrix_t *)&A, dgeneA, P, nodes/P) ) exit(1);  /* message printed by the conversion */
         
             free(sgeneA);
             parsec_data_free(dgeneA);
@@ -1417,7 +1409,7 @@ void hicma_kernal_matrix(parsec_context_t *parsec,
         if(rank == 0) fprintf(stderr, RED "\nRead A from file:\n" RESET);
         read_file(gene_file, N, SNP, geneA);
         
-        hicma_parsec_Lapack_to_Tile_Single( parsec, (parsec_tiled_matrix_t *)&A, geneA, P, Q);
+        if( 0 != hicma_parsec_Lapack_to_Tile_Single( parsec, (parsec_tiled_matrix_t *)&A, geneA, P, Q) ) exit(1);  /* message printed by the conversion */
         free(geneA);
         #endif
 
@@ -1461,9 +1453,8 @@ void hicma_kernal_matrix(parsec_context_t *parsec,
     /* Notify start of kernel calculations */
     if(rank == 0) fprintf(stderr, RED "\nSTART KERNEL CAL:\n" RESET);
 
-    /* Apply kernel function to compute AA = kernel(sqrt(C)) */
-    /* Note: Currently commented out - uncomment to enable kernel computation */
-    //hicma_parsec_sqrt_kernel(parsec,(parsec_tiled_matrix_t *)&C, (parsec_tiled_matrix_t *)AA, radius, add_diag, kernel);
+    /* AA = kernel(sqrt(C)) is not computed here: that step was never enabled
+     * (its JDF, sqrt_kernel.jdf, was removed unused) */
     //parsec_print_cm_sym(parsec, (parsec_tiled_matrix_t *)AA,  nodes, P, Q);
 
     /* Clean up temporary matrices to free memory */
@@ -1522,7 +1513,7 @@ void hicma_kernal_matrix(parsec_context_t *parsec,
             dphenoB[i]=(double)sphenoB[i];
         
         /* Convert from LAPACK format to tiled format for PaRSEC */
-        hicma_parsec_Lapack_to_Tile( parsec, (parsec_tiled_matrix_t *)B, dphenoB, P, nodes/P);
+        if( 0 != hicma_parsec_Lapack_to_Tile( parsec, (parsec_tiled_matrix_t *)B, dphenoB, P, nodes/P) ) exit(1);  /* message printed by the conversion */
         
         /* Clean up allocated memory */
         parsec_data_free(dphenoB);
@@ -1541,7 +1532,7 @@ void hicma_kernal_matrix(parsec_context_t *parsec,
             read_file(params->pheno_file, params->RHS, params->N, phenoB);
         
             /* Convert from LAPACK format to tiled format for PaRSEC */
-            hicma_parsec_Lapack_to_Tile( parsec, (parsec_tiled_matrix_t *)B, phenoB, params->P, params->nodes/params->P);
+            if( 0 != hicma_parsec_Lapack_to_Tile( parsec, (parsec_tiled_matrix_t *)B, phenoB, params->P, params->nodes/params->P) ) exit(1);  /* message printed by the conversion */
             
             /* Clean up allocated memory */
             parsec_data_free(phenoB);

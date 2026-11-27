@@ -151,6 +151,14 @@
       "configurePreset": "default",
       "output": {
         "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "label": "hicma"
+        },
+        "exclude": {
+          "label": "gpu"
+        }
       }
     },
     {
@@ -158,6 +166,14 @@
       "configurePreset": "release",
       "output": {
         "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "label": "hicma"
+        },
+        "exclude": {
+          "label": "gpu"
+        }
       }
     },
     {
@@ -165,7 +181,15 @@
       "configurePreset": "debug",
       "output": {
         "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "label": "hicma"
+        },
+        "exclude": {
+          "label": "gpu"
+        }
       }
     }
   ]
-} 
+}

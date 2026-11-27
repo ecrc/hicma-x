@@ -69,6 +69,14 @@ hicma_parsec_trmm_New( dplasma_enum_t side,  dplasma_enum_t uplo,
         return NULL;
     }
 
+    /* The TRMM's FP16 GEMMs have FP16 operands; C is FP32 with
+     * --accumulation_fp32 and FP16 otherwise, computed in FP16 except with
+     * --tensor_gemm 0x80 */
+    if (HICMA_FP16_GEMM(params) & (MASK_BF16_A16_B16_C32_OP32 | MASK_BF16_A16_B16_C16_OP16)) {
+        dplasma_error("hicma_parsec_trmm_New", "--tensor_gemm BF16 variants (0x20, 0x40) are not supported by the TRMM");
+        return NULL;
+    }
+
     /* The kernels, arenas and memory pools use NB-by-NB tiles, and the
      * decision arrays NT tile rows and at most KT tile columns */
     if (A->mb != A->nb || B->mb != A->mb || B->nb != A->mb) {
@@ -94,10 +102,6 @@ hicma_parsec_trmm_New( dplasma_enum_t side,  dplasma_enum_t uplo,
     /* Find and initialize available GPU devices */
     hicma_parsec_find_cuda_devices(&dev_index, &nb);
 
-#if !GPU_BUFFER_ONCE
-    /* Allocate GPU workspace buffers if not already allocated */
-    gpu_temporay_buffer_init(data, params, A->mb, A->nb, 0, 0);
-#endif
 #endif
 
     parsec_trmm_mp_LLN_taskpool_t *parsec_trmm = parsec_trmm_mp_LLN_new(
@@ -204,10 +208,6 @@ hicma_parsec_trmm_Destruct( parsec_taskpool_t *tp )
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
     /* Clean up GPU resources if devices were used */
     if( otrmm->_g_nb_cuda_devices > 0 ) {
-#if !GPU_BUFFER_ONCE
-        /* Free GPU workspace memory if not managed globally */
-        workspace_memory_free( otrmm->_g_ws_gpu );
-#endif
 
         /* Free GPU device index array */
         if( NULL != otrmm->_g_cuda_device_index )
@@ -219,9 +219,9 @@ hicma_parsec_trmm_Destruct( parsec_taskpool_t *tp )
     parsec_del2arena( &otrmm->arenas_datatypes[PARSEC_trmm_mp_LLN_FULL_SP_ADT_IDX] );
     parsec_del2arena( &otrmm->arenas_datatypes[PARSEC_trmm_mp_LLN_FULL_HP_ADT_IDX] );
 
-    parsec_private_memory_fini( otrmm->_g_p_work_full_dp );
-    parsec_private_memory_fini( otrmm->_g_p_work_full_sp );
-    parsec_private_memory_fini( otrmm->_g_p_work_full_hp );
+    hicma_parsec_memory_pool_fini( otrmm->_g_p_work_full_dp );
+    hicma_parsec_memory_pool_fini( otrmm->_g_p_work_full_sp );
+    hicma_parsec_memory_pool_fini( otrmm->_g_p_work_full_hp );
     free( otrmm->_g_p_work_full_dp );
     free( otrmm->_g_p_work_full_sp );
     free( otrmm->_g_p_work_full_hp );

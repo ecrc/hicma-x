@@ -14,6 +14,7 @@ set(SRC
     core/hicma_parsec_core_trmm.c
     core/hicma_parsec_gpu.c
     kernels/hicma_kernel_time.c
+    kernels/potrf_common.c
     
     # Wrapper files
     kernels/potrf_L_dense_tlr_dp_wrapper.c
@@ -39,7 +40,6 @@ set(SRC
     core/hicma_parsec_distribution.c
     core/hicma_parsec_decision.c
     core/hicma_parsec_flat_file.c
-    core/hicma_parsec_stochastic_rounding.c
     core/hicma_parsec_datatype_convert.c
     core/hicma_parsec_io.c
     
@@ -70,7 +70,6 @@ set(JDF
     kernels/band_free_memory.jdf
     kernels/band_regenerate.jdf
     kernels/band_size_dense_auto_tuning.jdf
-    kernels/diagonal_correction_calculation.jdf
     
     # POTRF JDF files
     kernels/potrf_L_dense_tlr_dp.jdf
@@ -87,11 +86,8 @@ set(JDF
     
     # GEMM and related JDF files
     kernels/isyrk_LT.jdf
-    #kernels/misyrk_LT.jdf
-    kernels/gemm_TN_summa.jdf
     kernels/gemmex_TN_summa.jdf
     kernels/gemm_TN.jdf
-    #kernels/gemm_TN_batched.jdf
     kernels/gemmex_TN.jdf
     kernels/reorder_gemm.jdf
     
@@ -99,7 +95,6 @@ set(JDF
     kernels/rank_gather.jdf
     kernels/rank_check.jdf
     kernels/rank_print.jdf
-    kernels/matrix_ssum.jdf
     kernels/matrix_uncompress.jdf
     kernels/matrix_compress.jdf
     kernels/decision_make_comp.jdf
@@ -115,35 +110,24 @@ set(JDF
     kernels/memory_allocation_dense_static.jdf
     kernels/memory_allocation_dense_decision.jdf
     kernels/memory_free_dense_decision.jdf
-    kernels/matrix_dsum.jdf
     kernels/matrix_check_norm_diff.jdf
     kernels/matrix_det.jdf
     
     # LAPACK to Tile conversion JDF files
-    kernels/Lapack_to_Tile.jdf
-    kernels/Tile_to_Lapack.jdf
-    kernels/Tile_to_Lapack_single.jdf
-    kernels/Lapack_to_Tile_Single.jdf
-    kernels/Lapack_to_Tile_sym.jdf
-    kernels/Tile_to_Lapack_sym.jdf
-    kernels/Tile_to_Lapack_sym_single.jdf
-    kernels/Tile_to_Lapack_int.jdf
-    kernels/Tile_to_Lapack_int8.jdf
+    kernels/lapack_tile_convert.jdf
+    kernels/matrix_sum.jdf
     
     # Other utility JDF files
     kernels/replicate_to_rows.jdf
-    kernels/sqrt_kernel.jdf
     kernels/genotype_generator.jdf
     kernels/dist_allocate.jdf
     kernels/dist_allocate_sym.jdf
     kernels/convert_d2i.jdf
     kernels/convert_i2d.jdf
     kernels/convert_s2i.jdf
-    kernels/convert_i2s.jdf
     kernels/sqr_sum_vec_cyclic.jdf
     kernels/copy_vector_bcdd.jdf
     kernels/matrix_add.jdf
-    kernels/cast_double_diag.jdf
     kernels/memory_free_tile.jdf
     kernels/dist_read.jdf
     kernels/matrix_sum_vec.jdf
@@ -159,7 +143,6 @@ set(JDF
     climate_emulator/climate_emulator_diff_double.jdf
     climate_emulator/climate_emulator_geqsht_inverse_pre_computed_version.jdf
     climate_emulator/climate_emulator_mse.jdf
-    climate_emulator/climate_emulator_print_double.jdf
     climate_emulator/climate_emulator_geqsht_forward_reshape.jdf
     climate_emulator/climate_emulator_matrix_norm_get.jdf
     
@@ -168,7 +151,6 @@ set(JDF
     kernels/dist_allocate_hamming.jdf
     kernels/hamming_binary_generator.jdf
     kernels/matrix_unique_element.jdf
-    kernels/check_read_data.jdf
 )
 
 # CUDA support
@@ -176,14 +158,12 @@ if(HICMA_PARSEC_HAVE_CUDA)
     if(ENABLE_CUTLASS)
         list(APPEND SRC 
             core/hicma_parsec.cu 
-            core/hicma_parsec_stochastic_rounding.cu
             core/hamming_distance.cu
         )
         message(STATUS "Adding CUDA files with CUTLASS support")
     else(ENABLE_CUTLASS)
         list(APPEND SRC
             core/hicma_parsec.cu
-            core/hicma_parsec_stochastic_rounding.cu
         )
         message(STATUS "Adding CUDA files")
     endif(ENABLE_CUTLASS)
@@ -193,11 +173,8 @@ endif(HICMA_PARSEC_HAVE_CUDA)
 if(HICMA_PARSEC_HAVE_HIP)
     set_source_files_properties(core/hicma_parsec_hip.cu PROPERTIES LANGUAGE HIP)
     set_source_files_properties(core/hicma_parsec_hip.cu PROPERTIES COMPILE_FLAGS "-x hip")
-    set_source_files_properties(core/hicma_parsec_stochastic_rounding_hip.cu PROPERTIES LANGUAGE HIP)
-    set_source_files_properties(core/hicma_parsec_stochastic_rounding_hip.cu PROPERTIES COMPILE_FLAGS "-x hip")
     list(APPEND SRC
         core/hicma_parsec_hip.cu
-        core/hicma_parsec_stochastic_rounding_hip.cu
     )
     message(STATUS "Adding HIP files")
 endif(HICMA_PARSEC_HAVE_HIP)
@@ -235,14 +212,45 @@ if(HICMA_PARSEC_HAVE_HIP)
     message(STATUS "HIP separable compilation enabled")
 endif(HICMA_PARSEC_HAVE_HIP)
 
-# Link libraries
-target_link_libraries(hicma_parsec ${LD_LIB_BASIC} starsh)
-
-# Add MPI C++ libraries if available
-if(MPI_CXX_FOUND)
-    target_link_libraries(hicma_parsec ${MPI_CXX_LIBRARIES})
-    message(STATUS "Added MPI C++ libraries to hicma_parsec: ${MPI_CXX_LIBRARIES}")
+# Link libraries. The runtimes and the matrix libraries that hicma_parsec is
+# built on are part of its interface; BLAS/LAPACKE, MPI and the GPU libraries
+# are implementation details of a shared library (NEEDED entries) but must be
+# propagated when the library is static.
+if(BUILD_SHARED_LIBS)
+    set(_hicma_dep_scope PRIVATE)
+else()
+    set(_hicma_dep_scope PUBLIC)
 endif()
+set(_hicma_gpu_libs)
+if(HICMA_PARSEC_HAVE_CUDA)
+    set(_hicma_gpu_libs ${LD_LIB_CUDA_TARGETS})
+elseif(HICMA_PARSEC_HAVE_HIP)
+    set(_hicma_gpu_libs ${LD_LIB_HIP})
+endif()
+target_link_libraries(hicma_parsec
+    PUBLIC parsec dplasma hcore starsh
+    ${_hicma_dep_scope} omnicast LAPACKE::LAPACKE ${_hicma_gpu_libs} ${MPI_C_LIBRARIES} ${MPI_CXX_LIBRARIES} stdc++)
+
+# Calls inside the library bind to its own functions. The library exports
+# generic names (parse_arguments, and from STARS-H diff, cube, Gaussian, ...);
+# without this, an application function of the same name replaces the one
+# HiCMA-X calls internally (hicma_parsec_init then ran the application's
+# parse_arguments and crashed). Functions only: data symbols such as
+# time_elapsed are shared with the application through the timing macros.
+if(BUILD_SHARED_LIBS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    include(CheckLinkerFlag)
+    check_linker_flag(C "LINKER:-Bsymbolic-functions" HICMA_HAVE_BSYMBOLIC_FUNCTIONS)
+    if(HICMA_HAVE_BSYMBOLIC_FUNCTIONS)
+        target_link_options(hicma_parsec PRIVATE "LINKER:-Bsymbolic-functions")
+    endif()
+endif()
+
+# Executables that link the library also link BLAS/LAPACKE directly (through
+# hcore's interface) and need its directory in their own run-time path; see
+# HICMA_BLAS_RUNTIME_DIRS in the top-level CMakeLists.txt
+foreach(_d IN LISTS HICMA_BLAS_RUNTIME_DIRS)
+    target_link_options(hicma_parsec INTERFACE "LINKER:-rpath,${_d}")
+endforeach()
 
 # Add dependencies for HIP device headers
 if(HICMA_PARSEC_HAVE_HIP)
@@ -252,20 +260,42 @@ endif(HICMA_PARSEC_HAVE_HIP)
 # Set include directories for the target
 target_include_directories(hicma_parsec PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/omnicast/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/hicma_parsec_compat>
 )
 
-# Add compile definitions
-target_compile_definitions(hicma_parsec PRIVATE
+# Add compile definitions. HICMA_PARSEC_BUILDING lets the public headers
+# include the DPLASMA/PaRSEC internals that are not installed; GENOMICS=1
+# selects the genomics (kernel ridge regression) mode of the library;
+# HICMA_PARSEC_BLAS_MKL tells that the BLAS is MKL (top-level CMakeLists.txt).
+target_compile_definitions(hicma_parsec
+    PRIVATE
+    HICMA_PARSEC_BUILDING
     $<$<BOOL:${HICMA_PARSEC_HAVE_CUDA}>:HICMA_PARSEC_HAVE_CUDA>
     $<$<BOOL:${HICMA_PARSEC_HAVE_HIP}>:HICMA_PARSEC_HAVE_HIP>
     $<$<BOOL:${ON_FUGAKU}>:ON_FUGAKU>
     $<$<BOOL:${ENABLE_SANITIZER}>:ENABLE_SANITIZER>
+    $<$<BOOL:${HICMA_BLAS_IS_MKL}>:HICMA_PARSEC_BLAS_MKL>
+    PUBLIC
+    $<$<BOOL:${HICMA_PARSEC_GENOMICS}>:GENOMICS=1>
 )
 
-# Print build information
-message(STATUS "=== HICMA PARSEC Source Configuration ===")
-message(STATUS "Source files: ${SRC}")
-message(STATUS "JDF files: ${JDF}")
-message(STATUS "Library type: $<IF:$<BOOL:${BUILD_SHARED_LIBS}>,shared,static>")
-message(STATUS "=========================================")
+# Version and source revision printed with the run parameters and in the R-LO
+# line; the revision is the one at configure time. Set on that one file only,
+# so a new revision recompiles nothing else.
+set(HICMA_PARSEC_REVISION "N/A")
+find_package(Git QUIET)
+if(GIT_FOUND AND EXISTS "${PROJECT_SOURCE_DIR}/.git")
+    execute_process(COMMAND ${GIT_EXECUTABLE} describe --tags --always --dirty
+                    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+                    OUTPUT_VARIABLE _hicma_rev OUTPUT_STRIP_TRAILING_WHITESPACE
+                    RESULT_VARIABLE _hicma_rev_rc ERROR_QUIET)
+    if(_hicma_rev_rc EQUAL 0 AND _hicma_rev)
+        set(HICMA_PARSEC_REVISION "${_hicma_rev}")
+    endif()
+endif()
+set_property(SOURCE core/hicma_parsec_internal.c APPEND PROPERTY COMPILE_DEFINITIONS
+    "HICMA_PARSEC_VERSION_STRING=\"${HICMA_PARSEC_VERSION}\""
+    "HICMA_PARSEC_REVISION=\"${HICMA_PARSEC_REVISION}\"")
+

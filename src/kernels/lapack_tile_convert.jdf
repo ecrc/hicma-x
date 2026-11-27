@@ -1,0 +1,225 @@
+extern "C" %{
+/**
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2018-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ **/
+
+/**
+ * @file lapack_tile_convert.jdf
+ * @brief Copies between a tiled matrix and the local column-major ("LAPACK")
+ *        buffer of the calling process, in either direction, for any element type.
+ *
+ * Replaces Lapack_to_Tile{,_Single}.jdf and Tile_to_Lapack{,_single,_sym,
+ * _sym_single,_int,_int8}.jdf, which differed only in the element type, the
+ * direction, and whether the tiles above the diagonal were skipped.
+ *
+ * Buffer layout: the tiles this process owns, tile (m, n) at local tile
+ * position (m / P, n / Q) (global tile indices), column-major with leading
+ * dimension descA->llm: the local row count of a 2D block-cyclic descriptor,
+ * the global row count of a symmetric one. On a 1 x 1 grid this is the whole
+ * matrix in LAPACK layout. Tiles are read or written as elements of the
+ * buffer's type.
+ */
+
+#include "hicma_parsec.h"
+
+/* Byte offset of tile (m, n) in the local buffer */
+static inline size_t lapack_tile_offset(const parsec_tiled_matrix_t *descA,
+        int m, int n, int P, int Q, size_t elt_size)
+{
+    size_t mm = (size_t)(m + descA->i / descA->mb) / (size_t)P;
+    size_t nn = (size_t)(n + descA->j / descA->nb) / (size_t)Q;
+    return ((size_t)descA->llm * (size_t)descA->nb * nn + (size_t)descA->mb * mm) * elt_size;
+}
+
+/* Copy a rows x cols column-major block of elt_size-byte elements */
+static inline void lapack_tile_copy(int rows, int cols, size_t elt_size,
+        const char *src, int lds, char *dst, int ldd)
+{
+    for(int j = 0; j < cols; j++)
+        memcpy(dst + (size_t)j * ldd * elt_size, src + (size_t)j * lds * elt_size,
+               (size_t)rows * elt_size);
+}
+%}
+
+descA       [ type = "parsec_tiled_matrix_t *" ]
+lapack      [ type = "char *" ]    /* local column-major buffer of this process */
+P           [ type = "int" ]       /* process grid rows of descA */
+Q           [ type = "int" ]       /* process grid columns of descA */
+elt_size    [ type = "size_t" ]    /* bytes per element */
+lower       [ type = "int" ]       /* 1: only the tiles with n <= m */
+into_tiles  [ type = "int" ]       /* 1: buffer -> tiles, 0: tiles -> buffer */
+
+/* Tiles -> buffer: the tiles are only read */
+tile_to_lapack(m, n)
+
+m = 0 .. %{ return into_tiles ? -1 : descA->mt-1; %}
+n = 0 .. %{ return (lower && m < descA->nt-1) ? m : descA->nt-1; %}
+
+: descA(m, n)
+
+READ A <- descA(m, n)
+
+BODY
+{
+    int tempmm = (m == descA->mt-1) ? descA->m - m * descA->mb : descA->mb;
+    int tempnn = (n == descA->nt-1) ? descA->n - n * descA->nb : descA->nb;
+    lapack_tile_copy(tempmm, tempnn, elt_size,
+                     (const char *)A, BLKLDD(descA, m),
+                     lapack + lapack_tile_offset(descA, m, n, P, Q, elt_size), descA->llm);
+}
+END
+
+/* Buffer -> tiles */
+lapack_to_tile(m, n)
+
+m = 0 .. %{ return into_tiles ? descA->mt-1 : -1; %}
+n = 0 .. %{ return (lower && m < descA->nt-1) ? m : descA->nt-1; %}
+
+: descA(m, n)
+
+RW A <- descA(m, n)
+     -> descA(m, n)
+
+BODY
+{
+    int tempmm = (m == descA->mt-1) ? descA->m - m * descA->mb : descA->mb;
+    int tempnn = (n == descA->nt-1) ? descA->n - n * descA->nb : descA->nb;
+    lapack_tile_copy(tempmm, tempnn, elt_size,
+                     lapack + lapack_tile_offset(descA, m, n, P, Q, elt_size), descA->llm,
+                     (char *)A, BLKLDD(descA, m));
+}
+END
+
+extern "C" %{
+
+/*
+ * The buffer layout holds only if every tile this process owns has its own
+ * position inside the llm x lln buffer, which is the case for a 2D
+ * block-cyclic (or symmetric block-cyclic) distribution over the given
+ * P x Q grid without k-cyclic blocking. A different grid (P and Q swapped,
+ * a band distribution) would make two tiles share a position or run past the
+ * buffer, so it is refused. Returns 0 when the layout holds on this rank.
+ */
+static int lapack_tile_layout_check(const parsec_tiled_matrix_t *dcA, int P, int Q, int lower)
+{
+    int rmt = (dcA->mt + dcA->i / dcA->mb + P - 1) / P + 1;
+    int rnt = (dcA->nt + dcA->j / dcA->nb + Q - 1) / Q + 1;
+    unsigned char *seen = calloc((size_t)rmt * (size_t)rnt, 1);
+    int bad = (NULL == seen);
+    for(int m = 0; !bad && m < dcA->mt; m++) {
+        int nmax = (lower && m < dcA->nt-1) ? m : dcA->nt-1;
+        for(int n = 0; !bad && n <= nmax; n++) {
+            parsec_data_collection_t *dc = (parsec_data_collection_t *)&dcA->super;
+            if( dc->rank_of(dc, m, n) != (uint32_t)dc->myrank ) continue;
+            int tempmm = (m == dcA->mt-1) ? dcA->m - m * dcA->mb : dcA->mb;
+            int tempnn = (n == dcA->nt-1) ? dcA->n - n * dcA->nb : dcA->nb;
+            size_t mm = (size_t)(m + dcA->i / dcA->mb) / (size_t)P;
+            size_t nn = (size_t)(n + dcA->j / dcA->nb) / (size_t)Q;
+            if( mm * dcA->mb + tempmm > (size_t)dcA->llm
+             || nn * dcA->nb + tempnn > (size_t)dcA->lln
+             || seen[mm * rnt + nn] ) {
+                bad = 1;
+            } else {
+                seen[mm * rnt + nn] = 1;
+            }
+        }
+    }
+    free(seen);
+    return bad;
+}
+
+/**
+ * @brief Copy between a tiled matrix and the local column-major buffer
+ *
+ * Collective over the processes of dcA: every process calls it with its own
+ * buffer. See the file comment for the buffer layout.
+ *
+ * @param[in]    parsec      PaRSEC context
+ * @param[inout] dcA         tiled matrix, 2D block-cyclic or symmetric block-cyclic over P x Q
+ * @param[inout] lapack      local buffer of at least llm x lln elements of @p type
+ * @param[in]    P, Q        process grid of dcA
+ * @param[in]    type        element type of the tiles and the buffer
+ *                           (parsec_datatype_double_t, _float_t, _int_t, _int8_t, ...)
+ * @param[in]    lower       1: only the tiles on and below the diagonal
+ * @param[in]    into_tiles  1: buffer -> tiles, 0: tiles -> buffer
+ * @return 0 on success, -1 (on every process) when the arguments or the
+ *         distribution do not fit the buffer layout
+ */
+int hicma_parsec_lapack_tile_convert(parsec_context_t *parsec,
+        parsec_tiled_matrix_t *dcA, void *lapack, int P, int Q,
+        parsec_datatype_t type, int lower, int into_tiles)
+{
+    int elt_size = 0;
+    int bad = ( NULL == parsec || NULL == dcA || NULL == lapack || P < 1 || Q < 1
+             || PARSEC_SUCCESS != parsec_type_size(type, &elt_size) || elt_size <= 0 );
+    if( !bad )
+        bad = lapack_tile_layout_check(dcA, P, Q, lower);
+#if defined(PARSEC_HAVE_MPI)
+    {
+        int mpi_init = 0;
+        MPI_Initialized(&mpi_init);
+        if( mpi_init )
+            MPI_Allreduce(MPI_IN_PLACE, &bad, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+    }
+#endif
+    if( bad ) {
+        if( NULL == dcA || 0 == dcA->super.myrank )
+            fprintf(stderr, "hicma_parsec_lapack_tile_convert: the matrix is not 2D block-cyclic "
+                    "over the given %d x %d grid (or invalid arguments); nothing copied\n", P, Q);
+        return -1;
+    }
+
+    parsec_lapack_tile_convert_taskpool_t *tp =
+        parsec_lapack_tile_convert_new(dcA, (char *)lapack, P, Q, (size_t)elt_size, lower, into_tiles);
+    if( NULL == tp )
+        return -1;
+    parsec_add2arena(&tp->arenas_datatypes[PARSEC_lapack_tile_convert_DEFAULT_ADT_IDX],
+                     type, PARSEC_MATRIX_FULL, 1, dcA->mb, dcA->nb, dcA->mb,
+                     PARSEC_ARENA_ALIGNMENT_SSE, -1);
+
+    parsec_context_add_taskpool(parsec, (parsec_taskpool_t *)tp);
+    parsec_context_start(parsec);
+    parsec_context_wait(parsec);
+
+    parsec_del2arena(&tp->arenas_datatypes[PARSEC_lapack_tile_convert_DEFAULT_ADT_IDX]);
+    parsec_taskpool_free((parsec_taskpool_t *)tp);
+    return 0;
+}
+
+/* The named variants of earlier releases */
+
+int hicma_parsec_Tile_to_Lapack(parsec_context_t *parsec, parsec_tiled_matrix_t *dcA, double *Zobs, int P, int Q)
+{ return hicma_parsec_lapack_tile_convert(parsec, dcA, Zobs, P, Q, parsec_datatype_double_t, 0, 0); }
+
+int hicma_parsec_Tile_to_Lapack_single(parsec_context_t *parsec, parsec_tiled_matrix_t *dcA, float *Zobs, int P, int Q)
+{ return hicma_parsec_lapack_tile_convert(parsec, dcA, Zobs, P, Q, parsec_datatype_float_t, 0, 0); }
+
+int hicma_parsec_Tile_to_Lapack_sym(parsec_context_t *parsec, parsec_tiled_matrix_t *dcA, double *Zobs, int P, int Q)
+{ return hicma_parsec_lapack_tile_convert(parsec, dcA, Zobs, P, Q, parsec_datatype_double_t, 1, 0); }
+
+int hicma_parsec_Tile_to_Lapack_sym_single(parsec_context_t *parsec, parsec_tiled_matrix_t *dcA, float *Zobs, int P, int Q)
+{ return hicma_parsec_lapack_tile_convert(parsec, dcA, Zobs, P, Q, parsec_datatype_float_t, 1, 0); }
+
+/* Lower triangle only, as in earlier releases (the Hamming distance matrix is symmetric) */
+int hicma_parsec_Tile_to_Lapack_int(parsec_context_t *parsec, parsec_tiled_matrix_t *dcA, int *Zobs, int P, int Q)
+{ return hicma_parsec_lapack_tile_convert(parsec, dcA, Zobs, P, Q, parsec_datatype_int_t, 1, 0); }
+
+int hicma_parsec_Tile_to_Lapack_int8(parsec_context_t *parsec, parsec_tiled_matrix_t *dcA, int8_t *Zobs, int P, int Q)
+{ return hicma_parsec_lapack_tile_convert(parsec, dcA, Zobs, P, Q, parsec_datatype_int8_t, 0, 0); }
+
+int hicma_parsec_Lapack_to_Tile(parsec_context_t *parsec, parsec_tiled_matrix_t *dcA, double *Zobs, int P, int Q)
+{ return hicma_parsec_lapack_tile_convert(parsec, dcA, Zobs, P, Q, parsec_datatype_double_t, 0, 1); }
+
+int hicma_parsec_Lapack_to_Tile_Single(parsec_context_t *parsec, parsec_tiled_matrix_t *dcA, float *Zobs, int P, int Q)
+{ return hicma_parsec_lapack_tile_convert(parsec, dcA, Zobs, P, Q, parsec_datatype_float_t, 0, 1); }
+
+/* Declared in 0.1.0 without a definition */
+int hicma_parsec_Lapack_to_Tile_sym(parsec_context_t *parsec, parsec_tiled_matrix_t *dcA, double *Zobs, int P, int Q)
+{ return hicma_parsec_lapack_tile_convert(parsec, dcA, Zobs, P, Q, parsec_datatype_double_t, 1, 1); }
+
+%}

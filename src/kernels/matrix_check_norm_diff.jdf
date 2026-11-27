@@ -153,8 +153,8 @@ void parsec_matrix_check_norm_diff_Destruct(parsec_taskpool_t *taskpool)
     // Remove arena for double precision datatype
     parsec_del2arena(&matrix_check_norm_diff_taskpool->arenas_datatypes[PARSEC_matrix_check_norm_diff_DEFAULT_ADT_IDX]);
     // Finalize memory pools
-    parsec_private_memory_fini( matrix_check_norm_diff_taskpool->_g_d_work );
-    parsec_private_memory_fini( matrix_check_norm_diff_taskpool->_g_s_work );
+    hicma_parsec_memory_pool_fini( matrix_check_norm_diff_taskpool->_g_d_work );
+    hicma_parsec_memory_pool_fini( matrix_check_norm_diff_taskpool->_g_s_work );
     parsec_taskpool_free(taskpool);
 }
 

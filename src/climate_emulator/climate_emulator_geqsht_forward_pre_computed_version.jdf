@@ -322,10 +322,10 @@ void climate_emulator_geqsht_forward_pre_computed_version_Destruct(parsec_taskpo
     parsec_del2arena(&climate_emulator_geqsht_forward_pre_computed_version_taskpool->arenas_datatypes[PARSEC_climate_emulator_geqsht_forward_pre_computed_version_flm_ADT_IDX]);
     
     // Clean up all memory pools
-    parsec_private_memory_fini( climate_emulator_geqsht_forward_pre_computed_version_taskpool->_g_p_Gmtheta_r);
-    parsec_private_memory_fini( climate_emulator_geqsht_forward_pre_computed_version_taskpool->_g_p_Fmnm);
-    parsec_private_memory_fini( climate_emulator_geqsht_forward_pre_computed_version_taskpool->_g_p_work_1);
-    parsec_private_memory_fini( climate_emulator_geqsht_forward_pre_computed_version_taskpool->_g_p_work_2);
+    hicma_parsec_memory_pool_fini( climate_emulator_geqsht_forward_pre_computed_version_taskpool->_g_p_Gmtheta_r);
+    hicma_parsec_memory_pool_fini( climate_emulator_geqsht_forward_pre_computed_version_taskpool->_g_p_Fmnm);
+    hicma_parsec_memory_pool_fini( climate_emulator_geqsht_forward_pre_computed_version_taskpool->_g_p_work_1);
+    hicma_parsec_memory_pool_fini( climate_emulator_geqsht_forward_pre_computed_version_taskpool->_g_p_work_2);
     
     // Free the taskpool itself
     parsec_taskpool_free(taskpool);

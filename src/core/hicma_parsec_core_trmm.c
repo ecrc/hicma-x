@@ -61,70 +61,18 @@ typedef struct {
 } hicma_parsec_trmm_tmp_t;
 
 /* Convert X (rows x cols, leading dimension ld, precision from) into Y
- * (precision to, same leading dimension); from != to. */
+ * (precision to, same leading dimension); from != to. Stochastic rounding
+ * applies to FP64 -> FP32 on the CPU, as before. */
 static void hicma_parsec_trmm_cpu_convert_into(const void *X, uint16_t from, uint16_t to,
         int rows, int cols, int ld, int stochastic_rounding, uint64_t seed, void *Y)
 {
-    if( DENSE_DP == from && DENSE_SP == to ) {
-        if( stochastic_rounding ) {
-            double2float_round_CPU( rows, cols, (const double *)X, ld, (float *)Y, ld, seed );
-        } else {
-            const double *D = (const double *)X;
-            float *F = (float *)Y;
-            for( int j = 0; j < cols; j++ )
-                for( int i = 0; i < rows; i++ )
-                    F[j*ld+i] = (float)D[j*ld+i];
-        }
-        return;
+    if( !((DENSE_DP == from || DENSE_SP == from || DENSE_HP == from) &&
+          (DENSE_DP == to || DENSE_SP == to || DENSE_HP == to)) || from == to ) {
+        hicma_parsec_trmm_bad_precision( "TRMM CPU", from, to );
     }
-
-    if( DENSE_SP == from && DENSE_DP == to ) {
-        const float *F = (const float *)X;
-        double *D = (double *)Y;
-        for( int j = 0; j < cols; j++ )
-            for( int i = 0; i < rows; i++ )
-                D[j*ld+i] = (double)F[j*ld+i];
-        return;
-    }
-
-#if HAVE_HP_CPU
-    /* The binary converters take contiguous data: convert ld x cols */
-    if( DENSE_HP == to ) {
-        if( DENSE_DP == from ) convert_d2h_binary_CPU( Y, (double *)X, ld, cols );
-        else                   convert_s2h_binary_CPU( Y, (float *)X, ld, cols );
-        return;
-    }
-    if( DENSE_HP == from && DENSE_SP == to ) {
-        convert_h2s_binary_CPU( Y, (__fp16 *)X, ld, cols );
-        return;
-    }
-    if( DENSE_HP == from && DENSE_DP == to ) {
-        convert_h2d_binary_CPU( Y, (__fp16 *)X, ld, cols );
-        return;
-    }
-#else
-    /* No FP16 type: convert its bits in software */
-    if( DENSE_SP == from && DENSE_HP == to ) {
-        const float *F = (const float *)X;
-        uint16_t *H = (uint16_t *)Y;
-        for( int j = 0; j < cols; j++ )
-            for( int i = 0; i < rows; i++ )
-                H[(size_t)j*ld+i] = hicma_parsec_float_to_half_bits( F[(size_t)j*ld+i] );
-        return;
-    }
-    if( DENSE_HP == from && (DENSE_SP == to || DENSE_DP == to) ) {
-        const uint16_t *H = (const uint16_t *)X;
-        for( int j = 0; j < cols; j++ )
-            for( int i = 0; i < rows; i++ ) {
-                float f = hicma_parsec_half_bits_to_float( H[(size_t)j*ld+i] );
-                if( DENSE_SP == to ) ((float *)Y)[(size_t)j*ld+i] = f;
-                else                 ((double *)Y)[(size_t)j*ld+i] = (double)f;
-            }
-        return;
-    }
-#endif
-
-    hicma_parsec_trmm_bad_precision( "TRMM CPU", from, to );
+    const int sr = stochastic_rounding && DENSE_DP == from && DENSE_SP == to;
+    HICMA_OMC( omc_convert_2d(hicma_parsec_omc_dtype(from), X, ld, hicma_parsec_omc_dtype(to), Y, ld,
+                              rows, cols, HICMA_OMC_SR(sr, seed)) );
 }
 
 /* Return X (rows x cols, leading dimension ld, precision from) in precision
@@ -307,62 +255,30 @@ void hicma_parsec_trmm_core_gemm_lln_cpu(
  * ====================================================================== */
 
 /* Return X (rows x cols, leading dimension ld, precision from) in precision
- * to, converting into buf on the stream if needed. */
+ * to, converting into buf on the stream if needed. Stochastic rounding
+ * applies to the narrowing conversions. */
 static void *hicma_parsec_trmm_gpu_convert(void *X, uint16_t from, uint16_t to,
         int rows, int cols, int ld, int stochastic_rounding, uint64_t seed,
         void *buf, cudaStream_t stream)
 {
     if( from == to ) return X;
-
-    if( DENSE_DP == to ) {
-        if( DENSE_SP == from ) {
-            float2double_GPU( rows, cols, (const float *)X, ld, (double *)buf, ld, stream );
-            return buf;
-        }
-        if( DENSE_HP == from ) {
-            half2double_GPU( rows, cols, X, ld, (double *)buf, ld, stream );
-            return buf;
-        }
-    } else if( DENSE_SP == to ) {
-        if( DENSE_DP == from ) {
-            if( stochastic_rounding )
-                double2float_round_GPU( rows, cols, (const double *)X, ld, (float *)buf, ld, seed, stream );
-            else
-                double2float_GPU( rows, cols, (const double *)X, ld, (float *)buf, ld, stream );
-            return buf;
-        }
-        if( DENSE_HP == from ) {
-            half2float_GPU( rows, cols, X, ld, (float *)buf, ld, stream );
-            return buf;
-        }
-    } else if( DENSE_HP == to ) {
-        if( DENSE_DP == from ) {
-            if( stochastic_rounding )
-                double2half_round_GPU( rows, cols, (const double *)X, ld, buf, ld, seed, stream );
-            else
-                double2half_GPU( rows, cols, (const double *)X, ld, buf, ld, stream );
-            return buf;
-        }
-        if( DENSE_SP == from ) {
-            if( stochastic_rounding )
-                float2half_round_GPU( rows, cols, (const float *)X, ld, buf, ld, seed, stream );
-            else
-                float2half_GPU( rows, cols, (const float *)X, ld, buf, ld, stream );
-            return buf;
-        }
+    if( !((DENSE_DP == from || DENSE_SP == from || DENSE_HP == from) &&
+          (DENSE_DP == to || DENSE_SP == to || DENSE_HP == to)) ) {
+        hicma_parsec_trmm_bad_precision( "TRMM GPU", from, to );
+        return NULL;
     }
-
-    hicma_parsec_trmm_bad_precision( "TRMM GPU", from, to );
-    return NULL;
+    const omc_dtype_t st = hicma_parsec_omc_dtype(from), dt = hicma_parsec_omc_dtype(to);
+    const int sr = stochastic_rounding && omc_dtype_size(dt) < omc_dtype_size(st);
+    HICMA_OMC( omc_gpu_convert_2d(st, X, ld, dt, buf, ld, rows, cols, HICMA_OMC_SR(sr, seed), stream) );
+    return buf;
 }
 
 /* Copy X (ld x cols, precision precision) into Y on the stream */
 static void hicma_parsec_trmm_gpu_copy(void *Y, void *X, uint16_t precision,
         int ld, int cols, cudaStream_t stream)
 {
-    if( DENSE_DP == precision )      memcpy_double_GPU( ld, cols, X, Y, stream );
-    else if( DENSE_SP == precision ) memcpy_float_GPU( ld, cols, X, Y, stream );
-    else                             memcpy_half_GPU( ld, cols, X, Y, stream );
+    const omc_dtype_t t = hicma_parsec_omc_dtype(precision);
+    HICMA_OMC( omc_gpu_convert(t, X, t, Y, (size_t)ld * cols, NULL, stream) );
 }
 
 void hicma_parsec_trmm_core_copy_b_gpu(
@@ -463,7 +379,7 @@ void hicma_parsec_trmm_core_trmm_lln_gpu(
         void *L = hicma_parsec_trmm_gpu_convert( A, storageA, DENSE_SP, mb, mb, lda, sr, seedA,
                 stream_found->gpu_buffer_A, stream );
         if( L == A ) {
-            memcpy_float_GPU( lda, mb, A, stream_found->gpu_buffer_A, stream );
+            HICMA_OMC( omc_gpu_convert(OMC_FP32, A, OMC_FP32, stream_found->gpu_buffer_A, (size_t)lda * mb, NULL, stream) );
             L = stream_found->gpu_buffer_A;
         }
         hicma_parsec_tril_mask_float_GPU( mb, (float *)L, lda, dplasmaUnit == diag, stream );
@@ -558,7 +474,7 @@ void hicma_parsec_trmm_core_gemm_lln_gpu(
                 &beta,  C,     CUDA_R_32F, ldc,
                 CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT );
         PARSEC_CUDA_CHECK_ERROR( "TRMM GEMM FP16, FP32 accumulation", status, {exit(1);} );
-    } else if( DENSE_HP == decisionC && (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C16_OP32) ) {
+    } else if( DENSE_HP == decisionC && MASK_TF16_A16_B16_C16_OP32 == HICMA_FP16_GEMM(params_tlr) ) {
         /* --tensor_gemm 0x80: FP16 operands and C, FP32 compute */
         float alpha = (float)lalpha, beta = (float)lbeta;
         status = cublasGemmEx( handle, dplasma_cublas_op(transA), dplasma_cublas_op(transB),
@@ -570,8 +486,8 @@ void hicma_parsec_trmm_core_gemm_lln_gpu(
         PARSEC_CUDA_CHECK_ERROR( "TRMM GEMM FP16, FP32 compute", status, {exit(1);} );
     } else if( DENSE_HP == decisionC ) {
         char alpha[16], beta[16];
-        float2half_host( (float)lalpha, &alpha[0] );
-        float2half_host( (float)lbeta, &beta[0] );
+        hicma_parsec_fp32_to_fp16_host( (float)lalpha, &alpha[0] );
+        hicma_parsec_fp32_to_fp16_host( (float)lbeta, &beta[0] );
         status = cublasGemmEx( handle, dplasma_cublas_op(transA), dplasma_cublas_op(transB),
                 mb, nb, kb,
                 &alpha[0], A_use, CUDA_R_16F, lda,

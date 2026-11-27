@@ -24,7 +24,7 @@ extern "C" %{
  * @param A Source matrix (diagonal elements)
  * @param C Destination matrix (tile to be filled)
  */
-void replicate_intile(int m, int n, int nb, int lda, double* A, double *C){
+static void replicate_intile(int m, int n, int nb, int lda, double* A, double *C){
     /* Copy diagonal element A[i,i] to all positions C[i,j] in the tile */
     for( int i =0; i<nb; i++){
         for(int j =0; j <nb;j++){    

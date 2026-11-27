@@ -1,5 +1,7 @@
-#include "hicma_parsec.h"
+/* DPLASMA's test header defines its own TIME_* macros; HiCMA's timing header
+ * (via hicma_parsec.h) replaces them, so it comes second */
 #include "dplasma/tests/common.h"
+#include "hicma_parsec.h"
 #include "dplasmaaux.h"
 
 #include <errno.h>
@@ -365,7 +367,7 @@ int main(int argc, char **argv)
     dcB.mat = NULL;
     parsec_data_collection_set_key((parsec_data_collection_t *)&dcB, "dcB_static");
 
-#if (defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)) && GPU_BUFFER_ONCE
+#if (defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT))
     gpu_temporay_buffer_init(&data, &params, MB, NB, 0, params.kind_of_cholesky);
 #endif
 
@@ -513,7 +515,7 @@ int main(int argc, char **argv)
             parsec, dplasmaLower,
             (parsec_tiled_matrix_t *)&dcA, &params, pinned_memory);
 
-#if (defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)) && GPU_BUFFER_ONCE
+#if (defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT))
     gpu_temporay_buffer_fini(&data, params.kind_of_cholesky);
 #endif
 

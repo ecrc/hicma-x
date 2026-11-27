@@ -45,13 +45,13 @@ BODY
     // Convert integer to double precision based on specified bit width
     if( intype == 8 ){
         // Convert from 8-bit integer (int8_t) to double
-        convert_8i2d_unary_CPU(A, tempmm, tempnn, ldam); 
+        HICMA_OMC( omc_convert_inplace_2d(OMC_INT8, OMC_FP64, A, ldam, tempmm, tempnn, NULL) ); 
     }else if( intype == 16 ){
         // Convert from 16-bit integer (int16_t) to double
-        convert_16i2d_unary_CPU(A, tempmm, tempnn, ldam);
+        HICMA_OMC( omc_convert_inplace_2d(OMC_INT16, OMC_FP64, A, ldam, tempmm, tempnn, NULL) );
     }else if( intype == 32 ){
         // Convert from 32-bit integer (int) to double
-        convert_i2d_unary_CPU(A, tempmm, tempnn, ldam);
+        HICMA_OMC( omc_convert_inplace_2d(OMC_INT32, OMC_FP64, A, ldam, tempmm, tempnn, NULL) );
    }
    
    // Update element count for double precision

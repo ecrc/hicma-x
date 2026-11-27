@@ -9,11 +9,6 @@ extern "C" %{
  **/
 #include "hicma_parsec.h"
 
-/* Define the different shapes this JDF is using for SUMMA matrix operations */
-#define A_SHAPE 0  // Matrix A shape identifier
-#define B_SHAPE 1  // Matrix B shape identifier  
-#define C_SHAPE 2  // Matrix C shape identifier
-
 
 #include "gemmex_TN_summa.h"
 
@@ -319,15 +314,6 @@ BODY [type=CUDA
     
     cublasStatus_t status;
     
-    // Alternative double-precision implementation (currently disabled)
-#if 0
-    status = cublasDgemmex( handle, CUBLAS_OP_T, CUBLAS_OP_N,
-                        tempmm, tempnn, tempkk,
-                        &lalpha, A, ldak,
-                        B, ldbk,
-                        &lbeta,  C, ldcm );
-    //HiCMA_CUDA_CHECK_ERROR( "cublasSgemmex7", status);
-#else
     // Perform mixed-precision SUMMA GEMM: A^T (int8) * B (int8) -> C (int32)
     // This implements the extended GEMM operation with different input/output precisions
     status = cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
@@ -336,7 +322,6 @@ BODY [type=CUDA
                                             B, CUDA_R_8I, ldbk,      // B as int8
                                    &ibeta, C, CUDA_R_32I, ldcm,      // C as int32
                                             CUDA_R_32I, CUBLAS_GEMM_DEFAULT);
-#endif
     
     // Check for CUDA errors and handle appropriately
     PARSEC_CUDA_CHECK_ERROR( "cublasSgemmex ", status, {return PARSEC_HOOK_RETURN_ERROR;} );

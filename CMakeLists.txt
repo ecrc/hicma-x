@@ -4,7 +4,7 @@
 # @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
 #                              All rights reserved.
 
-cmake_minimum_required (VERSION 3.16)
+cmake_minimum_required (VERSION 3.21)  # PaRSEC needs 3.21; so do enable_language(HIP) and the presets
 
 # Fix for CMake regeneration issues with Ninja
 # This prevents system includes from being treated as dependencies
@@ -14,11 +14,8 @@ if (CMAKE_GENERATOR MATCHES "Ninja")
         CACHE FILEPATH "Ninja dependency-file flags" FORCE)
 endif()
 
-project (HICMA_PARSEC LANGUAGES C CXX Fortran)
+project (HICMA_PARSEC VERSION 0.2.0 LANGUAGES C CXX Fortran)
 
-# Set CMake policies early
-cmake_policy(SET CMP0074 NEW)
-cmake_policy(SET CMP0094 NEW)
 set(CMAKE_NO_SYSTEM_FROM_IMPORTED True)
 
 # Include required CMake modules
@@ -29,29 +26,11 @@ include(CheckCSourceCompiles)
 include(CheckIncludeFiles)
 include(GNUInstallDirs)
 
-# Version management - read from VERSION.txt if it exists
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION.txt")
-    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION.txt" VERSION_CONTENT)
-    string(STRIP "${VERSION_CONTENT}" VERSION_CONTENT)
-    if(VERSION_CONTENT MATCHES "^([0-9]+)\\.([0-9]+)\\.([0-9]+)")
-        set(HICMA_PARSEC_VERSION_MAJOR ${CMAKE_MATCH_1})
-        set(HICMA_PARSEC_VERSION_MINOR ${CMAKE_MATCH_2})
-        set(HICMA_PARSEC_VERSION_PATCH ${CMAKE_MATCH_3})
-        set(HICMA_PARSEC_VERSION "${HICMA_PARSEC_VERSION_MAJOR}.${HICMA_PARSEC_VERSION_MINOR}.${HICMA_PARSEC_VERSION_PATCH}")
-    else()
-        message(WARNING "Invalid version format in VERSION.txt: ${VERSION_CONTENT}")
-        set(HICMA_PARSEC_VERSION_MAJOR 2)
-        set(HICMA_PARSEC_VERSION_MINOR 0)
-        set(HICMA_PARSEC_VERSION_PATCH 0)
-        set(HICMA_PARSEC_VERSION "${HICMA_PARSEC_VERSION_MAJOR}.${HICMA_PARSEC_VERSION_MINOR}.${HICMA_PARSEC_VERSION_PATCH}")
-    endif()
-else()
-    # Fallback version
-    set(HICMA_PARSEC_VERSION_MAJOR 2)
-    set(HICMA_PARSEC_VERSION_MINOR 0)
-    set(HICMA_PARSEC_VERSION_PATCH 0)
-    set(HICMA_PARSEC_VERSION "${HICMA_PARSEC_VERSION_MAJOR}.${HICMA_PARSEC_VERSION_MINOR}.${HICMA_PARSEC_VERSION_PATCH}")
-endif()
+# Version: the single source is project(VERSION) above
+set(HICMA_PARSEC_VERSION_MAJOR ${PROJECT_VERSION_MAJOR})
+set(HICMA_PARSEC_VERSION_MINOR ${PROJECT_VERSION_MINOR})
+set(HICMA_PARSEC_VERSION_PATCH ${PROJECT_VERSION_PATCH})
+set(HICMA_PARSEC_VERSION ${PROJECT_VERSION})
 
 # Set default build type if not specified
 if(NOT CMAKE_BUILD_TYPE)
@@ -67,6 +46,7 @@ option(ON_FUGAKU "Running on Fugaku Supercomputer (default OFF)" OFF)
 option(ENABLE_SANITIZER "Enable AddressSanitizer (default OFF)" OFF)
 option(ENABLE_CUTLASS "Enable CUTLASS (default OFF)" OFF)
 option(GIT_SUBMODULE "Check submodules during build (default ON)" ON)
+option(HICMA_PARSEC_GENOMICS "Build the genomics drivers (kernel ridge regression) and compile the library with GENOMICS=1; needs CUDA (default OFF)" OFF)
 
 # C standard configuration
 if(SUPPORT_C11)
@@ -91,10 +71,20 @@ if(HICMA_PARSEC_HAVE_CUDA)
     set(DPLASMA_GPU_WITH_HIP OFF)
     set(PARSEC_HAVE_HIP OFF)
     set(PARSEC_GPU_WITH_HIP OFF)
+    # CUDA architectures: CMAKE_CUDA_ARCHITECTURES or CUDAARCHS if given, else
+    # 70 80 90 90a (CUDA 13 dropped sm_70). Decided before enable_language(),
+    # which otherwise caches the compiler's default (sm_52 with CUDA 12).
+    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES AND NOT DEFINED ENV{CUDAARCHS})
+        set(_hicma_default_cuda_archs TRUE)
+    endif()
     enable_language(CUDA)
-    # Set CUDA architectures - can be overridden by user
-    if(NOT CMAKE_CUDA_ARCHITECTURES)
-        set(CMAKE_CUDA_ARCHITECTURES 70 80 90 90a)
+    if(_hicma_default_cuda_archs)
+        set(_archs 80 90 90a)
+        if(CMAKE_CUDA_COMPILER_VERSION VERSION_LESS 13)
+            list(PREPEND _archs 70)
+        endif()
+        set(CMAKE_CUDA_ARCHITECTURES ${_archs} CACHE STRING "CUDA architectures to build for" FORCE)
+        unset(_archs)
     endif()
     message(STATUS "CUDA support enabled")
 
@@ -124,6 +114,10 @@ if(HICMA_PARSEC_HAVE_HIP)
     message(STATUS "HIP support enabled")
 endif(HICMA_PARSEC_HAVE_HIP)
 
+if(HICMA_PARSEC_GENOMICS AND NOT HICMA_PARSEC_HAVE_CUDA)
+    message(FATAL_ERROR "HICMA_PARSEC_GENOMICS needs HICMA_PARSEC_HAVE_CUDA: the genomics GEMM kernels (isyrk_LT, gemmex_TN*) have CUDA bodies only and their wrappers use CUDA devices only")
+endif()
+
 # Fugaku-specific configuration
 if(ON_FUGAKU)
     add_definitions(-DON_FUGAKU)
@@ -151,12 +145,12 @@ LIST(APPEND CMAKE_MODULE_PATH
      "${CMAKE_CURRENT_SOURCE_DIR}")
 
 # Pull submodules if not exist
-if(NOT EXISTS "${PROJECT_SOURCE_DIR}/dplasma/CMakeLists.txt" OR NOT EXISTS "${PROJECT_SOURCE_DIR}/stars-h/CMakeLists.txt" OR NOT EXISTS "${PROJECT_SOURCE_DIR}/hcore/CMakeLists.txt" OR NOT EXISTS "${PROJECT_SOURCE_DIR}/stars-h/cmake_modules/ecrc/modules" OR NOT EXISTS "${PROJECT_SOURCE_DIR}/hcore/cmake_modules/ecrc/modules")
+if(NOT EXISTS "${PROJECT_SOURCE_DIR}/dplasma/CMakeLists.txt" OR NOT EXISTS "${PROJECT_SOURCE_DIR}/stars-h/CMakeLists.txt" OR NOT EXISTS "${PROJECT_SOURCE_DIR}/hcore/CMakeLists.txt" OR NOT EXISTS "${PROJECT_SOURCE_DIR}/stars-h/cmake_modules/ecrc/modules" OR NOT EXISTS "${PROJECT_SOURCE_DIR}/hcore/cmake_modules/ecrc/modules" OR NOT EXISTS "${PROJECT_SOURCE_DIR}/omnicast/CMakeLists.txt")
     find_package(Git QUIET)
     if(GIT_FOUND AND EXISTS "${PROJECT_SOURCE_DIR}/.git")
         if(GIT_SUBMODULE)
-            message(STATUS "Updating submodules (including nested submodules)...")
-            execute_process(COMMAND ${GIT_EXECUTABLE} submodule update --force --init --recursive --remote
+            message(STATUS "Checking out the submodules at their recorded commits...")
+            execute_process(COMMAND ${GIT_EXECUTABLE} submodule update --init --recursive
                 WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                 RESULT_VARIABLE GIT_SUBMOD_RESULT)
             if(NOT GIT_SUBMOD_RESULT EQUAL "0")
@@ -193,18 +187,126 @@ if(_restore_pe_env)
     set(ENV{PE_ENV} "${_saved_pe_env}")
 endif()
 
+# PaRSEC installs its Fortran module directory whenever a Fortran compiler
+# works, but only creates it when the compiler passes CMake's F90 check. Flang
+# from ROCm (PrgEnv-amd on Frontier) fails that check, so `cmake --install`
+# stopped at the missing directory. Create it so the install has nothing to copy.
+if(DEFINED PARSEC_BINARY_DIR AND NOT CMAKE_Fortran_COMPILER_SUPPORTS_F90)
+    file(MAKE_DIRECTORY ${PARSEC_BINARY_DIR}/parsec/include/fortran)
+endif()
+
+# STARS-H and HCORE find the BLAS with the ECRC FindBLAS, which names OpenBLAS
+# "Open" where CMake's FindBLAS (DPLASMA above, LAPACKE below) names it
+# "OpenBLAS": translate for them, then return to the user's value
+if(BLA_VENDOR STREQUAL "OpenBLAS")
+    set(BLA_VENDOR Open)
+endif()
 add_subdirectory(stars-h)
 add_subdirectory(hcore)
+if(BLA_VENDOR STREQUAL "Open")
+    unset(BLA_VENDOR)
+endif()
 
-# Include package configuration generation
-include(GenPkgConfig)
+# HCORE's and STARS-H's own CMake files record no link dependency on the
+# LAPACKE, CBLAS and BLAS routines they call. Without it libhcore.so has no
+# DT_NEEDED entry for them, and an executable linked with --as-needed (the
+# default on Ubuntu) fails with undefined LAPACKE_* references coming from
+# libhcore.so. LAPACKE::LAPACKE (LAPACKE + CBLAS + BLAS) is the global imported
+# target that DPLASMA's FindLAPACKE defines (add_subdirectory(dplasma) above);
+# the installed dplasma-config.cmake finds it again for package consumers.
+target_link_libraries(hcore PUBLIC LAPACKE::LAPACKE)
+target_link_libraries(starsh PUBLIC LAPACKE::LAPACKE)
+
+# STARS-H links GSL as "libgsl + libgslcblas" (GSL_LIBRARIES). libgslcblas is
+# GSL's reference CBLAS: any CBLAS satisfies GSL, and when libgslcblas precedes
+# the real BLAS on a link line it captures every cblas_* call of the process
+# (DPLASMA's cblas_dgemm bound to it: 40x slower CPU GEMMs, different
+# rounding). Drop it from the starsh target; LAPACKE::LAPACKE provides CBLAS.
+foreach(_prop LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
+    get_target_property(_starsh_libs starsh ${_prop})
+    if(_starsh_libs)
+        list(FILTER _starsh_libs EXCLUDE REGEX "gslcblas")
+        set_target_properties(starsh PROPERTIES ${_prop} "${_starsh_libs}")
+    endif()
+endforeach()
+unset(_starsh_libs)
+
+# Record the directories of the BLAS/LAPACKE libraries in the run-time path of
+# the built and installed binaries. CMake leaves out a directory it treats as
+# implicit, which includes every LIBRARY_PATH entry: with an MKL module that
+# sets LIBRARY_PATH but not LD_LIBRARY_PATH, every driver and test of a fresh
+# build failed to start ("libmkl_gf_lp64.so.2: cannot open shared object
+# file"). System directories are left out so LD_LIBRARY_PATH keeps working.
+#
+# HICMA_BLAS_IS_MKL: the stack is MKL (mkl_core or mkl_rt among the
+# libraries); src/core/hicma_parsec_core.c relies on how MKL blocks its GEMMs
+# (ACC_DP_PANEL).
+set(HICMA_BLAS_RUNTIME_DIRS)
+set(HICMA_BLAS_IS_MKL OFF)
+foreach(_t LAPACKE::LAPACKE LAPACKE::LAPACK LAPACKE::CBLAS LAPACKE::BLAS)
+    if(NOT TARGET ${_t})
+        continue()
+    endif()
+    set(_items)
+    get_target_property(_type ${_t} TYPE)
+    if(NOT _type STREQUAL "INTERFACE_LIBRARY")
+        get_target_property(_loc ${_t} IMPORTED_LOCATION)
+        list(APPEND _items ${_loc})
+    endif()
+    get_target_property(_ill ${_t} INTERFACE_LINK_LIBRARIES)
+    list(APPEND _items ${_ill})
+    if("${_items}" MATCHES "mkl_(core|rt)")
+        set(HICMA_BLAS_IS_MKL ON)
+    endif()
+    foreach(_lib IN LISTS _items)
+        if(_lib AND IS_ABSOLUTE "${_lib}" AND EXISTS "${_lib}")
+            get_filename_component(_dir "${_lib}" DIRECTORY)
+            if(NOT _dir MATCHES "^/(usr/|lib)")
+                list(APPEND HICMA_BLAS_RUNTIME_DIRS "${_dir}")
+            endif()
+        endif()
+    endforeach()
+endforeach()
+if(HICMA_BLAS_RUNTIME_DIRS)
+    list(REMOVE_DUPLICATES HICMA_BLAS_RUNTIME_DIRS)
+    message(STATUS "BLAS/LAPACKE run-time path: ${HICMA_BLAS_RUNTIME_DIRS}")
+    list(APPEND CMAKE_BUILD_RPATH ${HICMA_BLAS_RUNTIME_DIRS})
+    # targets created above, in the submodules, that load BLAS themselves
+    set_property(TARGET hcore dplasma APPEND PROPERTY BUILD_RPATH ${HICMA_BLAS_RUNTIME_DIRS})
+    set_property(TARGET hcore dplasma APPEND PROPERTY INSTALL_RPATH ${HICMA_BLAS_RUNTIME_DIRS})
+    # DPLASMA's BLAS thread-safety test, the CTest fixture of every HiCMA case
+    if(TARGET testing_blas_threadsafety)
+        set_property(TARGET testing_blas_threadsafety APPEND PROPERTY BUILD_RPATH ${HICMA_BLAS_RUNTIME_DIRS})
+    endif()
+endif()
+message(STATUS "BLAS is MKL: ${HICMA_BLAS_IS_MKL}")
+unset(_items)
+unset(_loc)
+unset(_ill)
+unset(_type)
+
+# OmniCast (submodule): every data-type conversion of HiCMA-X, on the CPU and
+# on the GPU backend chosen above. Built as a static, position-independent
+# library inside libhicma_parsec; conversions run inside PaRSEC tasks, so
+# OmniCast's own OpenMP threading is not needed.
+if(HICMA_PARSEC_HAVE_CUDA)
+    set(OMNICAST_GPU_BACKEND CUDA CACHE STRING "OmniCast GPU backend (set by HiCMA-X)" FORCE)
+elseif(HICMA_PARSEC_HAVE_HIP)
+    set(OMNICAST_GPU_BACKEND HIP CACHE STRING "OmniCast GPU backend (set by HiCMA-X)" FORCE)
+else()
+    set(OMNICAST_GPU_BACKEND NONE CACHE STRING "OmniCast GPU backend (set by HiCMA-X)" FORCE)
+endif()
+set(OMNICAST_OPENMP OFF CACHE BOOL "OmniCast host threads (not used by HiCMA-X)" FORCE)
+set(OMNICAST_BUILD_TESTS ${BUILD_TESTING} CACHE BOOL "Build the OmniCast tests")
+set(OMNICAST_BUILD_BENCHMARKS OFF CACHE BOOL "Build the OmniCast benchmarks")
+set(OMNICAST_TEST_LABELS hicma)
+add_subdirectory(omnicast)
+message(STATUS "OmniCast configured from submodule (GPU backend ${OMNICAST_GPU_BACKEND})")
 
 # Configure HCORE from submodule
 # HCORE is now built as part of the project via submodule
 # The hcore library target is available after add_subdirectory(hcore)
 
-# Add HCORE library to our dependency list
-list(APPEND HCORE_STARSH_LIB hcore)
 message(STATUS "HCORE configured from submodule")
 
 # Configure STARSH from submodule
@@ -224,14 +326,11 @@ if(GSL)
         add_definitions(-DGSL)
         include_directories(${GSL_INCLUDE_DIRS})
         message(STATUS "GSL support enabled")
-        list(APPEND HCORE_STARSH_LIB ${GSL_LIBRARIES})
     else()
         message(STATUS "GSL not found: building without GSL support")
     endif()
 endif()
 
-# Add STARSH library to our dependency list
-list(APPEND HCORE_STARSH_LIB starsh)
 message(STATUS "STARSH configured from submodule")
 
 # Sanitizer configuration.
@@ -362,56 +461,14 @@ if(HICMA_PARSEC_HAVE_HIP)
     message(STATUS "HIP dependencies configured")
 endif(HICMA_PARSEC_HAVE_HIP)
 
-# Configure BLAS/LAPACK dependencies
-# First, try to find BLAS if not already found
-if(NOT BLAS_FOUND)
-    find_package(BLAS REQUIRED)
-endif()
-
-# Set up BLAS libraries - handle both cases where BLAS_LIBRARIES is set or not
-if(BLAS_LIBRARIES)
-    set(LD_LIB_HICMA_PARSEC
-        ${BLAS_LIBRARIES}
-        m
-    )
-    # Add CBLAS if available
-    if(CBLAS_cblas_LIBRARY)
-        list(APPEND LD_LIB_HICMA_PARSEC ${CBLAS_cblas_LIBRARY})
-    endif()
-else()
-    # Fallback: if BLAS_LIBRARIES is not set, try to construct it from found libraries
-    if(BLAS_openblas_LIBRARY)
-        set(LD_LIB_HICMA_PARSEC
-            ${BLAS_openblas_LIBRARY}
-            m
-        )
-        message(STATUS "Using OpenBLAS library: ${BLAS_openblas_LIBRARY}")
-    else()
-        # Last resort: use generic openblas
-        set(LD_LIB_HICMA_PARSEC
-            openblas
-            m
-        )
-        message(WARNING "BLAS_LIBRARIES not found, using generic openblas")
-    endif()
-endif()
-
-# Add CUDA targets if available
-if(HICMA_PARSEC_HAVE_CUDA)
-    list(APPEND LD_LIB_HICMA_PARSEC ${LD_LIB_CUDA_TARGETS})
-endif(HICMA_PARSEC_HAVE_CUDA)
-
-# MKL-specific configuration
-string(FIND "${CBLAS_DIR_FOUND}" "mkl" _match_mkl)
-if(NOT "-1" STREQUAL "${_match_mkl}")
-    set(LD_LIB_HICMA_PARSEC
-        mkl_intel_lp64
-        mkl_sequential
-        mkl_core
-        ${LD_LIB_HICMA_PARSEC}
-    )
-    message(STATUS "MKL configuration detected")
-endif(NOT "-1" STREQUAL "${_match_mkl}")
+# BLAS, CBLAS, LAPACK and LAPACKE come from one place: the LAPACKE::LAPACKE
+# target that DPLASMA's find_package(LAPACKE) defines (add_subdirectory(dplasma)
+# above). hicma_parsec, hcore and starsh link it, so one BLAS stack is loaded
+# into the process, the one the DPLASMA reference routines of --check use.
+# A separate discovery used to add a second MKL interface and threading layer
+# (mkl_intel_lp64 + mkl_gnu_thread next to DPLASMA's mkl_gf_lp64 +
+# mkl_sequential). Select the stack with LAPACKE_ROOT / LAPACKE_DIR or
+# BLA_VENDOR, see dplasma/cmake_modules/FindLAPACKE.cmake.
 
 # Print configuration summary
 message(STATUS "=== HICMA PARSEC Configuration Summary ===")
@@ -435,12 +492,22 @@ message(STATUS "Dependencies:")
 message(STATUS "  - HCORE: Built from submodule")
 message(STATUS "  - DPLASMA: Built from submodule")
 message(STATUS "  - STARS-H: Built from submodule")
-message(STATUS "HCORE_STARSH_LIB: ${HCORE_STARSH_LIB}")
-message(STATUS "BLAS_LIBRARIES: ${BLAS_LIBRARIES}")
-message(STATUS "LD_LIB_HICMA_PARSEC: ${LD_LIB_HICMA_PARSEC}")
 message(STATUS "==========================================")
 
 # Add subdirectories
+# Installed binaries must find the libraries they were linked with without
+# LD_LIBRARY_PATH: the library's own directory ($ORIGIN, where PaRSEC, DPLASMA
+# and HCORE install as well), the prefix's lib dir for executables, and the
+# directories of the external libraries outside the system paths (MPI, BLAS,
+# GSL). With RUNPATH, the default of current toolchains, a library's
+# dependencies are searched with the library's own path, not the executable's,
+# so libhicma_parsec needs it itself (the installed consumer of CI failed with
+# "libdplasma.so.2: cannot open shared object file"). Set here, after the
+# submodules, so that it applies to hicma_parsec and the drivers only; PaRSEC
+# and HCORE set their own.
+set(CMAKE_INSTALL_RPATH "$ORIGIN;$ORIGIN/../${CMAKE_INSTALL_LIBDIR};${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR};${HICMA_BLAS_RUNTIME_DIRS}")
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH ON)
+
 add_subdirectory(src)
 
 # Testing configuration
@@ -455,6 +522,8 @@ endif()
 install(FILES
     src/core/hicma_parsec.h
     src/core/hicma_parsec_internal.h
+    src/core/hicma_parsec_timing.h
+    src/core/hicma_parsec_hip_cuda.h
     src/core/hicma_parsec_flat_file.h
     src/core/hicma_parsec_datatype_convert.h
     src/core/hicma_parsec_decision.h
@@ -468,6 +537,28 @@ install(FILES
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 
+# hcore.h includes <cblas.h> and <lapacke.h>; DPLASMA ships generic versions
+# of both (dplasma/src/include) that the in-tree build uses but does not
+# install. Install them in a private directory that is on the exported include
+# path, so that an installed hicma_parsec.h compiles without a system CBLAS
+# header (MKL, for one, has none).
+install(FILES
+    dplasma/src/include/cblas.h
+    dplasma/src/include/lapacke.h
+    dplasma/src/include/lapacke_mangling.h
+    ${PROJECT_BINARY_DIR}/dplasma/src/include/dplasma_f2c.h
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hicma_parsec_compat
+    OPTIONAL
+)
+
+# OmniCast: its header is included by hicma_parsec_datatype_convert.h; the
+# static library is part of the link interface of a static libhicma_parsec
+install(FILES omnicast/include/omnicast/omnicast.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/omnicast)
+install(TARGETS omnicast
+    EXPORT HICMAParsecTargets
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+
 install(TARGETS hicma_parsec
     EXPORT HICMAParsecTargets
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -475,18 +566,20 @@ install(TARGETS hicma_parsec
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
-# Generate and install CMake config files
+# CMake package: find_package(HICMAParsec) gives the HICMAParsec::hicma_parsec
+# target with its dependencies (PaRSEC, DPLASMA, MPI, and CUDA or HIP)
 include(CMakePackageConfigHelpers)
 write_basic_package_version_file(
     "${CMAKE_CURRENT_BINARY_DIR}/HICMAParsecConfigVersion.cmake"
     VERSION ${HICMA_PARSEC_VERSION}
-    COMPATIBILITY SameMajorVersion
+    COMPATIBILITY SameMinorVersion
 )
 
-configure_file(
+configure_package_config_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake_modules/HICMAParsecConfig.cmake.in"
     "${CMAKE_CURRENT_BINARY_DIR}/HICMAParsecConfig.cmake"
-    @ONLY
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/HICMAParsec
+    PATH_VARS CMAKE_INSTALL_INCLUDEDIR CMAKE_INSTALL_LIBDIR
 )
 
 install(FILES

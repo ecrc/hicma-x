@@ -56,7 +56,9 @@ BODY
 
         if( params_tlr->check || !params_tlr->adaptive_memory ) {
             // In-place conversion (unary operation) - note: this is actually s2d, not d2s
-            convert_s2d_unary_CPU(A, descA->mb, descA->mb);
+            HICMA_OMC( omc_convert_inplace(OMC_FP32, OMC_FP64, A, (size_t)(descA->mb) * (descA->mb), NULL) );
+            /* The buffer was FP64-sized all along; the tile holds FP64 again */
+            this_task->data._f_A.data_out->original->span = (size_t)descA->mb * descA->nb * sizeof(double);
         } else {
             // Allocate new memory and convert to double precision
             if( params_tlr->gpus > 0 ) {
@@ -75,7 +77,7 @@ BODY
             this_task->data._f_A.data_out->original->span = descA->mb * descA->nb * sizeof(double);
             
             // Convert from single to double precision using LAPACK
-            LAPACKE_slag2d( LAPACK_COL_MAJOR, descA->mb, descA->nb, A_save, descA->mb, this_task->data._f_A.data_out->device_private, descA->mb );
+            HICMA_OMC( omc_convert_2d(OMC_FP32, A_save, descA->mb, OMC_FP64, this_task->data._f_A.data_out->device_private, descA->mb, descA->mb, descA->nb, NULL) );
 
             // Free old single precision memory
             if( params_tlr->gpus > 0 ) {
@@ -103,7 +105,7 @@ BODY
             this_task->data._f_A.data_out->original->span = descA->mb * rank * 2 * sizeof(double);
             
             // Convert low-rank U*V format from single to double precision
-            LAPACKE_slag2d( LAPACK_COL_MAJOR, descA->mb, rank * 2, A_save, descA->mb, this_task->data._f_A.data_out->device_private, descA->mb );
+            HICMA_OMC( omc_convert_2d(OMC_FP32, A_save, descA->mb, OMC_FP64, this_task->data._f_A.data_out->device_private, descA->mb, descA->mb, rank * 2, NULL) );
             
             // Free old single precision memory
             free( A_save );

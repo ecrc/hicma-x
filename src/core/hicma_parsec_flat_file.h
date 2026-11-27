@@ -21,7 +21,7 @@
  * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
  *                              All rights reserved.
  * 
- * @version 1.0.0
+ * @version 0.2.0
  */
 
 #ifndef HICMA_PARSEC_FLAT_FILE_H
@@ -30,7 +30,9 @@
 /* ============================================================================
  * Feature test macros
  * ============================================================================ */
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 
 /* ============================================================================
  * HICMA PaRSEC includes
@@ -117,37 +119,6 @@ location* readLocsFile3d(char* locs_file, int n);
 /* ============================================================================
  * Data file reading functions
  * ============================================================================ */
-
-/**
- * @brief Read observation file
- * 
- * Reads a file containing observation data and returns an array of values.
- * The file is expected to contain one observation value per line. Memory
- * is dynamically allocated for the observation array.
- * 
- * @param[in] obsfile Filename of the observation file
- * @param[in] n Number of observations to read
- * @return Pointer to array of observation values, or NULL on error
- * @note The caller is responsible for freeing the returned array
- * @warning The function assumes the file contains at least 'n' lines of valid data
- */
-double* readObsFile(char* obsfile, int n);
-
-/**
- * @brief Read time file
- * 
- * Reads a file containing time data and returns an array of values.
- * The file is expected to contain one time value per line. Memory
- * is dynamically allocated for the time array. This function is
- * particularly useful for space-time modeling applications.
- * 
- * @param[in] timefile Filename of the time file
- * @param[in] n Number of time points to read
- * @return Pointer to array of time values, or NULL on error
- * @note The caller is responsible for freeing the returned array
- * @warning The function assumes the file contains at least 'n' lines of valid data
- */
-double* readTimeFile(char* timefile, int n);
 
 #ifdef __cplusplus
 }

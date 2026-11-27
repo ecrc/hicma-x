@@ -1,0 +1,106 @@
+extern "C" %{
+/**
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2018-2025     King Abdullah University of Science and Technology (KAUST)
+ *                              All rights reserved.
+ **/
+
+/**
+ * @file matrix_sum.jdf
+ * @brief Sum of the entries of a tiled matrix whose tiles may be stored in
+ *        different precisions: a checksum for debugging and for comparing runs.
+ *
+ * Replaces matrix_dsum.jdf and matrix_ssum.jdf (one precision each, and their
+ * tile task never stored its partial sum). A tile is read in its storage
+ * precision: FP64 for DENSE_DP and LOW_RANK_DP, FP32 for DENSE_SP, DENSE_HP,
+ * DENSE_FP8 and LOW_RANK_SP (the host keeps half and FP8 tiles in FP32), or the
+ * descriptor's element type without a decision map. A low-rank tile adds the
+ * entries of its U and V factors (rank from descAr), like the old sums. The
+ * per-tile sums are reduced as an array and added in a fixed order, so the
+ * result is the same on every process and for every process grid.
+ */
+#include "hicma_parsec.h"
+%}
+
+descA      [ type = "parsec_tiled_matrix_t *" ]
+descAr     [ type = "parsec_tiled_matrix_t *" ]   /* ranks of the low-rank tiles, or NULL */
+decisions  [ type = "const uint16_t *" ]          /* storage decision per tile, or NULL */
+lower      [ type = "int" ]                       /* 1: tiles on and below the diagonal */
+tile_sums  [ type = "double *" ]                  /* mt x nt, zeroed by the caller */
+
+tile_sum(m, n)
+
+m = 0 .. descA->mt-1
+n = 0 .. %{ return (lower && m < descA->nt-1) ? m : descA->nt-1; %}
+
+: descA(m, n)
+
+READ A <- descA(m, n)
+READ R <- %{ return NULL != descAr; %} ? descAr(m, n) : NULL
+
+BODY
+{
+    uint16_t d = (NULL != decisions) ? decisions[n * descA->lmt + m] : 0;
+    int single = (NULL != decisions) ? (DENSE_SP == d || DENSE_HP == d || DENSE_FP8 == d || LOW_RANK_SP == d)
+                                     : (PARSEC_MATRIX_FLOAT == descA->mtype);
+    int rows = (m == descA->mt-1) ? descA->m - m * descA->mb : descA->mb;
+    int cols = (n == descA->nt-1) ? descA->n - n * descA->nb : descA->nb;
+    int ld = BLKLDD(descA, m);
+    /* Blocks summed: a dense tile is one rows x cols block; a low-rank tile is
+     * U (rows x rank) followed, mb*rank elements later, by V (cols x rank),
+     * both with leading dimension ld (as in matrix_uncompress) */
+    size_t off[2] = { 0, 0 };
+    int nrow[2] = { rows, 0 }, ncol[2] = { cols, 0 };
+    if( LOW_RANK_DP == d || LOW_RANK_SP == d ) {
+        int rank = (NULL != R) ? ((int *)R)[0] : 0;
+        ncol[0] = rank;
+        off[1] = (size_t)descA->mb * rank; nrow[1] = cols; ncol[1] = rank;
+    }
+    double s = 0.0;
+    for( int b = 0; b < 2; b++ )
+        for( int j = 0; j < ncol[b]; j++ )
+            for( int i = 0; i < nrow[b]; i++ ) {
+                size_t idx = off[b] + (size_t)j * ld + i;
+                s += single ? (double)((const float *)A)[idx] : ((const double *)A)[idx];
+            }
+    if( !isfinite(s) )
+        fprintf(stderr, "hicma_parsec_matrix_sum: NaN or Inf in tile (%d, %d)\n", m, n);
+    tile_sums[(size_t)n * descA->mt + m] = s;
+}
+END
+
+extern "C" %{
+
+double hicma_parsec_matrix_sum(parsec_context_t *parsec,
+        parsec_tiled_matrix_t *dcA, parsec_tiled_matrix_t *dcAr,
+        const uint16_t *decisions, int lower)
+{
+    if( NULL == decisions && PARSEC_MATRIX_DOUBLE != dcA->mtype && PARSEC_MATRIX_FLOAT != dcA->mtype ) {
+        if( 0 == dcA->super.myrank )
+            fprintf(stderr, "hicma_parsec_matrix_sum: the matrix holds neither double nor float\n");
+        return NAN;
+    }
+    size_t ntiles = (size_t)dcA->mt * dcA->nt;
+    double *tile_sums = calloc(ntiles, sizeof(double));
+    parsec_matrix_sum_taskpool_t *tp = parsec_matrix_sum_new(dcA, dcAr, decisions, lower, tile_sums);
+    parsec_add2arena(&tp->arenas_datatypes[PARSEC_matrix_sum_DEFAULT_ADT_IDX],
+                     parsec_datatype_double_t, PARSEC_MATRIX_FULL, 1, dcA->mb, dcA->nb, dcA->mb,
+                     PARSEC_ARENA_ALIGNMENT_SSE, -1);
+    parsec_context_add_taskpool(parsec, (parsec_taskpool_t *)tp);
+    parsec_context_start(parsec);
+    parsec_context_wait(parsec);
+    parsec_del2arena(&tp->arenas_datatypes[PARSEC_matrix_sum_DEFAULT_ADT_IDX]);
+    parsec_taskpool_free((parsec_taskpool_t *)tp);
+
+    /* Every tile sum is computed by exactly one process (its owner) */
+    MPI_Allreduce(MPI_IN_PLACE, tile_sums, (int)ntiles, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    double total = 0.0;
+    for( size_t t = 0; t < ntiles; t++ )
+        total += tile_sums[t];
+    free(tile_sums);
+    return total;
+}
+
+%}

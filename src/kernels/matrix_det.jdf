@@ -22,8 +22,11 @@ extern "C" %{
 static double parsec_core_dmdet (double *A, int m, int lda) {
     double res = 0.0;
     for (int i = 0; i < m; i++) {
-        if(A[i + i * lda] > 0)
-            res += log(A[i + i * lda]);
+        /* A non-positive pivot means the factorization broke down; make it
+         * visible (NaN) instead of silently skipping the element. */
+        if( !(A[i + i * lda] > 0) )
+            return NAN;
+        res += log(A[i + i * lda]);
     }
 
     return res;

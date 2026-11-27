@@ -216,7 +216,7 @@ int main(int argc, char **argv) {
     hicma_parsec_params_t params;
     starsh_params_t params_kernel;
     hicma_parsec_data_t data;
-    hicma_parsec_matrix_analysis_t analysis;  /* Unused but required for compatibility */
+    hicma_parsec_matrix_analysis_t analysis = {0};  /* Unused but required for compatibility */
 
     /* Execute SYRK performance testing */
     hicma_parsec_syrk_performance(argc, argv, &params, &params_kernel, &data);

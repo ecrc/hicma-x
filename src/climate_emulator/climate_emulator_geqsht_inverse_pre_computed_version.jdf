@@ -118,7 +118,7 @@ READ SC    <- desc_SC(0, rank_of_desc_f_spatial)
 /* CPU implementation of the inverse transformation */
 BODY
 {
-#if DEBUG_INFO_CLIMATE_EMULATOR
+#if CLIMATE_EMULATOR_DEBUG_INFO
     // Print debug information for the current task
     printf("CPU n %d : %d\n", n, desc_f_spatial->super.rank_of(&desc_f_spatial->super, 0, n)); 
     climate_emulator_print_matrix_col_double(flm, 1, 20, 1); 
@@ -215,7 +215,7 @@ void climate_emulator_geqsht_inverse_pre_computed_version_Destruct(parsec_taskpo
     parsec_del2arena(&climate_emulator_geqsht_inverse_pre_computed_version_taskpool->arenas_datatypes[PARSEC_climate_emulator_geqsht_inverse_pre_computed_version_flm_ADT_IDX]);
     
     // Clean up the memory pool
-    parsec_private_memory_fini( climate_emulator_geqsht_inverse_pre_computed_version_taskpool->_g_p_work);
+    hicma_parsec_memory_pool_fini( climate_emulator_geqsht_inverse_pre_computed_version_taskpool->_g_p_work);
     
     // Free the taskpool itself
     parsec_taskpool_free(taskpool);

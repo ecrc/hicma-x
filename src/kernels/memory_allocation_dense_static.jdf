@@ -54,10 +54,15 @@ BODY
 {
     // Perform memory allocation for this tile according to the specified type
     // The allocation is done in-place on the tile's device memory
-    hicma_parsec_core_memory_allocation(&this_task->data._f_A.data_out->device_private, 
-                                       (size_t)descA->mb*descA->nb, 
-                                       allocate_type, 
+    hicma_parsec_core_memory_allocation(&this_task->data._f_A.data_out->device_private,
+                                       (size_t)descA->mb*descA->nb,
+                                       allocate_type,
                                        &this_task->data._f_A.data_out->original->span);
+    if( NULL == this_task->data._f_A.data_out->device_private ) {
+        fprintf(stderr, "Fatal: allocating tile (%d, %d) failed: %zu bytes of host memory\n",
+                m, n, this_task->data._f_A.data_out->original->span);
+        abort();
+    }
 }
 END
 

@@ -20,7 +20,7 @@
  * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
  *                              All rights reserved.
  * 
- * @version 1.0.0
+ * @version 0.2.0
  */
 
 #ifndef HICMA_PARSEC_DISTRIBUTION_H

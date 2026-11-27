@@ -51,7 +51,20 @@ Module.symvers
 Mkfile.old
 dkms.conf
 
-# executable
-testing_dpotrf_tlr
+# Build trees and local scratch
+build*/
+installdir/
+lapack_build/
+parsec_master/
 
+# Editor and agent state
 tags
+taq
+.claude/
+.agents/
+.codex/
+
+# Logs and cores
+*.log
+/core
+core.[0-9]*

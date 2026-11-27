@@ -28,7 +28,7 @@
  * - PaRSEC task-based parallel execution for large matrices
  * - Bit manipulation optimizations for half precision conversions
  * 
- * @version 1.0.0
+ * @version 0.2.0
  * @see hicma_parsec_internal.h for internal HICMA PaRSEC definitions
  */
 
@@ -36,6 +36,10 @@
 #define HICMA_PARSEC_DATATYPE_CONVERT_H
 
 #include "hicma_parsec_internal.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "omnicast/omnicast.h"
 
 
 #ifdef __cplusplus
@@ -161,19 +165,6 @@ int parsec_convert_i2d(parsec_context_t *parsec,
  * @return 0 on success, non-zero on failure
  */
 int parsec_convert_s2i(parsec_context_t *parsec,
-                         parsec_tiled_matrix_t *A, int intype);
-
-/**
- * @brief Convert integer matrix to single precision format
- * 
- * Converts an integer matrix to single precision format.
- * 
- * @param[in] parsec PaRSEC context for task scheduling and execution
- * @param[in] A Tiled matrix to convert
- * @param[in] intype Source integer type (e.g., 8, 16, 32, 64 for int8_t, int16_t, int32_t, int64_t)
- * @return 0 on success, non-zero on failure
- */
-int parsec_convert_i2s(parsec_context_t *parsec,
                          parsec_tiled_matrix_t *A, int intype);
 
 /**
@@ -354,6 +345,32 @@ int parsec_datatype_convert_dense_static(parsec_context_t *parsec,
         char *convert_type);
 
 /**
+ * @brief Copy between a tiled matrix and the local column-major ("LAPACK")
+ *        buffer of the calling process
+ *
+ * Collective over the processes of dcA. The buffer holds the tiles this
+ * process owns, tile (m, n) at local tile position (m / P, n / Q), column-major
+ * with leading dimension dcA->llm (local rows of a 2D block-cyclic descriptor,
+ * global rows of a symmetric one); on a 1 x 1 grid it is the whole matrix in
+ * LAPACK layout. The named functions below are this one with fixed arguments.
+ *
+ * @param[in]    parsec      PaRSEC context
+ * @param[inout] dcA         tiled matrix, 2D block-cyclic or symmetric block-cyclic over P x Q
+ * @param[inout] lapack      buffer of at least dcA->llm x dcA->lln elements of @p type
+ * @param[in]    P           process grid rows of dcA
+ * @param[in]    Q           process grid columns of dcA
+ * @param[in]    type        element type of the tiles and of the buffer
+ *                           (parsec_datatype_double_t, _float_t, _int_t, _int8_t, ...)
+ * @param[in]    lower       1: only the tiles on and below the diagonal
+ * @param[in]    into_tiles  1: buffer -> tiles, 0: tiles -> buffer
+ * @return 0 on success; -1 on every process when the arguments or the
+ *         distribution do not fit the layout (nothing is copied)
+ */
+int hicma_parsec_lapack_tile_convert(parsec_context_t *parsec,
+        parsec_tiled_matrix_t *dcA, void *lapack, int P, int Q,
+        parsec_datatype_t type, int lower, int into_tiles);
+
+/**
  * @brief Convert PaRSEC tiled matrix to LAPACK double precision format
  * 
  * Converts a PaRSEC tiled matrix to LAPACK-compatible double precision format.
@@ -401,7 +418,8 @@ int hicma_parsec_Tile_to_Lapack_int8(parsec_context_t *parsec,
 /**
  * @brief Convert PaRSEC tiled matrix to LAPACK integer format
  * 
- * Converts a PaRSEC tiled matrix to LAPACK-compatible integer format.
+ * Converts the tiles on and below the diagonal of a PaRSEC tiled matrix to
+ * LAPACK-compatible integer format (the tiles above are not copied).
  * 
  * @param[in] parsec PaRSEC context for task scheduling and execution
  * @param[in] dcA Source tiled matrix
@@ -489,660 +507,95 @@ int hicma_parsec_Lapack_to_Tile_sym(parsec_context_t *parsec,
 		parsec_tiled_matrix_t *dcA, double *Zobs, int P, int Q);
 
 /* ============================================================================
-   Unified Conversion Functions
-   
-   These functions provide a unified interface for datatype conversions using
-   type string parameters. They automatically dispatch to the appropriate
-   conversion function based on the conversion type string, simplifying the
-   API for applications that need to perform various conversions dynamically.
+   Element conversions: OmniCast
+
+   Every conversion between element types (FP64, FP32, FP16, BF16, FP8 and
+   integers), on the CPU and on the GPU, goes through OmniCast (submodule
+   omnicast/, header omnicast/omnicast.h): SIMD kernels chosen at run time on
+   the CPU, vectorized CUDA/HIP kernels on the GPU, single-pass in-place
+   conversion, transposed/padded FP8 operands, and stochastic rounding.
+
+   Call sites use the OmniCast API directly, for instance
+
+       HICMA_OMC( omc_gpu_convert_2d(OMC_FP64, A, lda, OMC_FP16, A_h, lda,
+                                     m, n, HICMA_OMC_SR(sr_on, seed), stream) );
+
+   The helpers below map HiCMA-X tile precisions to OmniCast types and carry
+   the HiCMA-X conventions (seed per tile, FP8 operand layout of cuBLASLt).
    ============================================================================ */
 
+/** Prints the call site, OmniCast's status and, for a GPU failure, the
+ *  CUDA/HIP call and error OmniCast recorded; then aborts (HICMA_OMC). */
+static inline void hicma_omc_fail(omc_status_t status, const char *file, int line)
+{
+    const char *detail = (OMC_ERROR_DEVICE == status || OMC_ERROR_ALLOCATION == status)
+                         ? omc_last_error_detail() : "";
+    fprintf(stderr, "%s:%d: OmniCast: %s%s%s\n", file, line, omc_status_string(status),
+            detail[0] ? ": " : "", detail);
+    abort();
+}
+
+/** Abort with the call site when an OmniCast call fails: a failure means a
+ *  wrong argument or a dead GPU context, not a condition to recover from. */
+#define HICMA_OMC(call) do {                                                       \
+        omc_status_t hicma_omc_status_ = (call);                                   \
+        if( OMC_SUCCESS != hicma_omc_status_ )                                     \
+            hicma_omc_fail(hicma_omc_status_, __FILE__, __LINE__);                 \
+    } while(0)
+
+/** OmniCast options for stochastic rounding with the given seed when `on`,
+ *  NULL (round to nearest even) otherwise. C only (compound literal). */
+#define HICMA_OMC_SR(on_, seed_) \
+    ((on_) ? &(omc_options_t){ .rounding = OMC_ROUND_STOCHASTIC, .seed = (seed_) } \
+          : (const omc_options_t *)NULL)
+
+/** FP32 -> FP16 (round to nearest even) of a host scalar, stored at h (2 bytes):
+ *  the alpha/beta of FP16-compute cuBLAS calls */
+static inline void hicma_parsec_fp32_to_fp16_host(float x, void *h)
+{
+    const uint16_t b = omc_fp32_to_fp16(x);
+    memcpy(h, &b, sizeof(b));
+}
+
+/** OmniCast options that multiply by `s` before converting. C only. */
+#define HICMA_OMC_SCALED(s_) (&(omc_options_t){ .scale_mode = OMC_SCALE_HOST, .scale = (s_) })
+
 /**
- * @brief Unified datatype conversion function (unary version)
- * 
- * This function provides a unified interface for in-place datatype conversions
- * based on a type string parameter. It automatically dispatches to the appropriate
- * conversion function and handles memory management for the conversion process.
- * 
- * **Supported Conversion Types:**
- * - "d2s": Double precision to single precision
- * - "s2d": Single precision to double precision  
- * - "d2i8": Double precision to 8-bit integer
- * - "d2i16": Double precision to 16-bit integer
- * - "d2i32": Double precision to 32-bit integer
- * - "d2i64": Double precision to 64-bit integer
- * - "s2i8": Single precision to 8-bit integer
- * - "s2i16": Single precision to 16-bit integer
- * - "s2i32": Single precision to 32-bit integer
- * - "s2i64": Single precision to 64-bit integer
- * - "i8d": 8-bit integer to double precision
- * - "i16d": 16-bit integer to double precision
- * - "i32d": 32-bit integer to double precision
- * - "i64d": 64-bit integer to double precision
- * - "i8s": 8-bit integer to single precision
- * - "i16s": 16-bit integer to single precision
- * - "i32s": 32-bit integer to single precision
- * - "i64s": 64-bit integer to single precision
- * - "d2h": Double precision to half precision (if available)
- * - "h2d": Half precision to double precision (if available)
- * - "s2h": Single precision to half precision (if available)
- * - "h2s": Half precision to single precision (if available)
- * 
- * **Memory Management:**
- * - Performs in-place conversion when possible to minimize memory usage
- * - May reallocate memory if the target type requires different storage size
- * - Updates the size parameter to reflect the new data size in bytes
- * 
- * **Error Handling:**
- * - Returns 0 on successful conversion
- * - Returns -1 on error (invalid type string, memory allocation failure, etc.)
- * - Provides detailed error information through standard error reporting
- * 
- * @param[in,out] A Pointer to the data buffer to be converted.
- *                  The buffer is modified in-place to contain the converted data.
- * @param[in] mb Number of rows in the matrix
- * @param[in] nb Number of columns in the matrix
- * @param[in] lda Leading dimension of the matrix (stride between rows)
- * @param[in] type Conversion type string specifying source and target types.
- *                 Must be one of the supported conversion strings listed above.
- * @param[out] size Pointer to store the output size in bytes after conversion.
- *                  This helps with memory management and buffer size calculations.
- * 
- * @return 0 on success, -1 on error
- * 
- * @note The conversion type string is case-sensitive
- * @note Memory may be reallocated if the target type has different size requirements
- * @note The function is optimized for CPU execution
- * 
- * @see convert_datatype_binary_CPU() for binary conversion with separate buffers
- * @see get_datatype_size() for getting datatype sizes
+ * @brief OmniCast element type of a HiCMA-X tile precision
+ *
+ * DENSE_DP and LOW_RANK_DP: OMC_FP64; DENSE_SP and LOW_RANK_SP: OMC_FP32;
+ * DENSE_HP: OMC_FP16; DENSE_FP8: OMC_FP8_E4M3. Exits on anything else.
+ */
+omc_dtype_t hicma_parsec_omc_dtype(uint16_t precision);
+
+/**
+ * @brief Unified datatype conversion function (unary, in place)
+ *
+ * Converts the mb-by-nb matrix A (leading dimension lda, the same in the
+ * elements of both types) in place, the conversion given by a type string:
+ * "d2s", "s2d", "d2h", "h2d", "s2h", "h2s", "d2i8", "d2i16", "d2i",
+ * "s2i8", "s2i16", "s2i", "i82s", "i82d", "i162s", "i162d", "i2s", "i2d"
+ * (case-insensitive). The float -> integer conversions truncate and saturate.
+ *
+ * @param[in,out] A    The data, converted in place
+ * @param[in]     mb   Number of rows
+ * @param[in]     nb   Number of columns
+ * @param[in]     lda  Leading dimension
+ * @param[in]     type Conversion type string
+ * @param[out]    size Set to mb * nb * (size of the target type) for "d2s"
+ * @return 0 on success, -1 on an unknown type or a NULL argument
  */
 int convert_datatype_unary_CPU(void *A, int mb, int nb, int lda, char *type, size_t *size);
 
 /**
- * @brief Unified datatype conversion function (binary version)
- * 
- * This function provides a unified interface for datatype conversions using separate
- * source and target buffers. It automatically dispatches to the appropriate conversion
- * function based on the type string parameter, preserving the original data.
- * 
- * **Supported Conversion Types:**
- * Same as convert_datatype_unary_CPU() - see that function for the complete list.
- * 
- * **Memory Management:**
- * - Uses separate source and target buffers to preserve original data
- * - Target buffer must be pre-allocated with sufficient size for the converted data
- * - No memory reallocation is performed during conversion
- * - Source buffer remains unchanged after conversion
- * 
- * **Performance Benefits:**
- * - Preserves original data for comparison or rollback operations
- * - Enables parallel processing of source and target data
- * - Reduces memory fragmentation compared to in-place conversion
- * - Allows for streaming conversions of large datasets
- * 
- * **Error Handling:**
- * - Returns 0 on successful conversion
- * - Returns -1 on error (invalid type string, buffer size mismatch, etc.)
- * - Validates buffer sizes before performing conversion
- * 
- * @param[out] target Pointer to the target buffer for converted data.
- *                    Must be pre-allocated with sufficient size for the target type.
- * @param[in] source Pointer to the source buffer containing data to convert.
- *                   This buffer remains unchanged after conversion.
- * @param[in] mb Number of rows in the matrix
- * @param[in] nb Number of columns in the matrix
- * @param[in] lda Leading dimension of the matrix (stride between rows)
- * @param[in] type Conversion type string specifying source and target types.
- *                 Must be one of the supported conversion strings.
- * 
- * @return 0 on success, -1 on error
- * 
- * @note The conversion type string is case-sensitive
- * @note Target buffer must be pre-allocated with correct size
- * @note Source buffer is not modified during conversion
- * @note Function is optimized for CPU execution
- * 
- * @see convert_datatype_unary_CPU() for in-place conversion
- * @see get_datatype_size() for calculating required buffer sizes
+ * @brief Unified datatype conversion function (binary)
+ *
+ * Same conversions as convert_datatype_unary_CPU, from source into target
+ * (both with leading dimension lda).
+ *
+ * @return 0 on success, -1 on an unknown type or a NULL argument
  */
 int convert_datatype_binary_CPU(void *target, void *source, int mb, int nb, int lda, char *type);
-
-/* ============================================================================
-   Individual Conversion Functions - Floating Point
-   
-   These functions provide optimized implementations for specific floating-point
-   datatype conversions. They are called by the unified conversion functions
-   and can also be used directly for performance-critical applications that
-   know the exact conversion type at compile time.
-   ============================================================================ */
-
-// Single to Double precision conversions
-/**
- * @brief Convert single precision to double precision (unary version)
- * 
- * This function performs an in-place conversion of a single precision matrix
- * to double precision format. The conversion expands each 32-bit float value
- * to a 64-bit double value, potentially increasing memory usage by a factor of 2.
- * 
- * **Conversion Process:**
- * - Each single precision value is converted to double precision
- * - Precision is maintained (no loss of information)
- * - Memory is reallocated to accommodate the larger data type
- * - Matrix structure and metadata are preserved
- * 
- * **Memory Considerations:**
- * - Memory usage doubles after conversion
- * - Original single precision data is overwritten
- * - Matrix dimensions remain unchanged
- * - Leading dimension is adjusted for the new data type
- * 
- * **Performance Notes:**
- * - Optimized for CPU execution with vectorized operations
- * - Memory bandwidth intensive due to data expansion
- * - Suitable for applications requiring higher precision
- * 
- * @param[in,out] data Pointer to the matrix data to convert.
- *                     The buffer is modified in-place to contain double precision data.
- * @param[in] mb Number of rows in the matrix
- * @param[in] nb Number of columns in the matrix
- * 
- * @note This function modifies the input data in-place
- * @note Memory usage will increase by approximately 2x
- * @note No precision is lost during conversion
- * @note Function is optimized for CPU execution
- * 
- * @see convert_s2d_binary_CPU() for binary conversion preserving original data
- * @see convert_d2s_unary_CPU() for reverse conversion
- */
-void convert_s2d_unary_CPU(float *data, int mb, int nb);
-
-/**
- * @brief Convert single precision to double precision (binary version)
- * 
- * Converts a single precision matrix to double precision with separate
- * source and target buffers.
- * 
- * @param[out] _target Pointer to the target double precision buffer
- * @param[in] _source Pointer to the source single precision buffer
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- */
-void convert_s2d_binary_CPU(double *_target, float *_source, int mb, int nb);
-
-/**
- * @brief Convert double precision to single precision (unary version)
- * 
- * Converts a double precision matrix to single precision in-place.
- * 
- * @param[in,out] data Pointer to the matrix data to convert
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- */
-void convert_d2s_unary_CPU(double *data, int mb, int nb);
-
-/**
- * @brief Convert double precision to single precision (binary version)
- * 
- * Converts a double precision matrix to single precision with separate
- * source and target buffers.
- * 
- * @param[out] _target Pointer to the target single precision buffer
- * @param[in] _source Pointer to the source double precision buffer
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- */
-void convert_d2s_binary_CPU(float *_target, double *_source, int mb, int nb);
-
-/* ============================================================================
-   Individual Conversion Functions - Half Precision (if available)
-   
-   These functions provide optimized implementations for half precision (16-bit)
-   floating-point conversions. Half precision support is conditional and depends
-   on hardware and compiler support for the __fp16 type. These functions are
-   only available when HAVE_HP_CPU is defined.
-   ============================================================================ */
-
-#if HAVE_HP_CPU
-/**
- * @brief Convert double precision to half precision (binary version)
- * 
- * Converts a double precision matrix to half precision with separate
- * source and target buffers.
- * 
- * @param[out] _target Pointer to the target half precision buffer
- * @param[in] _source Pointer to the source double precision buffer
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- */
-void convert_d2h_binary_CPU(__fp16 *_target, double *_source, int mb, int nb);
-
-void convert_d2h_unary_CPU(double *data, int mb, int nb);
-
-/**
- * @brief Convert double precision to half precision (unary version)
- *
- * Converts a double precision matrix to half precision in-place.
- *
- * @param[in,out] data Pointer to the matrix data to convert
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- */
-void convert_d2h_unary_CPU(double *data, int mb, int nb);
-
-/**
- * @brief Convert half precision to double precision (binary version)
- * 
- * Converts a half precision matrix to double precision with separate
- * source and target buffers.
- * 
- * @param[out] _target Pointer to the target double precision buffer
- * @param[in] _source Pointer to the source half precision buffer
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- */
-void convert_h2d_binary_CPU(double *_target, __fp16 *_source, int mb, int nb);
-
-void convert_h2d_unary_CPU(__fp16 *data, int mb, int nb);
-
-/**
- * @brief Convert half precision to double precision (unary version)
- *
- * Converts a half precision matrix to double precision in-place.
- *
- * @param[in,out] data Pointer to the matrix data to convert
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- */
-void convert_h2d_unary_CPU(__fp16 *data, int mb, int nb);
-
-/**
- * @brief Convert single precision to half precision (binary version)
- * 
- * Converts a single precision matrix to half precision with separate
- * source and target buffers.
- * 
- * @param[out] _target Pointer to the target half precision buffer
- * @param[in] _source Pointer to the source single precision buffer
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- */
-void convert_s2h_binary_CPU(__fp16 *_target, float *_source, int mb, int nb);
-
-/**
- * @brief Convert single precision to half precision (unary version)
- * 
- * Converts a single precision matrix to half precision in-place.
- * 
- * @param[in,out] data Pointer to the matrix data to convert
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- */
-void convert_s2h_unary_CPU(float *data, int mb, int nb);
-
-/**
- * @brief Convert half precision to single precision (binary version)
- * 
- * Converts a half precision matrix to single precision with separate
- * source and target buffers.
- * 
- * @param[out] _target Pointer to the target single precision buffer
- * @param[in] _source Pointer to the source half precision buffer
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- */
-void convert_h2s_binary_CPU(float *_target, __fp16 *_source, int mb, int nb);
-
-/**
- * @brief Convert half precision to single precision (unary version)
- * 
- * Converts a half precision matrix to single precision in-place.
- * 
- * @param[in,out] data Pointer to the matrix data to convert
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- */
-void convert_h2s_unary_CPU(__fp16 *data, int mb, int nb);
-#endif
-
-/* ============================================================================
-   Individual Conversion Functions - 8-bit Integer
-   
-   These functions provide optimized implementations for 8-bit integer conversions.
-   They handle conversions between floating-point types and 8-bit signed integers
-   (int8_t), which are commonly used for quantization and reduced precision computations
-   in machine learning and signal processing applications.
-   ============================================================================ */
-
-/**
- * @brief Convert single precision to 8-bit integer (unary version)
- * 
- * Converts a single precision matrix to 8-bit integer in-place.
- * 
- * @param[in,out] data Pointer to the matrix data to convert
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- * @param[in] lda Leading dimension of the matrix
- */
-void convert_s2i8_unary_CPU(float *data, int mb, int nb, int lda);
-
-/**
- * @brief Convert single precision to 8-bit integer (binary version)
- * 
- * Converts a single precision matrix to 8-bit integer with separate
- * source and target buffers.
- * 
- * @param[out] _target Pointer to the target 8-bit integer buffer
- * @param[in] _source Pointer to the source single precision buffer
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- * @param[in] lda Leading dimension of the matrix
- */
-void convert_s2i8_binary_CPU(int8_t *_target, float *_source, int mb, int nb, int lda);
-
-/**
- * @brief Convert double precision to 8-bit integer (unary version)
- * 
- * Converts a double precision matrix to 8-bit integer in-place.
- * 
- * @param[in,out] data Pointer to the matrix data to convert
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- * @param[in] lda Leading dimension of the matrix
- */
-void convert_d2i8_unary_CPU(double *data, int mb, int nb, int lda);
-
-/**
- * @brief Convert double precision to 8-bit integer (binary version)
- * 
- * Converts a double precision matrix to 8-bit integer with separate
- * source and target buffers.
- * 
- * @param[out] _target Pointer to the target 8-bit integer buffer
- * @param[in] _source Pointer to the source double precision buffer
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- * @param[in] lda Leading dimension of the matrix
- */
-void convert_d2i8_binary_CPU(int8_t *_target, double *_source, int mb, int nb, int lda);
-
-/**
- * @brief Convert 8-bit integer to single precision (unary version)
- * 
- * Converts an 8-bit integer matrix to single precision in-place.
- * 
- * @param[in,out] data Pointer to the matrix data to convert
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- * @param[in] lda Leading dimension of the matrix
- */
-void convert_8i2s_unary_CPU(int8_t *data, int mb, int nb, int lda);
-
-/**
- * @brief Convert 8-bit integer to single precision (binary version)
- * 
- * Converts an 8-bit integer matrix to single precision with separate
- * source and target buffers.
- * 
- * @param[out] _target Pointer to the target single precision buffer
- * @param[in] _source Pointer to the source 8-bit integer buffer
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- * @param[in] lda Leading dimension of the matrix
- */
-void convert_8i2s_binary_CPU(float *_target, int8_t *_source, int mb, int nb, int lda);
-
-/**
- * @brief Convert 8-bit integer to double precision (unary version)
- * 
- * Converts an 8-bit integer matrix to double precision in-place.
- * 
- * @param[in,out] data Pointer to the matrix data to convert
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- * @param[in] lda Leading dimension of the matrix
- */
-void convert_8i2d_unary_CPU(int8_t *data, int mb, int nb, int lda);
-
-/**
- * @brief Convert 8-bit integer to double precision (binary version)
- * 
- * Converts an 8-bit integer matrix to double precision with separate
- * source and target buffers.
- * 
- * @param[out] _target Pointer to the target double precision buffer
- * @param[in] _source Pointer to the source 8-bit integer buffer
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- * @param[in] lda Leading dimension of the matrix
- */
-void convert_8i2d_binary_CPU(double *_target, int8_t *_source, int mb, int nb, int lda);
-
-/* ============================================================================
-   Individual Conversion Functions - 16-bit Integer
-   
-   These functions provide optimized implementations for 16-bit integer conversions.
-   They handle conversions between floating-point types and 16-bit signed integers
-   (int16_t), which offer a good balance between precision and memory efficiency
-   for many numerical computations.
-   ============================================================================ */
-
-// Single to 16-bit integer conversions
-/**
- * @brief Convert single precision to 16-bit integer (unary version)
- * 
- * Converts a single precision matrix to 16-bit integer in-place with truncation.
- * 
- * @param[in,out] data Pointer to the matrix data to convert
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- * @param[in] lda Leading dimension
- */
-void convert_s2i16_unary_CPU(float *data, int mb, int nb, int lda);
-
-/**
- * @brief Convert single precision to 16-bit integer (binary version)
- * 
- * Converts a single precision matrix to 16-bit integer with separate buffers.
- * 
- * @param[out] _target Pointer to the target 16-bit integer buffer
- * @param[in] _source Pointer to the source single precision buffer
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- * @param[in] lda Leading dimension
- */
-void convert_s2i16_binary_CPU(int16_t *_target, float *_source, int mb, int nb, int lda);
-
-// Double to 16-bit integer conversions
-/**
- * @brief Convert double precision to 16-bit integer (unary version)
- * 
- * Converts a double precision matrix to 16-bit integer in-place with truncation.
- * 
- * @param[in,out] data Pointer to the matrix data to convert
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- * @param[in] lda Leading dimension
- */
-void convert_d2i16_unary_CPU(double *data, int mb, int nb, int lda);
-
-/**
- * @brief Convert double precision to 16-bit integer (binary version)
- * 
- * Converts a double precision matrix to 16-bit integer with separate buffers.
- * 
- * @param[out] _target Pointer to the target 16-bit integer buffer
- * @param[in] _source Pointer to the source double precision buffer
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- * @param[in] lda Leading dimension
- */
-void convert_d2i16_binary_CPU(int16_t *_target, double *_source, int mb, int nb, int lda);
-
-// 16-bit integer to Single precision conversions
-/**
- * @brief Convert 16-bit integer to single precision (unary version)
- * 
- * Converts a 16-bit integer matrix to single precision in-place.
- * 
- * @param[in,out] data Pointer to the matrix data to convert
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- * @param[in] lda Leading dimension
- */
-void convert_16i2s_unary_CPU(int16_t *data, int mb, int nb, int lda);
-
-/**
- * @brief Convert 16-bit integer to single precision (binary version)
- * 
- * Converts a 16-bit integer matrix to single precision with separate buffers.
- * 
- * @param[out] _target Pointer to the target single precision buffer
- * @param[in] _source Pointer to the source 16-bit integer buffer
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- * @param[in] lda Leading dimension
- */
-void convert_16i2s_binary_CPU(float *_target, int16_t *_source, int mb, int nb, int lda);
-
-// 16-bit integer to Double precision conversions
-/**
- * @brief Convert 16-bit integer to double precision (unary version)
- * 
- * Converts a 16-bit integer matrix to double precision in-place.
- * 
- * @param[in,out] data Pointer to the matrix data to convert
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- * @param[in] lda Leading dimension
- */
-void convert_16i2d_unary_CPU(int16_t *data, int mb, int nb, int lda);
-
-/**
- * @brief Convert 16-bit integer to double precision (binary version)
- * 
- * Converts a 16-bit integer matrix to double precision with separate buffers.
- * 
- * @param[out] _target Pointer to the target double precision buffer
- * @param[in] _source Pointer to the source 16-bit integer buffer
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- * @param[in] lda Leading dimension
- */
-void convert_16i2d_binary_CPU(double *_target, int16_t *_source, int mb, int nb, int lda);
-
-/* ============================================================================
-   Individual Conversion Functions - 32-bit Integer
-   
-   These functions provide optimized implementations for 32-bit integer conversions.
-   They handle conversions between floating-point types and 32-bit signed integers
-   (int), which are the standard integer type on most systems and provide good
-   precision for most numerical computations.
-   ============================================================================ */
-
-// Single to 32-bit integer conversions
-/**
- * @brief Convert single precision to 32-bit integer (unary version)
- * 
- * Converts a single precision matrix to 32-bit integer in-place with truncation.
- * 
- * @param[in,out] data Pointer to the matrix data to convert
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- * @param[in] lda Leading dimension
- */
-void convert_s2i_unary_CPU(float *data, int mb, int nb, int lda);
-
-/**
- * @brief Convert single precision to 32-bit integer (binary version)
- * 
- * Converts a single precision matrix to 32-bit integer with separate buffers.
- * 
- * @param[out] _target Pointer to the target 32-bit integer buffer
- * @param[in] _source Pointer to the source single precision buffer
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- * @param[in] lda Leading dimension
- */
-void convert_s2i_binary_CPU(int *_target, float *_source, int mb, int nb, int lda);
-
-// Double to 32-bit integer conversions
-/**
- * @brief Convert double precision to 32-bit integer (unary version)
- * 
- * Converts a double precision matrix to 32-bit integer in-place with truncation.
- * 
- * @param[in,out] data Pointer to the matrix data to convert
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- * @param[in] lda Leading dimension
- */
-void convert_d2i_unary_CPU(double *data, int mb, int nb, int lda);
-
-/**
- * @brief Convert double precision to 32-bit integer (binary version)
- * 
- * Converts a double precision matrix to 32-bit integer with separate buffers.
- * 
- * @param[out] _target Pointer to the target 32-bit integer buffer
- * @param[in] _source Pointer to the source double precision buffer
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- * @param[in] lda Leading dimension
- */
-void convert_d2i_binary_CPU(int *_target, double *_source, int mb, int nb, int lda);
-
-// 32-bit integer to Single precision conversions
-/**
- * @brief Convert 32-bit integer to single precision (unary version)
- * 
- * Converts a 32-bit integer matrix to single precision in-place.
- * 
- * @param[in,out] data Pointer to the matrix data to convert
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- * @param[in] lda Leading dimension
- */
-void convert_i2s_unary_CPU(int *data, int mb, int nb, int lda);
-
-/**
- * @brief Convert 32-bit integer to single precision (binary version)
- * 
- * Converts a 32-bit integer matrix to single precision with separate buffers.
- * 
- * @param[out] _target Pointer to the target single precision buffer
- * @param[in] _source Pointer to the source 32-bit integer buffer
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- * @param[in] lda Leading dimension
- */
-void convert_i2s_binary_CPU(float *_target, int *_source, int mb, int nb, int lda);
-
-// 32-bit integer to Double precision conversions
-/**
- * @brief Convert 32-bit integer to double precision (unary version)
- * 
- * Converts a 32-bit integer matrix to double precision in-place.
- * 
- * @param[in,out] data Pointer to the matrix data to convert
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- * @param[in] lda Leading dimension
- */
-void convert_i2d_unary_CPU(int *data, int mb, int nb, int lda);
-
-/**
- * @brief Convert 32-bit integer to double precision (binary version)
- * 
- * Converts a 32-bit integer matrix to double precision with separate buffers.
- * 
- * @param[out] _target Pointer to the target double precision buffer
- * @param[in] _source Pointer to the source 32-bit integer buffer
- * @param[in] mb Number of rows
- * @param[in] nb Number of columns
- * @param[in] lda Leading dimension
- */
-void convert_i2d_binary_CPU(double *_target, int *_source, int mb, int nb, int lda);
 
 /* ============================================================================
    Utility Functions
@@ -1299,88 +752,38 @@ int hicma_parsec_print_array_values(const void *array, int mb, int nb, int lda, 
 bool hicma_parsec_convert_in_trsm(hicma_parsec_params_t *params_tlr, int m, int n);
 
 /**
- * @brief Convert to half precision using bit manipulation
- * 
- * Converts input data to half precision format using efficient bit manipulation
- * techniques. This function is optimized for performance-critical applications
- * where speed is more important than absolute precision.
- * 
- * @param[in] A Input data buffer to convert
- * @param[out] A_use Output buffer for converted half precision data
- * @param[in] mb Block size in rows
- * @param[in] nb Block size in columns
- * @param[in] decision 
- * 
- * @note This function uses bit manipulation for faster conversion
- * @note Precision may be slightly lower than standard conversion methods
- * @note Optimized for large matrices and performance-critical applications
- * @note The function assumes the output buffer is pre-allocated
- * 
- * @see hicma_parsec_params_t for parameter structure details
+ * @brief The values of tile A rounded to FP16 and back, in FP32
+ *
+ * A_use[i + j * mb] = (float)(fp16)A(i, j) for the mb-by-nb tile A, which is
+ * FP64 when decision is DENSE_DP or LOW_RANK_DP and FP32 otherwise: the
+ * rounding error of an FP16 copy, for the accuracy checks.
+ *
+ * @param[in]  A        Input tile (contiguous)
+ * @param[out] A_use    mb * nb floats
+ * @param[in]  mb       Number of rows
+ * @param[in]  nb       Number of columns
+ * @param[in]  decision Precision of A
  */
 void hicma_parsec_convert_2h_bit(void *A, float *A_use, int mb, int nb, uint16_t decision);
 
 /**
- * @brief Convert float to half precision
- * 
- * Converts a single precision (float) matrix to half precision format.
- * This function performs the conversion on CPU using optimized algorithms
- * designed for high-performance computing applications.
- * 
- * @param[in] nrows Number of rows in the matrix
- * @param[in] ncols Number of columns in the matrix
- * @param[in] _source Source single precision data buffer
- * @param[in] ld_s Leading dimension of source matrix
- * @param[out] _target Target half precision data buffer
- * @param[in] ld_t Leading dimension of target matrix
- * 
- * @note This function is optimized for CPU execution
- * @note Memory layout (row-major vs column-major) is preserved
- * @note The function assumes the target buffer is pre-allocated
- * @note Useful for mixed precision computations
- * @note Half precision support requires appropriate hardware/compiler support
- * 
- * @see convert_s2h_unary_CPU() for in-place conversion
- * @see convert_s2h_binary_CPU() for binary conversion
- */
-void float2half_CPU(int nrows, int ncols, const float *_source, int ld_s, void *_target, int ld_t);
-
-/**
- * @brief FP32 to IEEE binary16 in software, rounding to nearest even
+ * @brief Convert a tile to (convert_direction 0) or from (1) the precision
+ *        `decision`, in place, on the CPU
  *
- * For CPUs without a native FP16 type (HAVE_HP_CPU): returns the bits of
- * the FP16 value. Overflow gives infinity, NaN stays NaN.
+ * Direction 0 converts an FP64 tile to decision (DENSE_SP, DENSE_HP), with
+ * stochastic rounding when enable_stochastic_rounding (FP32 only, as before);
+ * direction 1 converts it back to FP64. DENSE_DP does nothing. Exits on a
+ * precision without a CPU conversion.
+ *
+ * @return 0 on success, -1 on a NULL argument
  */
-uint16_t hicma_parsec_float_to_half_bits(float value);
-
-/**
- * @brief IEEE binary16 (its bits) to FP32 in software, exactly
- */
-float hicma_parsec_half_bits_to_float(uint16_t value);
-
 int convert_datatype_adaptive_unary_CPU(void *A, int mb, int nb, int lda, uint16_t decision, int convert_direction, int enable_stochastic_rounding, uint64_t sr_seed, size_t *size);
-
-/**
- * @brief Convert double precision to single precision on CPU
- *
- * @param[in] nrows Number of rows
- * @param[in] ncols Number of columns
- * @param[in] H Input double precision matrix
- * @param[in] ldh Leading dimension of H
- * @param[out] F Output single precision matrix
- * @param[in] ldf Leading dimension of F
- * @param[in] seed Seed of the tile, hicma_parsec_sr_seed(m, n)
- */
-void double2float_round_CPU(int nrows, int ncols,
-                const double *H, int ldh,
-                float *F, int ldf, uint64_t seed);
 
 /**
  * @brief Seed of the stochastic rounding of the elements of tile (m, n)
  *
- * The rounding functions (double2float_round_CPU, double2float_round_GPU,
- * float2half_round_GPU, double2half_round_GPU) take the seed of the tile
- * their input belongs to. The random number of each element is a hash of its
+ * Stochastic rounding (OmniCast, OMC_ROUND_STOCHASTIC) takes the seed of the
+ * tile its input belongs to (HICMA_OMC_SR(on, hicma_parsec_sr_seed(m, n))). The random number of each element is a hash of its
  * position in the tile, the seed and its value, so that the elements of
  * different tiles round independently, even where their values are equal,
  * and the results are reproducible.
@@ -1412,14 +815,160 @@ int parsec_datatype_convert_dense_adaptive(parsec_context_t *parsec,
         uint16_t *decisions,
         int convert_direction);
 
+/**
+ * Host operand cache of the CPU GEMMs of kind 10 with runtime decisions
+ * (hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu).
+ *
+ * GEMM (m, n, k) reads the panel tiles (m, k) and (n, k), which the CPU TRSMs
+ * of this kind leave in FP64, and converts both to FP32 when it chooses an
+ * FP32 GEMM. Tile (m, k) is read by up to NT-k-2 GEMMs, so converting per
+ * GEMM is O(NT^3) conversions of O(NT^2) tiles. A panel tile no longer
+ * changes after its TRSM, and the conversion is deterministic (round to
+ * nearest, no stochastic rounding in kind 10), so this cache keeps one FP32
+ * copy per panel tile for the GEMMs of the process: bit-identical results.
+ *
+ * - A copy is made once: the first GEMM that needs it converts it outside the
+ *   cache's mutex; the GEMMs asking for it meanwhile wait for it.
+ * - A copy is freed as soon as every GEMM of this process that reads tile
+ *   (m, k) is done, those that choose FP64 included: each tile counts its
+ *   GEMMs done against the number of local GEMMs reading it. GEMMs between
+ *   _get and _release pin the copy, so it is never freed or evicted while
+ *   one reads it.
+ * - Buffers are taken from the heap when first needed, up to a bound
+ *   (HICMA_HOST_OPERAND_CACHE_AUTO or --operand_cache), and reused
+ *   afterwards. At the bound, a new copy takes the buffer of a copy nobody
+ *   pins: the one whose tile has the fewest GEMMs left to read it, the most
+ *   recently used of those (its tile is converted again if read again). If
+ *   all are pinned, the GEMM converts into its own work buffer, as without
+ *   the cache.
+ * - hicma_host_operand_cache_begin empties the cache before each
+ *   factorization; copies of an earlier one are never read.
+ *
+ * Only processes without GPUs have one: with GPUs, the GEMMs run on the GPUs,
+ * which have their own operand caches.
+ */
+typedef struct hicma_host_operand_cache_s hicma_host_operand_cache_t;
+
+/** Buffers of the host operand cache with --operand_cache -1, for a process
+ * with `local` panel tiles (m > k) of an NT-by-NT tile matrix: a quarter of
+ * them (an eighth of the memory of those tiles in FP64), at least 2*NT */
+#define HICMA_HOST_OPERAND_CACHE_SHARE 4
+#define HICMA_HOST_OPERAND_CACHE_AUTO(local, nt) \
+    ((local) / HICMA_HOST_OPERAND_CACHE_SHARE > 2L * (nt) ? (local) / HICMA_HOST_OPERAND_CACHE_SHARE : 2L * (nt))
+
+/**
+ * @brief FP32 copy T of the mb-by-nb FP64 tile S (both contiguous, leading
+ * dimension mb): the conversion the host operand cache keeps, and the one a
+ * GEMM does itself when the cache is off or full
+ */
+void hicma_host_operand_convert(const void *S, void *T, int mb, int nb);
+
+/**
+ * @brief Set up the host operand cache for a factorization
+ *
+ * Called by potrf_L_dense_mp_gpu_fp8_adaptive_New (kind 10) before each
+ * factorization of descA, when no task runs: creates params->host_operand_cache
+ * the first time it is needed (runtime decisions, --operand_cache != 0, no
+ * GPU), empties it and clears its statistics.
+ */
+void hicma_host_operand_cache_begin(hicma_parsec_params_t *params, parsec_tiled_matrix_t *descA);
+
+/** @brief Free the host operand cache c (NULL: nothing) */
+void hicma_host_operand_cache_destroy(hicma_host_operand_cache_t *c);
+
+/**
+ * @brief FP32 copy of the FP64 panel tile (m, k) of descA from the host
+ * operand cache c
+ *
+ * Returns the cached copy, converting S (the tile) into it first when no GEMM
+ * did yet; *converted is then set. Returns NULL when c is NULL or every buffer
+ * holds a copy some GEMM pins: the caller converts into its own buffer. Every
+ * GEMM that reads tile (m, k) calls hicma_host_operand_cache_release once
+ * after its last use of the tile, with the *handle this set (NULL if it did
+ * not call this or got NULL).
+ */
+void *hicma_host_operand_cache_get(hicma_host_operand_cache_t *c, parsec_tiled_matrix_t *descA,
+        const hicma_parsec_params_t *params, int m, int k, const void *S, int *converted, void **handle);
+
+/** @brief GEMM done with panel tile (m, k): see hicma_host_operand_cache_get */
+void hicma_host_operand_cache_release(hicma_host_operand_cache_t *c, parsec_tiled_matrix_t *descA,
+        const hicma_parsec_params_t *params, int m, int k, void *handle);
+
+/**
+ * @brief Statistics of the host operand cache c since the last reset:
+ * stats = {conversions, reuses, fallbacks (every buffer pinned), evictions,
+ * buffers, bytes, copies held} (all zero when c is NULL). Copies held after a
+ * factorization are 0 when every GEMM reading a tile was counted.
+ * reset: start counting again.
+ */
+void hicma_host_operand_cache_stats(hicma_host_operand_cache_t *c, uint64_t stats[7], int reset);
+
 
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
-int convert_datatype_adaptive_unary_GPU(parsec_potrf_workspace_t *ws_gpu,
-        parsec_device_cuda_module_t *cuda_device,
-        parsec_gpu_task_t *gpu_task,
-        parsec_cuda_exec_stream_t *cuda_stream,
-        void *A, int mb, int nb, int lda,
-        uint16_t decision, int convert_direction, int enable_stochastic_rounding, uint64_t sr_seed, size_t *size);
+/**
+ * @brief GPU version of convert_datatype_adaptive_unary_CPU: one single-pass
+ *        in-place OmniCast kernel on the stream (FP32 and FP16, with
+ *        stochastic rounding when enabled)
+ */
+int convert_datatype_adaptive_unary_GPU(void *A, int mb, int nb, int lda,
+        uint16_t decision, int convert_direction, int enable_stochastic_rounding, uint64_t sr_seed,
+        size_t *size, cudaStream_t stream);
+
+/**
+ * @brief FP8 (E4M3) operand of a cuBLASLt matmul from a tile
+ *
+ * T (leading dimension ldt) receives the transpose of the nrows-by-ncols tile
+ * S (leading dimension lds, element type src_type), the layout cuBLASLt takes
+ * for FP8 (TN), zero-padded to padded_cols rows and padded_rows columns and
+ * saturated. With
+ * scaling, S is first multiplied by the largest power of two s with
+ * s * max|S| <= 448, and scale[0..2] (device) receives {max|S|, s, 1/s};
+ * without, scale[0..2] = {0, 1, 1}. cuBLASLt reads 1/s from scale[2].
+ */
+void hicma_parsec_fp8_operand_GPU(omc_dtype_t src_type, int nrows, int ncols,
+        const void *S, int lds, void *T, int ldt, int padded_rows, int padded_cols,
+        float *scale, int scaling, cudaStream_t stream);
+
+/**
+ * @brief A conversion of a GEMM operand tile for hicma_operand_cache_get
+ *
+ * S (src_type, nrows by ncols, leading dimension lds) to dst_type with
+ * leading dimension mb, rounded stochastically (seed) if sr, multiplied by
+ * scale unless 1. dst_type OMC_FP8_E4M3: the FP8 GEMM operand of
+ * hicma_parsec_fp8_operand_GPU (transposed, padded to hicma_fp8_ld(mb),
+ * scaled per tile if fp8_scaling, scale at hicma_fp8_tile_scale(buf, mb)).
+ */
+typedef struct hicma_operand_conv_s {
+    omc_dtype_t src_type, dst_type;
+    const void *S;
+    int lds, nrows, ncols;
+    int sr;
+    uint64_t seed;
+    float scale;
+    int fp8_scaling;
+} hicma_operand_conv_t;
+
+/** @brief Run the conversion cv into T (leading dimension mb) on stream */
+void hicma_operand_convert(const hicma_operand_conv_t *cv, void *T, int mb, cudaStream_t stream);
+
+/**
+ * @brief Tile `tile` of matrix desc converted as cv says, from the device's
+ * operand cache c (hicma_operand_cache_t)
+ *
+ * Returns the cached tile after making `stream` wait for its conversion; on
+ * a miss converts it into a free or the least recently used slot on `stream`
+ * and sets *converted. Returns NULL (no conversion) when c is NULL or no slot
+ * is free: the caller converts into its own buffer. Each non-NULL return needs
+ * a hicma_operand_cache_put after the GEMM that reads it is enqueued.
+ *
+ * @param[in] sidx Index of `stream` among the device's exec streams
+ * @param[in] epoch params->operand_cache_epoch: entries of other epochs are stale
+ */
+void *hicma_operand_cache_get(hicma_operand_cache_t *c, int sidx, cudaStream_t stream,
+        const void *desc, int epoch, size_t tile, const hicma_operand_conv_t *cv, int *converted);
+
+/** @brief Release a hicma_operand_cache_get after the GEMM reading buf on `stream` is enqueued */
+void hicma_operand_cache_put(hicma_operand_cache_t *c, void *buf, int sidx, cudaStream_t stream);
 #endif
 
 

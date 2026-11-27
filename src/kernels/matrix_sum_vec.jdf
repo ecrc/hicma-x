@@ -146,7 +146,7 @@ void hicma_parsec_matrix_sum_vec( parsec_context_t *parsec,
     float *vec_tmp = (float *)calloc(sizeof(float) * params->N, nb_threads);
 
     /* Initialize output vector to zero */ 
-    memset( vec, 0, params->NT * sizeof(float) );
+    memset( vec, 0, params->N * sizeof(float) );
 
     // Create and execute the column-wise sum computation taskpool
     parsec_matrix_sum_vec = hicma_parsec_matrix_sum_vec_New( parsec, A, params, vec_tmp );
@@ -155,17 +155,6 @@ void hicma_parsec_matrix_sum_vec( parsec_context_t *parsec,
     parsec_context_start(parsec);
     parsec_context_wait(parsec);
     hicma_parsec_matrix_sum_vec_Destruct(parsec_matrix_sum_vec);
-
-    // Debug output (commented out for performance)
-#if 0
-    for(int i = 0; i < nb_threads; i++) {
-        for(int j = 0; j < params->N; j++) {
-            printf("%.0f ", vec_tmp[i*params->N+j]);
-        }
-        printf("\n");
-    }
-    printf("\nnb_threads %d\n", nb_threads);
-#endif
 
     /* Reduce per-thread contributions to get process-level column sums */
     for( int j = 0; j < params->N; j++ ) {

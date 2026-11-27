@@ -9,15 +9,21 @@
 
 #include "hicma_parsec.h"
 #include "hicma_parsec_sparse_analysis.h"
-#include <omp.h>
 
 /* Configuration flags for sparse matrix analysis */
 
 /* Whether to use OpenMP for parallelization when matrix is very large */
+#ifndef USE_OPENMP
 #define USE_OPENMP 0
+#endif
+#if USE_OPENMP
+#include <omp.h>
+#endif
 
 /* If allocate memory in local_gemm dynamically (1) or statically (0) */
+#ifndef DYNAMIC_MEMORY_ALLOCATION
 #define DYNAMIC_MEMORY_ALLOCATION 1
+#endif
 
 /* Define the number of integers allocated for each tile index array
  * First allocation: max(tile_n_index/INT_EACH_TIME_PER_TILE, INT_EACH_TIME_PER_TILE)
@@ -25,10 +31,14 @@
 #define INT_EACH_TIME_PER_TILE 10
 
 /* Print analyzed results for debugging (1) or not (0) */
+#ifndef PRINT_ANALYSED_RESULT
 #define PRINT_ANALYSED_RESULT 0
+#endif
 
 /* Print redefined distribution for debugging (1) or not (0) */ 
+#ifndef PRINT_REDEFINED_DISTRIBUTION
 #define PRINT_REDEFINED_DISTRIBUTION 0
+#endif
 
 /* Set the number of threads used for analysis based on matrix size */
 #define NUM_THREADS_ANALYSIS ((NT-k)/10000)
@@ -278,7 +288,7 @@ int hicma_parsec_sparse_analysis_gemm( parsec_tiled_matrix_t *A,
 {
     /* Allocate memory for GEMM local operations per tile */
     analysis->gemm_local_memory = (DATATYPE_ANALYSIS *)calloc( NT * NT, sizeof(DATATYPE_ANALYSIS) );
-    analysis->gemm_local = (DATATYPE_ANALYSIS **)malloc( NT * NT * sizeof(DATATYPE_ANALYSIS *) );
+    analysis->gemm_local = (DATATYPE_ANALYSIS **)calloc( (size_t)NT * NT, sizeof(DATATYPE_ANALYSIS *) );
     /* Initialize arena indicator to 0 (indicates memory is from arena) */
     analysis->gemm_local_memory_arena_indicator = (uint8_t *)calloc( NT * NT, sizeof(uint8_t) );
     
@@ -513,6 +523,7 @@ void hicma_parsec_sparse_analysis_free( parsec_tiled_matrix_t *A,
         hicma_parsec_matrix_analysis_t *analysis,
         int NT, int rank, int sparse, int check)
 {
+    (void)rank;
     /* Free TRSM and SYRK structures if sparse analysis or check was performed */
     if( sparse || check ) {
         hicma_parsec_sparse_analysis_trsm_syrk_free( analysis, NT );
@@ -534,12 +545,11 @@ void hicma_parsec_sparse_analysis_free( parsec_tiled_matrix_t *A,
     free( analysis->syrk_local ); 
     free( analysis->syrk_local_num ); 
 
-    /* Free GEMM analysis structures (only for tiles owned by current process) */
-    for(int i = 2; i < NT; i++) {
-        for(int j = 1; j < i; j++) {
-            if( rank == A->super.rank_of(&A->super, i, j) && NULL != analysis->gemm_local[j*NT+i] )
-                free( analysis->gemm_local[j*NT+i] ); 
-        }
+    /* Free the GEMM lists: they are allocated for the tiles owned by A or by
+     * the balanced distribution (Dist), so free every non-NULL entry (the
+     * array is calloc'd) rather than guessing the owner here */
+    for(size_t idx = 0; idx < (size_t)NT * NT; idx++) {
+        free( analysis->gemm_local[idx] );
     }
     free( analysis->gemm_local );
     free( analysis->gemm_local_memory ); 
@@ -662,16 +672,14 @@ int hicma_parsec_sparse_dist_calculate( parsec_tiled_matrix_t *A,
         memset(count, 0, P*sizeof(int));
         int current = 0;
 
-        /* It should be limit or limit+1 if index < left */
-        int limit, left;
-
-        if( analysis->trsm[k][0] == k + 1 ) {
-            limit = (analysis->trsm_num[k]-1) / P;
-            left = (analysis->trsm_num[k]-1) % P;
-        } else {
-            limit = analysis->trsm_num[k] / P;
-            left = analysis->trsm_num[k] % P;
-        }
+        /* It should be limit or limit+1 if index < left. The quotas cover the
+         * tiles placed below, those outside band_size_dist; subtracting only
+         * tile k+1 assumed band_size_dist >= 2, and with 0 or 1 the search
+         * below ran past count[P-1] and corrupted the heap */
+        int placed = 0;
+        for( int m = 0; m < analysis->trsm_num[k]; m++ )
+            if( analysis->trsm[k][m] - k >= band_size_dist ) placed++;
+        int limit = placed / P, left = placed % P;
 
         for( int m = 0; m < analysis->trsm_num[k]; m++) {
             /* Real tile row index */
@@ -697,8 +705,10 @@ int hicma_parsec_sparse_dist_calculate( parsec_tiled_matrix_t *A,
                             || (current >= left && count[current] >= limit) )
                         current++;
 
-                    if( current >= P )
-                        fprintf(stderr, "Wrong : %d !!!\n", current);
+                    if( current >= P ) {
+                        fprintf(stderr, "WORKLOAD_BALANCE 4: no process left for tile (%d, %d)\n", m_index, k);
+                        exit(1);
+                    }
 
                     count[current]++;
                     local_p = current;
@@ -717,8 +727,10 @@ int hicma_parsec_sparse_dist_calculate( parsec_tiled_matrix_t *A,
                             || (current >= left && count[current] >= limit) )
                         current++;
 
-                    if( current >= P )
-                        fprintf(stderr, "Wrong : %d !!!\n", current);
+                    if( current >= P ) {
+                        fprintf(stderr, "WORKLOAD_BALANCE 4: no process left for tile (%d, %d)\n", m_index, k);
+                        exit(1);
+                    }
 
                     count[current]++;
                     local_p = current;

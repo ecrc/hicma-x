@@ -125,32 +125,11 @@ BODY [type=CUDA]
 
         //fprintf(stderr, "CUDA SYRK %d %d\n", n, k);
 
-/* Alternative implementation using cuBLASLt (currently disabled) */
-#if 0
-        cublasLtHandle_t lightHandle = stream_found->lightHandle;
-        cublasLtMatmulDesc_t matmulDesc = stream_found->matmulDesc;
-        cublasLtMatrixLayout_t Adesc = stream_found->Adesc;
-        cublasLtMatrixLayout_t Bdesc = stream_found->Adesc;
-        cublasLtMatrixLayout_t Cdesc = stream_found->Cdesc;
-        size_t workspaceSize = stream_found->workspaceSize;
-        void *workspace = stream_found->workspace;
-        cublasLtMatmulHeuristicResult_t heuristicResultsArray = stream_found->heuristicResultsArray;
-
-        cublasSetStream(lightHandle, cuda_stream->cuda_stream);
-
-        /* FP8 precision SYRK using cuBLASLt */
-        cublasLtMatmul(lightHandle, matmulDesc,
-                &ialpha, A, Adesc, A, Adesc,
-                &izbeta, C, Cdesc, C, Cdesc,
-                &heuristicResultsArray.algo, workspace, workspaceSize, cuda_stream->cuda_stream);
-#endif
-    
      cublasStatus_t status;
 
     /* Current implementation: Mixed precision SYRK using cuBLAS GEMM */
     /* Input: A as 8-bit integer, Output: C as 32-bit integer */
     /* TODO: Need to convert A to 8-bit int and C to 32-bit int */
-#if 1
     /* Perform SYRK as GEMM: C = alpha * A^T * A + beta * C */
     /* Using 8-bit integer input (A) and 32-bit integer output (C) */
     status = cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
@@ -161,7 +140,6 @@ BODY [type=CUDA]
                                                CUDA_R_32I, CUBLAS_GEMM_DEFAULT); 
   HiCMA_CUDA_CHECK_ERROR( "cublasGemmEx0 \n", status);
 
-#endif
 }
 END
 
@@ -243,28 +221,7 @@ BODY [type=CUDA]
     cublasHandle_t handle = stream_found->handle_cublas;
     cublasSetStream( handle, cuda_stream->cuda_stream );
 
-/* Alternative implementation using cuBLASLt (currently disabled) */
-#if 0
-        cublasLtHandle_t lightHandle = stream_found->lightHandle;
-        cublasLtMatmulDesc_t matmulDesc = stream_found->matmulDesc;
-        cublasLtMatrixLayout_t Adesc = stream_found->Adesc;
-        cublasLtMatrixLayout_t Bdesc = stream_found->Bdesc;
-        cublasLtMatrixLayout_t Cdesc = stream_found->Cdesc;
-        size_t workspaceSize = stream_found->workspaceSize;
-        void *workspace = stream_found->workspace;
-        cublasLtMatmulHeuristicResult_t heuristicResultsArray = stream_found->heuristicResultsArray;
-
-       cublasSetStream(lightHandle, cuda_stream->cuda_stream);
-
-        /* FP8 precision GEMM using cuBLASLt */
-        cublasLtMatmul(lightHandle, matmulDesc,
-                &ialpha, A, Adesc, B, Bdesc,
-                &izbeta, C, Cdesc, C, Cdesc,
-                &heuristicResultsArray.algo, workspace, workspaceSize, cuda_stream->cuda_stream);
-#endif
-
 /* Current implementation: Mixed precision GEMM using cuBLAS */
-#if 1 
    cublasStatus_t status;
    
    /* Perform GEMM: C = alpha * A^T * B + beta * C */
@@ -278,7 +235,6 @@ BODY [type=CUDA]
                                                CUDA_R_32I, CUBLAS_GEMM_DEFAULT);
 
     HiCMA_CUDA_CHECK_ERROR( "cublasGemmEx1 \n", status);
-#endif
 }
 END
 

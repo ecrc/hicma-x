@@ -1,5 +1,7 @@
-#include "hicma_parsec.h"
+/* DPLASMA's test header defines its own TIME_* macros; HiCMA's timing header
+ * (via hicma_parsec.h) replaces them, so it comes second */
 #include "dplasma/tests/common.h"
+#include "hicma_parsec.h"
 #include <sys/time.h>
 
 static int check_solution( parsec_context_t *parsec, int loud,
@@ -118,7 +120,7 @@ int main(int argc, char ** argv)
                                M, K, P, nodes/P, KP, KQ, IP, JQ));
 
     /* Allocate memory for GPU workspace */
-#if (defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)) && GPU_BUFFER_ONCE
+#if (defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT))
     gpu_temporay_buffer_init( &data, &params, MB, NB, 0, params.kind_of_cholesky );
 #endif
 
@@ -377,7 +379,7 @@ int main(int argc, char ** argv)
     free(params.norm_tileB);
 
     /* GPU workspace */
-#if (defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)) && GPU_BUFFER_ONCE
+#if (defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT))
     gpu_temporay_buffer_fini( &data, params.kind_of_cholesky );
 #endif
 

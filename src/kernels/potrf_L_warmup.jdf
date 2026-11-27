@@ -80,23 +80,11 @@ BODY
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)  || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
     /* GPU load balancing and data binding */
 
-    /* Must match the device mapping of each kind's potrf_bind_A task,
-     * otherwise warmup stages tiles on a GPU the factorization does not use. */
+    /* The device mapping of the factorization's potrf_bind_A, otherwise the
+     * warmup stages tiles on a GPU the factorization does not use. */
     if( nb_cuda_devices > 0 ) {
-        int g;  /* GPU device index */
-        
-        /* Select appropriate load balancing strategy based on matrix type */
-        if( GENOMICS
-                || DENSE_MP_GPU_FP8 == params_tlr->kind_of_cholesky
-                || DENSE_MP_GPU_FP8_SP == params_tlr->kind_of_cholesky
-                || DENSE_MP_GPU_FP8_ADAPTIVE == params_tlr->kind_of_cholesky ) { 
-            /* Use 2D load balancing for general matrices or FP8 precision */
-            g = gpu_load_balance_2d( m, n, params_tlr );
-        } else {
-            /* Use standard load balancing for other matrix types */
-            g = gpu_load_balance( m, n, params_tlr );
-        }
-        
+        int g = hicma_parsec_gpu_of_tile( m, n, params_tlr );  /* GPU device index, as in the factorization */
+
         /* Advise the runtime system about preferred device for this data */
         parsec_advise_data_on_device( _f_A->original,
                 cuda_device_index[g],

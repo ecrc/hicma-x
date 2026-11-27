@@ -120,7 +120,8 @@ BODY
         }
     }
     if (copy->device_private == NULL) {
-        fprintf(stderr, "Tile allocation failed for (%d,%d)\n", m, n);
+        fprintf(stderr, "Fatal: allocating tile (%d, %d) failed: %zu bytes of host memory\n",
+                m, n, (size_t)copy->original->span);
         abort();
     }
 

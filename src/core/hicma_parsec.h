@@ -17,7 +17,7 @@
  * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
  *                              All rights reserved.
  * 
- * @version 1.0.0
+ * @version 0.2.0
  **/
 
 #ifndef HICMA_PARSEC_H
@@ -221,23 +221,6 @@ void hicma_parsec_kernel_matrix_file(parsec_context_t *parsec,
  * ============================================================================ */
 
 /**
- * @brief Write matrix A to file
- * 
- * @param[in] parsec PaRSEC context
- * @param[in] filename Output filename
- * @param[in] A Matrix to write
- * @param[in] data HICMA PaRSEC data structure
- * @param[in] params HICMA PaRSEC parameters
- * @param[in] symm Symmetry flag
- */
-void hicma_parsec_writeA(parsec_context_t *parsec,
-        const char *filename,
-        parsec_tiled_matrix_t *A,
-        hicma_parsec_data_t *data,
-        hicma_parsec_params_t *params,
-        int symm);
-
-/**
  * @brief Write matrix B to file
  * 
  * @param[in] parsec PaRSEC context
@@ -257,17 +240,6 @@ void hicma_parsec_writeB(parsec_context_t *parsec,
 /* ============================================================================
  * Matrix operations
  * ============================================================================ */
-
-/**
- * @brief Perform GEMM (General Matrix Multiply) operation
- * 
- * @param[in] parsec PaRSEC context
- * @param[in] data HICMA PaRSEC data structure
- * @param[in] params HICMA PaRSEC parameters
- */
-void perform_gemm(parsec_context_t *parsec,
-        hicma_parsec_data_t *data,
-        hicma_parsec_params_t *params);        
 
 /**
  * @brief Calculate the Frobenius norm of a tiled matrix

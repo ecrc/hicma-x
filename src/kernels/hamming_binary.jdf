@@ -25,7 +25,9 @@ extern "C" %{
  * - Integration with PaRSEC runtime for distributed execution
  */
 
+#ifndef TEST_CPU
 #define TEST_CPU 0
+#endif
 
 #if TEST_CPU
 #define CBLAS_H
@@ -33,11 +35,6 @@ extern "C" %{
 #endif
 
 #include "hicma_parsec.h"
-
-/* Define the different shapes this JDF is using */
-#define A_SHAPE 0
-#define B_SHAPE 1
-#define C_SHAPE 2
 
 #include "hamming_binary.h"
 
@@ -378,16 +375,6 @@ BODY [type=CUDA]
                                             CUDA_R_32I, CUBLAS_GEMM_DEFAULT); 
 #endif
 
-#if 0
-    // Debug output (disabled in production)
-    printf("current_value: %d lalpha: %d lbeta: %d\n", current_value, lalpha, lbeta);
-    matrix_print_int8_GPU(descA->mb, descA->nb, A_use, cuda_stream->cuda_stream);
-    
-    printf("temp %d %d %d %d %d %d\n", tempmm, tempnn, tempkk, ldak, ldbk, ldcm);
-    matrix_print_int8_GPU(descB->mb, descB->nb, B_use, cuda_stream->cuda_stream);
-
-    matrix_print_int32_GPU(descC->mb, descC->nb, C, cuda_stream->cuda_stream);
-#endif
 }
 END
 
@@ -437,16 +424,6 @@ BODY [type=HIP]
                                    &lbeta, C, CUDA_R_32I, ldcm,
                                             CUDA_R_32I, CUBLAS_GEMM_DEFAULT);
 
-#if 0
-    // Debug output (disabled in production)
-    printf("current_value: %d lalpha: %d lbeta: %d\n", current_value, lalpha, lbeta);
-    matrix_print_int8_GPU(descA->mb, descA->nb, A_use, cuda_stream->cuda_stream);
-
-    printf("temp %d %d %d %d %d %d\n", tempmm, tempnn, tempkk, ldak, ldbk, ldcm);
-    matrix_print_int8_GPU(descB->mb, descB->nb, B_use, cuda_stream->cuda_stream);
-
-    matrix_print_int32_GPU(descC->mb, descC->nb, C, cuda_stream->cuda_stream);
-#endif
 }
 END
 
@@ -493,12 +470,6 @@ BODY
     cblas_gemm_s8u8s32(CblasColMajor, CblasTrans, CblasNoTrans, CblasFixOffset,
             tempmm, tempnn, tempkk, lalpha, (int8_t*)A_use, ldak, ao,
             (uint8_t*) B_use, ldbk, bo, lbeta, (int *)C, ldcm, &co);
-#endif
-
-#if 1
-    // Debug output (disabled in production)
-    //parsec_print_tile2_int8(B_use, tempmm, tempnn);
-    //parsec_print_tile2_int(C, tempmm, tempnn);
 #endif
 
     // Return workspace memory to private memory pools

@@ -98,7 +98,7 @@ void climate_emulator_fini(parsec_context_t *parsec,
     }
 #endif
 
-#if !READ_FROM_FILE
+#if !CLIMATE_EMULATOR_READ_FROM_FILE
     parsec_data_free(gb->desc_f_data.mat);
     parsec_tiled_matrix_destroy((parsec_tiled_matrix_t*)&gb->desc_f_data);
 
@@ -133,7 +133,7 @@ void climate_emulator_fini(parsec_context_t *parsec,
     parsec_data_free(gb->desc_A.mat);
     parsec_tiled_matrix_destroy((parsec_tiled_matrix_t*)&gb->desc_A);
 
-#if ENABLE_INVERSE
+#if CLIMATE_EMULATOR_ENABLE_INVERSE
     parsec_data_free(gb->desc_flmERA.mat);
     parsec_tiled_matrix_destroy((parsec_tiled_matrix_t*)&gb->desc_flmERA);
 
@@ -177,7 +177,7 @@ static int read_csv_double(const char* filename, double **data, int M, int N) {
 
     fclose(fp);
 
-#if DEBUG_INFO_CLIMATE_EMULATOR
+#if CLIMATE_EMULATOR_DEBUG_INFO
     print_matrix_row_double(*data, hicma_parsec_min(M, 10), hicma_parsec_min(N, 10), N);
 #endif
 
@@ -406,7 +406,7 @@ void climate_emulator_geqsht_forward_pre_computed_version_core(
                             Ep, Gmtheta_r_K,
             &beta_complex, Gmtheta_r, Gmtheta_r_M);
 
-#if DEBUG_INFO_CLIMATE_EMULATOR 
+#if CLIMATE_EMULATOR_DEBUG_INFO 
     printf("Gmtheta_r\n");
     climate_emulator_sum_complex_core(Gmtheta_r, Gmtheta_r_M, Gmtheta_r_N);
     climate_emulator_print_matrix_col_complex(Gmtheta_r, 10, 10, Gmtheta_r_M);
@@ -424,7 +424,7 @@ void climate_emulator_geqsht_forward_pre_computed_version_core(
                             Gmtheta_r, Fmnm_K,
             &beta_complex, Fmnm, Fmnm_M);
 
-#if DEBUG_INFO_CLIMATE_EMULATOR
+#if CLIMATE_EMULATOR_DEBUG_INFO
     printf("Et1*Gmtheta_r\n");
     climate_emulator_sum_complex_core(Fmnm, Fmnm_M, Fmnm_N);
 #endif
@@ -446,7 +446,7 @@ void climate_emulator_geqsht_forward_pre_computed_version_core(
                            P, tmp1_K,
             &beta_complex, tmp1, tmp1_M); 
 
-#if DEBUG_INFO_CLIMATE_EMULATOR
+#if CLIMATE_EMULATOR_DEBUG_INFO
     printf("Et2*P\n");
     climate_emulator_sum_complex_core(tmp1, tmp1_M, tmp1_N);
 #endif
@@ -463,7 +463,7 @@ void climate_emulator_geqsht_forward_pre_computed_version_core(
                             Gmtheta_r, tmp2_K,
             &beta_complex,  tmp2, tmp2_M);
 
-#if DEBUG_INFO_CLIMATE_EMULATOR
+#if CLIMATE_EMULATOR_DEBUG_INFO
     printf("Et2*P*Gmtheta_r\n");
     climate_emulator_sum_complex_core(tmp2, tmp2_M, tmp2_N);
 #endif
@@ -480,7 +480,7 @@ void climate_emulator_geqsht_forward_pre_computed_version_core(
                            D, Fmnm_K,
             &beta_complex, Fmnm, Fmnm_M);
 
-#if DEBUG_INFO_CLIMATE_EMULATOR
+#if CLIMATE_EMULATOR_DEBUG_INFO
     printf("Fmnm\n");
     climate_emulator_sum_complex_core(Fmnm, Fmnm_M, Fmnm_N);
     climate_emulator_print_matrix_col_complex(Fmnm, 10, 10, Fmnm_M); 
@@ -501,7 +501,7 @@ void climate_emulator_geqsht_forward_pre_computed_version_core(
 	for(int m = 0; m < L; m++) {
         Fmnm_tmp = Fmnm + (L+m-1)*Fmnm_M;
 
-#if DEBUG_INFO_CLIMATE_EMULATOR
+#if CLIMATE_EMULATOR_DEBUG_INFO
         print_matrix_row_complex(Fmnm_tmp, 1, 10, Fmnm_N);
 #endif
 
@@ -546,14 +546,14 @@ void climate_emulator_geqsht_forward_pre_computed_version_core(
 
 	}
 
-#if DEBUG_INFO_CLIMATE_EMULATOR
+#if CLIMATE_EMULATOR_DEBUG_INFO
     printf("flmn_matrix\n");
     climate_emulator_sum_complex_core(flmn_matrix, flmn_matrix_M, flmn_matrix_N);
     climate_emulator_print_matrix_col_complex(flmn_matrix, 10, 10, flmn_matrix_M);
 #endif
 
     // Reshaping and separation of real and imaginary parts
-#if DEBUG_INFO_CLIMATE_EMULATOR
+#if CLIMATE_EMULATOR_DEBUG_INFO
 	printf("Reshaping and separation of real and imaginary parts\n");
 #endif
 	for(int n = 0; n < L; n++) {
@@ -565,7 +565,7 @@ void climate_emulator_geqsht_forward_pre_computed_version_core(
 		}
 	}
 
-#if DEBUG_INFO_CLIMATE_EMULATOR
+#if CLIMATE_EMULATOR_DEBUG_INFO
     printf("flm\n");
     climate_emulator_sum_double_core(flm, gb->flm_M, gb->flm_N);
 	climate_emulator_print_matrix_col_double(flm, 1, 20, 1); 
@@ -629,7 +629,7 @@ void climate_emulator_geqsht_inverse_pre_computed_version_core(
         }
     }
 
-#if DEBUG_INFO_CLIMATE_EMULATOR
+#if CLIMATE_EMULATOR_DEBUG_INFO
     printf("Smt\n");
     climate_emulator_print_matrix_col_double(Smt, 10, 10, Smt_M);
     climate_emulator_sum_double_core(Smt, Smt_M, Smt_N);
@@ -655,7 +655,7 @@ void climate_emulator_geqsht_inverse_pre_computed_version_core(
                          SC, f_spatial_K,
             (double)0.0, f_spatial, f_spatial_M);
 
-#if DEBUG_INFO_CLIMATE_EMULATOR
+#if CLIMATE_EMULATOR_DEBUG_INFO
     printf("gb->f_spatial\n");
     climate_emulator_print_matrix_col_double(f_spatial, 10, 10, f_spatial_M);
     climate_emulator_sum_double_core(f_spatial, f_spatial_M, f_spatial_N);

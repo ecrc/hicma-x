@@ -14,7 +14,7 @@
  * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
  *                              All rights reserved.
  * 
- * @version 1.0.0
+ * @version 0.2.0
  */
 
 #ifndef HICMA_PARSEC_HIP_CUDA_H
@@ -51,7 +51,13 @@
 #include "parsec.h"
 
 // PaRSEC HIP device module for GPU task scheduling and execution
-#include "dplasma/parsec/parsec/mca/device/hip/device_hip.h"
+#if defined(HICMA_PARSEC_BUILDING)
+#include "parsec/mca/device/hip/device_hip.h"   /* not installed by PaRSEC; in-tree only */
+#else
+/* The installed headers only use these through pointers */
+typedef struct parsec_device_hip_module_s parsec_device_hip_module_t;
+typedef struct parsec_hip_exec_stream_s parsec_hip_exec_stream_t;
+#endif
 
 /* ============================================================================
  * CLIMATE_EMULATOR compatibility definitions
@@ -88,7 +94,6 @@
 #define cudaError_t hipError_t                // Error code type for HIP operations
 #define cudaEvent_t hipEvent_t                // Event synchronization object
 #define cudaStream_t hipStream_t              // Asynchronous execution stream
-#define cudaSurfaceObject_t hipSurfaceObject_t // Surface memory object for texture operations
 
 /* ============================================================================
  * CUDA to HIP function mappings
@@ -100,6 +105,7 @@
 #define cudaDeviceReset hipDeviceReset                    // Reset GPU device to initial state
 #define cudaDeviceSynchronize hipDeviceSynchronize        // Synchronize all device operations
 #define cudaGetDevice hipGetDevice                        // Get current active device
+#define cudaGetDeviceCount hipGetDeviceCount              // Number of visible devices
 #define cudaGetDeviceProperties hipGetDeviceProperties    // Get device properties
 #define cudaSetDevice hipSetDevice                        // Set active device
 #define cudaHostRegister hipHostRegister
@@ -111,6 +117,9 @@
 #define cudaEventDestroy hipEventDestroy                  // Destroy event object
 #define cudaEventElapsedTime hipEventElapsedTime          // Calculate elapsed time between events
 #define cudaEventRecord hipEventRecord                    // Record event in stream
+#define cudaEventCreateWithFlags hipEventCreateWithFlags  // Create event object with flags
+#define cudaEventDisableTiming hipEventDisableTiming      // Event without timing data
+#define cudaStreamWaitEvent hipStreamWaitEvent            // Make a stream wait for an event
 #define cudaEventSynchronize hipEventSynchronize          // Wait for event completion
 
 // Memory management functions
@@ -120,42 +129,20 @@
 #define cudaMallocHost hipHostMalloc                      // Allocate host memory (hipMallocHost deprecated)
 #define cudaMemcpy hipMemcpy                              // Copy memory between host/device
 #define cudaMemset hipMemset                              // Initialize device memory
-#define cudaHostRegister hipHostRegister  
-#define cudaHostUnregister hipHostUnregister
-#define cudaHostRegisterDefault hipHostRegisterDefault
-
-// Memory optimization functions
-#define cudaMemAdvise hipMemAdvise                        // Provide memory access hints
-#define cudaMemPrefetchAsync hipMemPrefetchAsync          // Prefetch memory asynchronously
 
 // Stream management functions
-#define cudaStreamCreate hipStreamCreate                  // Create execution stream
 #define cudaStreamDestroy hipStreamDestroy                // Destroy execution stream
 
 // Error handling functions
-#define cudaGetErrorName hipGetErrorName                  // Get error name from error code
 #define cudaGetErrorString hipGetErrorString              // Get error description from error code
 #define cudaGetLastError hipGetLastError                  // Get last error from device
 #define PARSEC_CUDA_CHECK_ERROR DPLASMA_HIPBLAS_CHECK_ERROR
-
-// CUDA Func
-#define curand_uniform hiprand_uniform
-#define curandState hiprandState
-#define curand_init hiprand_init
 
 /* ============================================================================
  * CUDA to HIP enum value mappings
  * ============================================================================ */
 // CUDA enumeration values mapped to their HIP equivalents
 // These mappings ensure compatibility for CUDA code using specific enum values
-
-// Boundary mode constants for texture operations
-#define cudaBoundaryModeClamp hipBoundaryModeClamp        // Clamp to edge values
-#define cudaBoundaryModeTrap hipBoundaryModeTrap          // Trap on out-of-bounds access
-#define cudaBoundaryModeZero hipBoundaryModeZero          // Return zero for out-of-bounds access
-
-// Memory advice constants
-#define cudaMemAdviseSetReadMostly hipMemAdviseSetReadMostly // Mark memory as read-mostly
 
 // Memory copy direction constants
 #define cudaMemcpyDeviceToHost hipMemcpyDeviceToHost      // Copy from device to host
@@ -176,18 +163,10 @@
 #define CUBLAS_COMPUTE_16F HIPBLAS_R_16F                   // Half precision compute type
 
 // Matrix operation constants
-#define CUBLAS_DIAG_NON_UNIT_DIAG_NON_UNIT HIPBLAS_DIAG_NON_UNIT
-#define CUBLAS_DIAG_NON_UNIT_FILL_MODE_LOWER HIPBLAS_FILL_MODE_LOWER
-#define CUBLAS_DIAG_NON_UNIT_GEMM_DEFAULT HIPBLAS_GEMM_DEFAULT
-#define CUBLAS_DIAG_NON_UNIT_OP_N HIPBLAS_OP_N
-#define CUBLAS_DIAG_NON_UNIT_OP_T HIPBLAS_OP_T
-#define CUBLAS_DIAG_NON_UNIT_SIDE_RIGHT HIPBLAS_SIDE_RIGHT
-#define CUBLAS_DIAG_NON_UNIT_STATUS_SUCCESS HIPBLAS_STATUS_SUCCESS
 
 // cuBLAS handle management functions
 #define cublasCreate hipblasCreate                         // Create cuBLAS handle
 #define cublasDestroy hipblasDestroy                       // Destroy cuBLAS handle
-#define cublasDestroy_v2 hipblasDestroy                    // Destroy cuBLAS handle (v2 API)
 
 // Double precision BLAS operations
 #define cublasDgemm hipblasDgemm                           // Double precision matrix multiplication
@@ -205,7 +184,6 @@
 #define cublasGemmEx hipblasGemmEx                         // Extended precision matrix multiplication
 
 // cuBLAS type definitions
-#define cublasGemmAlgo_t hipblasGemmAlgo_t                 // GEMM algorithm type
 #define cublasHandle_t hipblasHandle_t                     // cuBLAS handle type
 #define cublasOperation_t hipblasOperation_t               // Matrix operation type
 #define cublasStatus_t hipblasStatus_t                     // cuBLAS status type
@@ -217,12 +195,6 @@
 
 // cuBLAS status constants
 #define CUBLAS_STATUS_SUCCESS HIPBLAS_STATUS_SUCCESS
-#define CUBLAS_STATUS_NOT_INITIALIZED HIPBLAS_STATUS_NOT_INITIALIZED
-#define CUBLAS_STATUS_ALLOC_FAILED HIPBLAS_STATUS_ALLOC_FAILED
-#define CUBLAS_STATUS_INVALID_VALUE HIPBLAS_STATUS_INVALID_VALUE
-#define CUBLAS_STATUS_MAPPING_ERROR HIPBLAS_STATUS_MAPPING_ERROR
-#define CUBLAS_STATUS_EXECUTION_FAILED HIPBLAS_STATUS_EXECUTION_FAILED
-#define CUBLAS_STATUS_INTERNAL_ERROR HIPBLAS_STATUS_INTERNAL_ERROR
 #define CUBLAS_STATUS_NOT_SUPPORTED HIPBLAS_STATUS_NOT_SUPPORTED
 #define CUBLAS_STATUS_ARCH_MISMATCH HIPBLAS_STATUS_ARCH_MISMATCH
 
@@ -264,15 +236,11 @@
 // These mappings cover advanced memory operations and stream management
 
 // Data type definitions
-#define cudaDataType_t hipblasDatatype_t                   // CUDA data type enumeration
 
 // Memory information and management
 #define cudaMemGetInfo hipMemGetInfo                       // Get memory usage information
 #define cudaMemcpyAsync hipMemcpyAsync                     // Asynchronous memory copy
 #define cudaMemcpyKind hipMemcpyKind                       // Memory copy direction type
-#define cudaHostRegister hipHostRegister                   // Memory register 
-#define cudaHostUnregister hipHostUnregister               // Memory unregister 
-#define cudaHostRegisterDefault hipHostRegisterDefault     // Memory register flag 
 
 // Advanced stream operations
 #define cudaStreamCreateWithFlags hipStreamCreateWithFlags // Create stream with specific flags
@@ -290,7 +258,6 @@
 
 #define parsec_device_cuda_module_t parsec_device_hip_module_t  // PaRSEC device module type
 #define parsec_cuda_exec_stream_t parsec_hip_exec_stream_t     // PaRSEC execution stream type
-#define dplasma_cuda_handles_t dplasma_hip_handles_t           // DPLASMA handle type
 #define cuda_device hip_device                                 // Device identifier type
 #define cuda_index hip_index                                   // Device index type 
 

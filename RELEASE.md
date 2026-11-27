@@ -1,33 +1,242 @@
-# HiCMA-PaRSEC Release Information
+# HiCMA-X release notes
 
-## Current Version: 0.1.0
+## 0.2.0
 
-### Major Features
-* **Hierarchical Matrix Computations**: Tile Low-Rank (TLR) Cholesky factorization
-* **Mixed Precision Support**: Double, single, half, and FP8 precision arithmetic
-* **GPU Acceleration**: CUDA and HIP support for heterogeneous computing
-* **Adaptive Memory Management**: Dynamic precision selection and memory allocation
-* **PaRSEC Runtime Integration**: Task-based parallel execution with automatic load balancing
+HiCMA-X (formerly HiCMA-PaRSEC) is a library of tile low-rank and
+mixed-precision linear algebra on the PaRSEC runtime: Cholesky factorizations
+with dense, banded, low-rank and adaptively chosen tile precisions (FP64, FP32,
+FP16, FP8), a mixed-precision TRMM, and the kernels behind the climate emulator
+and the genomics (kernel ridge regression) applications.
 
-### Core Capabilities
-* **Matrix Operations**: Matrix multiplication, Cholesky factorization, rank-k updates
-* **Sparse Matrix Analysis**: Bandwidth optimization and memory usage estimation
-* **Climate Modeling**: Exascale climate emulator with spherical harmonic transforms
-* **Scientific Computing**: 3D mesh deformation, spatial statistics, genomics applications
+### What is new since 0.1.0
 
-### Build System
-* **Modern CMake**: CMake 3.16+ with presets and modern policies
-* **Cross-Platform Support**: Linux, macOS, and Windows compatibility
-* **Automated Testing**: Comprehensive test suite with unit, integration, and performance tests
-* **Docker Support**: Containerized builds for different environments
+- Runtime precision decisions for the dense mixed-precision Cholesky
+  (`--adaptive_decision_runtime 1`), FP8 GEMMs with per-tile scaling, and a
+  mixed-precision TRMM with stochastic rounding.
+- A release-quality pass over the existing code: the correctness check is
+  binding and drives the exit code, the diagonal shift is applied once, several
+  memory-safety bugs in initialization and the file readers are fixed, the
+  installed package is usable, and the Cholesky wrappers share one
+  implementation. The full list is in
+  `CHANGELOG.md`; the review that led to it is in `docs/code-review.md`.
+- Every data-type conversion goes through OmniCast 2.1.1 (new submodule
+  `omnicast/`): one library for FP64, FP32, FP16, BF16, FP8 and integers on
+  the CPU, CUDA and HIP, with the same results as before. Each GPU keeps the
+  converted GEMM operands of a factorization for reuse (`--operand_cache`,
+  on by default): on an H100 at N = 45056, FP8-heavy factorizations run
+  1.07-1.08x faster. CPU-only runs of kind 10 keep FP32 copies of the panel
+  tiles the same way and, with MKL, compute their FP32 GEMMs in panels:
+  1.13-1.32x faster on Broadwell and Zen 4.
+- CPU threads flush subnormal numbers (`--flush_subnormals`, on by
+  default): on Intel CPUs the mixed-precision kinds are 1.6-2.6x faster,
+  and no longer slower than FP64.
+- A failed cuBLAS, cuBLASLt, cuSOLVER (hipBLAS, rocSOLVER) or OmniCast call
+  stops the run with the file, the line and the error, where 0.1.0 went on
+  to a wrong factor or a later, unrelated error.
+- Validated on two nodes (two Radeon VII nodes over InfiniBand; a V100 and
+  an A100 node over Ethernet) and with several GPUs per process.
+- On AMD GPUs the Cholesky factors its diagonal tiles with its own GPU
+  routine instead of rocSOLVER's POTRF, which has a race in ROCm releases
+  before its March 2026 fix (ROCm 6.4 and later do not support gfx906): on a
+  Radeon VII about one factorization in 150 came out wrong, now and then
+  without failing the check.
 
-### Dependencies
-* **DPLASMA**: Distributed Parallel Linear Algebra Software
-* **STARS-H**: Hierarchical matrix generation and approximation
-* **HCORE**: Low-rank matrix operations and BLAS kernels
+### Supported configurations
 
-### Documentation
-* **Comprehensive Guides**: Build, testing, and usage documentation
-* **API Documentation**: Detailed function and module documentation
-* **Examples**: Climate emulator and scientific computing examples
-* **Project Structure**: Detailed project organization documentation 
+| Configuration | Status in 0.2.0 |
+|---|---|
+| Linux x86_64, CPU only (OpenBLAS or MKL, LAPACKE, Open MPI or MPICH) | tested (CI, 1 and 2 ranks) |
+| Linux x86_64 + CUDA 12 (A100, V100; H100 for FP8) | tested on one A100 (1 and 2 ranks sharing it), one 8-A100 node (1 to 8 ranks), one H100 (FP8; 1 and 2 ranks) and one 8-V100 node (1 to 8 GPUs in one process, 2 and 8 ranks); also on two nodes (a V100 and an A100, one rank each, over Ethernet), with tiles sent from GPU memory (chapter 3 of `docs/hicma-x-0.2.0-report.pdf`) |
+| Linux + ROCm 6 (HIP, gfx90a) | tested on Frontier: one MI210 (CTest 35 / 35) and one MI250X node (CTest 42 / 42 with the two-rank cases, `test_CI.sh`, the GPU validation matrix; 1 to 8 GCDs in one process, two ranks with one GCD each or sharing one); kinds 1 to 4 run on the CPU |
+| Linux + ROCm 6.3 (HIP, gfx906: Radeon VII, MI50/60) | tested on one Radeon VII with ROCm 6.3.2 (CTest 46 / 46 with the two-rank cases), and on two nodes with one or two Radeon VIIs per process over InfiniBand (the GPU cases and the operand cache, chapter 3 of the report). ROCm 6.4 and later ship no rocBLAS kernels for gfx906 |
+| Fugaku (`ON_FUGAKU`), macOS, Windows | not supported |
+
+Requirements: the submodules (`git clone --recursive`, or `git submodule
+update --init --recursive`), CMake 3.21, a C11/C++17 compiler, a Fortran
+compiler (BLAS/LAPACK linkage), MPI with `MPI_THREAD_MULTIPLE`, BLAS,
+LAPACKE; CUDA 12.0 or later for GPU builds (`90a` architecture needs 12.0);
+GSL optional (Matérn kernels).
+
+### Known limitations
+
+- The Cholesky drivers require `N` to be a multiple of `NB` (rejected at
+  start-up). The TRMM supports partial tiles.
+- Cholesky kinds 1 to 4 have CUDA bodies only; on HIP they run on the CPU.
+- DPLASMA's own HIP POTRF (used by its testers, such as `testing_dpotrf`
+  with GPUs) still calls rocSOLVER, and can give a wrong factor on AMD GPUs
+  with a ROCm older than rocSOLVER's March 2026 fix. HiCMA-X does not use it
+  on GPUs: the reference factorization of `--check` runs on the CPU.
+- AMD GPUs (gfx90a: MI210, MI250X) flush FP16 subnormals (|x| < 6.1e-5) to
+  zero in their FP16 GEMMs, and adaptive decisions put small entries in FP16:
+  an adaptive kind-5 run at N=30720 gave 1.0e-5 for `--fixedacc 1e-8`. Pass
+  `--tensor_gemm_hp 0x20` (BF16, FP32's exponent range; 1.2e-8) on these GPUs
+  when every tile is dense; HIP runs that use FP16 tiles say so at start-up.
+  gfx906 (Radeon VII) keeps FP16 subnormals and has no BF16 hardware (BF16
+  GEMMs made an adaptive kind-5 run 6x slower): keep FP16 there, and no note
+  is printed.
+  The run-time decision (kind 10) scales its FP16 operands and is not
+  affected. Low-rank (TLR) layouts have no BF16 variant and keep FP16.
+  Kind 3 with a half-precision band runs on GPUs only (the CPU bodies have no
+  half path; without GPUs the single-precision band is widened to the matrix).
+- `--enable_stochastic_rounding` is implemented for kinds 1 to 5 and the
+  TRMM, not for kinds 8, 9 and 10.
+- `--tensor_gemm` variants other than 0x8 are not implemented on every path
+  (`TESTS.md`, "GPU GEMM variants"); `--datatype_convert 2` needs GPUs.
+- A static FP8 band near the diagonal can make the matrix indefinite (the
+  factorization reports `info` > 0; with low-rank tiles HCORE aborts on the
+  NaNs). Keep it away from the diagonal or use `--adaptive_decision`.
+- In runtime-decision mode the CPU GEMM keeps FP16 updates into an FP32 tile in
+  FP64 while the GPU GEMM keeps FP32; CPU-only and GPU runs of kind 10 therefore
+  differ in their storage precisions (results are within tolerance in both).
+- The residual of mixed-precision runs is bounded by the precisions used, not by
+  `--fixedacc`; pass `--check_tol` with the bound you expect (see `TESTS.md`).
+- The genomics drivers need `-DHICMA_PARSEC_GENOMICS=ON` and a CUDA build; the
+  climate emulator needs its external data set. Neither is covered by CI.
+- Several ranks sharing one GPU need `-- --mca device_cuda_memory_use <percent>`
+  (`device_hip_memory_use` on AMD GPUs).
+
+### Validation
+
+The validation and performance report, `docs/hicma-x-0.2.0-report.pdf`, records with figures and
+tables what was built and run for this release:
+CPU, CUDA (A100, H100, V100) and HIP (MI210, MI250X on Frontier; Radeon VII)
+configurations, the CTest suite, the validation matrix
+(`scripts/validation_matrix.sh`), the install consumer, two-node runs and
+before/after timing comparisons. The last rounds built the release
+candidate from a fresh clone, with the submodules as GitHub serves them:
+CTest passed on two CPU-only nodes (Broadwell, Zen 4), an A100, an H100, a
+V100 and a Radeon VII, and again on Broadwell, the A100 and the Radeon VII
+with OmniCast 2.1.1 (chapters 3 and 12 of the report).
+
+### Upgrading from 0.1.0
+
+- With a BF16 GEMM variant (`--tensor_gemm_hp 0x20` or `0x40`) the adaptive
+  decisions use BF16's epsilon instead of FP16's, so fewer tiles go to BF16
+  and `--fixedacc` is met; such runs differ from 0.1.0 and earlier 0.2.0
+  snapshots.
+- New: `hicma_parsec_matrix_sum` (mixed-precision checksum). The build-time
+  switches of `hicma_parsec_internal.h` (`PRINT_RANK`, `DEBUG_INFO`,
+  `WORKLOAD_BALANCE`, ...) are set with `-DNAME=value` in `CMAKE_C_FLAGS`
+  instead of editing the header. `GPU_BUFFER_ONCE` is gone: the GPU
+  workspace is always allocated once.
+- Removed from the installed headers because nothing used them: the macros
+  `HICMA_PARSEC_FP64` ... `HICMA_PARSEC_ONE_BIT`, `HICMA_PARSEC_DENSE`,
+  `HICMA_PARSEC_LOW_RANK`, `HICMA_PARSEC_SPARSE`, `DATATYPE_USE`,
+  `NOT_SPARSE`, `SPARSE_NORMAL`, `SPARSE_BALANCE`, `EPS_DP`,
+  `THRESHOLD_MEMORY_PER_NODE`, `str`, `xstr`, and the
+  `hicma_parsec_params_t` fields `HMB`, `start_time_kernel_sqr_sum_vec`,
+  `str_problem`.
+- CUDA builds without `CMAKE_CUDA_ARCHITECTURES` (or `CUDAARCHS`) compile for
+  70 80 90 90a (80 90 90a with CUDA 13). 0.1.0 documented this default but
+  compiled for the compiler's default, sm_52 with CUDA 12.
+
+- `hicma_parsec_lapack_tile_convert` replaces the eight tile/LAPACK
+  conversion taskpools; the named `hicma_parsec_{Tile_to_Lapack,Lapack_to_Tile}*`
+  functions remain and now return -1 (on every rank, nothing copied) when the
+  descriptor is not 2D block-cyclic over the given grid. Their
+  `*_New`/`*_Destruct` constructors, never declared in a header, are gone.
+
+- `libhicma_parsec` has SOVERSION 0 (it was 2, from a stale fallback version).
+- BLAS/LAPACKE come from DPLASMA's `find_package(LAPACKE)` for the whole build
+  (`LAPACKE_ROOT`, `BLA_VENDOR`); the separate `BLAS_LIBRARIES` discovery and
+  the hard-coded MKL link line are gone.
+- Results change for problem kinds 0, 1, 5, 6 and 7 when `--adddiag` is non-zero
+  (the shift is no longer applied twice), and for TLR kinds 2, 6, 7 only in
+  runs that silently overflowed their rank cap before (they now abort with
+  HCORE's message, as kind 1 did).
+- `--check 1` can fail now. Runs that previously "passed" with a residual
+  above the tolerance fail; use `--check_tol` to state the accepted bound.
+- The genomics drivers (`testing_syrk`, `testing_KRR*`, `testing_Kmatrix`,
+  `testing_igemm_summa`) are built only with `-DHICMA_PARSEC_GENOMICS=ON`.
+- Scripts moved: machine recipes to `scripts/machines/`, genomics data tools
+  to `scripts/genomics/`; `scripts/test_run*.sh` are replaced by
+  `scripts/test_CI.sh` and CTest. The machine scripts configure the whole tree
+  once and take `[build-dir] [extra CMake options]`; they no longer build
+  STARS-H and HCORE separately or write `env_hicma_parsec.sh`. The scripts of
+  retired machines and the ExaGeoStat builds (`scripts/machines/legacy/`) are
+  removed.
+- `testing_potrf_tlr --nruns n` repeats the factorization only where A can be
+  regenerated (the dense layout without `--check`, `--auto_band`,
+  `--adaptive_memory` or `--sparse`); elsewhere it does one run and warns.
+  0.1.0 factorized the previous run's factor, which timed a different problem
+  and crashed in TLR runs.
+- One run prints one `R-LO` line (0.1.0 printed a second, incomplete one
+  first); with `--nruns n`, one per run plus the final one. Its `GITHASH`
+  column holds `git describe` of the source at configure time, and the
+  parameter summary starts with the version.
+- The set-up notes (band sizes, lookahead, memory layout, FP16 emulation,
+  tile-size advice) print only with `--verbose 1`. New notes: GPUs visible
+  but `--gpus 0`; `--gpus` above the usable GPUs (or on a build without GPU
+  support), which runs with what there is; a TLR kind (1, 2) with every tile
+  dense; a launcher binding that leaves the processes of a node half of its
+  cores or fewer, or starts more worker threads than it has cores.
+- `--left_looking` < 0 and BF16 GEMMs with low-rank tiles exit with status 1
+  (they exited 0).
+- New `--tensor_gemm_hp` (GPU GEMM variant of the FP16 tiles) and
+  `--tensor_gemm_sp` (FP32 or TF32). `--tensor_gemm` sets both: one FP16
+  variant (0x8, 0x10, 0x20, 0x40 or 0x80), plus 0x4 for TF32; 0x1 and 0x2
+  are accepted and ignored, so the values 0.1.0 handled correctly keep their
+  meaning, except with `--adaptive_decision` (below). Refused
+  at start-up: no variant or several (0.1.0 gave wrong results in kind 3 and
+  aborted mid-run in kind 5), BF16 with low-rank tiles or in kind 3 (wrong
+  results), a variant other than 0x8 with `--adaptive_decision_runtime`
+  (ignored before), 0x80
+  in the Cholesky (exited 0 without factorizing), BF16 in the TRMM.
+  `--adaptive_decision` uses the chosen variant and TF32; it always used 0x8
+  without TF32, and with 0x10 its dense and low-rank GEMMs disagreed on the
+  type of C (NaNs, then a crash). The TRMM drivers now read
+  `--tensor_gemm_hp` and check the value too. Also refused: BF16 with
+  `--datatype_convert 2` (wrong results), and 0x10 when a low-rank tile has
+  rank 0.
+- GPU runs of kinds 1 and 5 with a static FP16 band and low-rank tiles
+  (`--band_dense_sp` < `--band_dense` < NT) return correct results; 0.1.0
+  gave wrong results (residuals 10 to 59) or crashed. So do kind-8 runs with
+  an FP8 band and low-rank tiles on GPUs with FP8 (residual 1.5e-2 before).
+  Results of such runs change.
+- With several GPUs every kind places its tiles by one rule (the GPU grid for a dense
+  matrix, by column for a dense band), which changes timings, not results;
+  rank 0 prints a note when the GPUs in use cannot all read each other
+  directly. `Number_of_Datatype_Conversions` of kind-1 runs is larger: the
+  conversions of its low-rank GEMMs were not counted.
+
+- New submodule `omnicast/` (OmniCast 2.1.1,
+  https://github.com/QingleiCao/OmniCast): after pulling, run
+  `git submodule update --init --recursive`. An install adds
+  `include/omnicast/omnicast.h` and the OmniCast library, which a static
+  `libhicma_parsec` links against.
+- FP64 -> FP8 (CUDA) and FP64 -> FP16 (HIP) are rounded once instead of
+  through FP32, so single elements can differ from 0.1.0 in rare ties (no
+  test result changed). Float -> integer conversions saturate and map NaN
+  to 0.
+- The operand cache (`--operand_cache`, on by default) takes up to 5 % of
+  PaRSEC's GPU memory per precision (FP8, 2-byte, 4-byte) when first needed;
+  processes without GPUs keep FP32 copies of the panel tiles for kind 10,
+  by default at most a quarter of the process's panel tiles.
+  `--operand_cache 0` turns both off. Results are bit-identical, and
+  `Number_of_Datatype_Conversions` is smaller.
+- CPU threads flush subnormals by default: HiCMA-X sets flush-to-zero and
+  denormals-are-zero on its CPU threads while it runs and restores the main
+  thread's setting at the end. Residuals of mixed-precision CPU runs agree
+  with those of `--flush_subnormals 0` to 4-5 digits; FP64 runs and GPU
+  kernels are unchanged.
+  `--flush_subnormals 0` keeps IEEE subnormals.
+- With MKL, the FP32 GEMMs that kind 10 runs on the CPU for FP64 tiles are
+  computed in 256-column panels (`ACC_DP_PANEL`, set by CMake): the same
+  bits with MKL; with OpenBLAS or BLIS it stays one GEMM.
+- In Cholesky runs with GPUs (kinds 1, 2, 5, 8, 9, 10), a GEMM that a GPU
+  accepts always runs on a GPU, also with
+  `device_load_balance_allow_cpu=1`. Default runs give the same bits.
+- A failed GPU library call (cuBLAS, cuBLASLt, cuSOLVER; hipBLAS, rocSOLVER)
+  or OmniCast call aborts the run with the file, the line, the status and,
+  for OmniCast, the CUDA or HIP call and error.
+- When the MPI library says it cannot read GPU memory, remote transfers go
+  through host memory, and a start-up note says so;
+  `PARSEC_MCA_mpi_gpu_aware` still overrides this. HIP processes with more
+  than one GPU allocate PaRSEC's arena buffers pinned, and the LL^T of
+  `--check` is pinned when GPUs are enabled (pageable if that fails).
+- Kinds 8 to 10 refuse `--enable_stochastic_rounding` at start-up, also
+  where no FP8 GEMM runs (a V100 or A100, or `--fp8 0`).
+
+## 0.1.0
+
+First public release (2025-11-12).

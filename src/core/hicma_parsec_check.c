@@ -130,6 +130,13 @@ int starsh_generate_map(parsec_context_t *parsec, int uplo,
  * Cholesky factorization checking functions
  * ============================================================================ */
 
+/* Registration hook of a matrix whose memory is pinned already */
+static int hicma_parsec_memory_pinned_already(parsec_data_collection_t *dc, parsec_device_module_t *device)
+{
+    (void)dc; (void)device;
+    return PARSEC_SUCCESS;
+}
+
 /**
  * @brief Check Cholesky factorization correctness via ||L*L'-A||
  * 
@@ -174,10 +181,33 @@ int check_dpotrf2( parsec_context_t *parsec, int verbose,
             twodA->grid.krows, twodA->grid.kcols,
             twodA->grid.ip, twodA->grid.jq);
 
-    /* Allocate memory for the temporary matrix */
-    LLt.mat = parsec_data_allocate((size_t)LLt.super.nb_local_tiles *
-            (size_t)LLt.super.bsiz *
-            (size_t)parsec_datadist_getsizeoftype(LLt.super.mtype));
+    /* Allocate memory for the temporary matrix: pinned when GPUs are enabled,
+     * like the tiles, instead of the malloc buffer PaRSEC registers at its
+     * first GPU use (hipHostRegister). With two Radeon VIIs in a process the
+     * first DMA into that registered 2 GB buffer made the second GPU fault
+     * on its first tile ("Page not present"), in about 6 % of the runs on one
+     * node of histamine and in none on the other; a hipHostMalloc buffer has
+     * driver-owned pages and never did. */
+    size_t LLt_bytes = 0;
+    int LLt_core = 1;  /* from hicma_parsec_core_memory_allocation */
+    LLt.mat = NULL;
+    hicma_parsec_core_memory_allocation(&LLt.mat, (size_t)LLt.super.nb_local_tiles * (size_t)LLt.super.bsiz,
+                                        "double", &LLt_bytes);
+    if( NULL == LLt.mat ) {
+        LLt.mat = parsec_data_allocate(LLt_bytes);  /* pageable: PaRSEC registers it */
+        LLt_core = 0;
+        if( NULL == LLt.mat ) {
+            fprintf(stderr, "Fatal: allocating the LL^T of the check failed: %zu bytes of host memory\n",
+                    LLt_bytes);
+            abort();
+        }
+    } else {
+        /* PaRSEC cannot register memory that is pinned already. A hook that
+         * does nothing rather than NULL: DPLASMA's LAPACK-layout wrapper calls
+         * it without checking. */
+        LLt.super.super.register_memory = hicma_parsec_memory_pinned_already;
+        LLt.super.super.unregister_memory = hicma_parsec_memory_pinned_already;
+    }
 
     /* Initialize LLt to zero and copy A into it */
     dplasma_dlaset( parsec, PlasmaUpperLower, 0., 0.,(parsec_tiled_matrix_t *)&LLt );
@@ -219,20 +249,27 @@ int check_dpotrf2( parsec_context_t *parsec, int verbose,
          (result > threshold) )
     {
         if( verbose ) printf(RED "-- Factorization is suspicious ! \n" RESET);
+        if( 0 == A0->super.myrank )
+            fprintf(stderr, RED "Check FAILED: ||LL^T-A||_F/||A||_F = %e, accepted bound %e (--check_tol)\n" RESET, result, threshold);
         info_factorization = 1;
     }
     else
     {
         if( verbose ) printf(GRN "-- Factorization is CORRECT ! \n" RESET);
+        if( 0 == A0->super.myrank )
+            printf("Check passed: ||LL^T-A||_F/||A||_F = %e, accepted bound %e (--check_tol)\n", result, threshold);
         info_factorization = 0;
     }
 
     /* Clean up temporary matrix memory */
-    parsec_data_free(LLt.mat); 
+    if( LLt_core ) hicma_parsec_core_memory_free(LLt.mat);
+    else parsec_data_free(LLt.mat);
     LLt.mat = NULL;
     parsec_tiled_matrix_destroy( (parsec_tiled_matrix_t*)&LLt);
 
-    return 0; 
+    /* Every rank computes the same norms (dplasma_dlansy is collective), so
+     * the verdict is identical everywhere and needs no reduction. */
+    return info_factorization;
 }
 
 /**
@@ -255,16 +292,11 @@ int check_diff( parsec_context_t *parsec, int verbose,
                   parsec_tiled_matrix_t *A,
                   parsec_tiled_matrix_t *A0, double threshold )
 {
-    parsec_matrix_block_cyclic_t *twodA = (parsec_matrix_block_cyclic_t *)A0;
-    parsec_matrix_block_cyclic_t LLt;
     int info_factorization;
     double Rnorm = 0.0;  /* Norm of difference L-L0 */
     double A0norm = 0.0; /* Norm of reference matrix L0 */
     double Anorm = 0.0;  /* Norm of computed matrix L */
     double result = 0.0; /* Relative difference result */
-    int N = A->n;        /* Matrix dimension */
-    double eps = LAPACKE_dlamch_work('e'); /* Machine epsilon */
-    int side;
 
     /* Compute Frobenius norms of both matrices for comparison */
     Anorm = dplasma_dlansy(parsec, PlasmaFrobeniusNorm, uplo, A);
@@ -276,21 +308,22 @@ int check_diff( parsec_context_t *parsec, int verbose,
 
     /* Compute the norm of the difference matrix */
     Rnorm = dplasma_dlansy(parsec, PlasmaFrobeniusNorm, uplo, A);
+    result = Rnorm / Anorm;
 
     /* Print detailed comparison results if verbose mode is enabled */
     if ( verbose ) {
         printf("============\n");
         printf("Checking the equality of lower/upper triangular parts of two matrices. Threshold is %.2e\n", threshold);
-        printf( "-- dpotrf: ||L0||_F = %e, HiCMA: ||L||_F = %e, ||L-L0||_F = %e, ||L-L0||_F/||L||_F = %e \n", A0norm, Anorm, Rnorm, Rnorm/Anorm );
+        printf( "-- dpotrf: ||L0||_F = %e, HiCMA: ||L||_F = %e, ||L-L0||_F = %e, ||L-L0||_F/||L||_F = %e \n", A0norm, Anorm, Rnorm, result );
     }
 
     /* Determine if matrices are equal based on threshold
      * Check for NaN or infinite values to catch numerical issues */
     if ( isnan(Rnorm)  || isinf(Rnorm)  ||
          isnan(result) || isinf(result) ||
-         (Rnorm/Anorm > threshold) )
+         (result > threshold) )
     {
-        if( verbose ) printf("-- DIFFERENT matrices ! \n");
+        if( verbose ) printf("-- DIFFERENT matrices (above the bound; reported only, the residual check decides)\n");
         info_factorization = 1;
     }
     else
@@ -299,7 +332,7 @@ int check_diff( parsec_context_t *parsec, int verbose,
         info_factorization = 0;
     }
 
-    return 0; 
+    return info_factorization;
 }
 
 /* ============================================================================
@@ -463,6 +496,20 @@ int hicma_parsec_check_compression( parsec_context_t *parsec,
             dplasma_wait_until_completion(parsec);
             dplasma_dpotrf_Destruct( parsec_dpotrf );
         }
+
+        /* info is set on the rank that owns the failing diagonal tile only.
+         * A reference factorization that breaks down means the uncompressed
+         * matrix is not positive definite (fixedacc too loose, or a wrong
+         * --adddiag), and the comparisons below would be against garbage. */
+        MPI_Allreduce( MPI_IN_PLACE, &info, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD );
+        if( 0 != info ) {
+            if( 0 == rank ) {
+                fprintf(stderr, RED "The reference dense Cholesky of the uncompressed matrix failed: "
+                        "info= %d (leading minor not positive definite)\n" RESET, info);
+            }
+            params->info = info;
+            exit(1);
+        }
     }
 
     /* Compute determinant of the dense Cholesky result
@@ -507,7 +554,8 @@ int hicma_parsec_check_dpotrf( parsec_context_t *parsec,
     int uplo = params->uplo;
     int maxrank = params->maxrank;
     int verbose = params->verbose;
-    double tol = params->fixedacc;
+    /* --check_tol when given, otherwise the compression tolerance */
+    double tol = params->check_tol > 0.0 ? params->check_tol : params->fixedacc;
     int fixedrk = params->fixedrk;
 
     if(rank == 0) fprintf(stderr, RED "\nCheck Cholesky:\n" RESET);
@@ -533,12 +581,16 @@ int hicma_parsec_check_dpotrf( parsec_context_t *parsec,
         printf("Checking HiCMA L vs dense L\n");
         printf("dcA1 is matrix_uncompressed matrix L obtained from HiCMA_dpotrf_L.jdf on approximate A.\n");
         printf("dcA0  is L factor obtained from dense cholesky (dpotrf_L.jdf in this repo) on approximate A.\n");
-        printf("difference between these two matrices must be less than fixed accuracy threshold %.1e if fixed rank %d is zero.\n", tol, fixedrk);
+        printf("The forward error ||L-L0||_F/||L||_F is reported, not checked: for a mixed-precision run it exceeds the residual by up to the condition number.\n");
         fflush(stdout);
     }
 
-    /* Perform the comparison between HiCMA and dense Cholesky results */
-    params->info |= check_diff( parsec, (rank == 0) ? verbose : 0, uplo,
+    /* The comparison with the dense reference factor is reported, not
+     * binding (it never was: the uncompress below overwrote params->info).
+     * The forward error of a mixed-precision factorization is 10 to 30 times
+     * its backward error on the test problems, so one bound cannot serve
+     * both; the residual check below decides. */
+    (void)check_diff( parsec, (rank == 0) ? verbose : 0, uplo,
             (parsec_tiled_matrix_t *)&data->dcA1,
             (parsec_tiled_matrix_t *)&data->dcA0, tol);
 
@@ -562,7 +614,7 @@ int hicma_parsec_check_dpotrf( parsec_context_t *parsec,
         printf("Checking HiCMA L vs original A via computing LLT\n");
         printf("dcA0 is original problem A withOUT any approximation.\n");
         printf("dcA1 is matrix_uncompressed matrix L obtained from HiCMA_dpotrf_L.jdf on approximate A.\n");
-        printf("difference between these two matrices must be less than fixed accuracy threshold %.1e if fixed rank %d is zero.\n", tol, fixedrk);
+        printf("||LL^T-A||_F/||A||_F must be less than %.1e (--check_tol, default --fixedacc; fixed rank %d).\n", tol, fixedrk);
         fflush(stdout);
     }
 

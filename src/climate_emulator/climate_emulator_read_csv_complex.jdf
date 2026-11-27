@@ -32,10 +32,6 @@ static int read_csv_complex_core(const char* filename, complex double *_data, in
         return -1;
     }
 
-    // Variables for line-by-line parsing (currently unused, kept for future implementation)
-    char *line = NULL;
-    size_t len = 0, row = 0;
-    ssize_t read;
     double real, imag;
     int status;
 
@@ -69,37 +65,12 @@ static int read_csv_complex_core(const char* filename, complex double *_data, in
 #endif
     }
 
-    // Alternative line-by-line parsing approach (currently disabled)
-    // This could be used for more robust CSV parsing in the future
-#if 0
-    while ((read = getline(&line, &len, fp)) != -1) {
-        //printf("Retrieved line of length %zu %zu:\n", read, len);
-        //printf("%s", line);
-        char *token = strtok(line, ",");
-        int col = 0;
-        while (token && col < N) {
-            status = sscanf(token, "%lf%lfi", &real, &imag);
-#if DEBUG_INFO_CLIMATE_EMULATOR
-            if (status != 2) {
-                printf("Error parsing complex number %d %d: %s\n", row, col, token);
-                fclose(fp);
-                return 1;
-            }
-#endif
-            data[col*M+row] = real + imag * I;
-            token = strtok(NULL, ",");
-            col++;
-        }
-        row++;
-    }
-#endif
-
     // Close the file
     fclose(fp);
 
-#if DEBUG_INFO_CLIMATE_EMULATOR
+#if CLIMATE_EMULATOR_DEBUG_INFO
     // Print a subset of the loaded data for debugging (CPU mode only)
-    if(0 == nb_gpus) climate_emulator_print_matrix_col_complex(data, 10, 10, M);
+    if(0 == nb_gpus) climate_emulator_print_matrix_col_complex(_data, 10, 10, M);
 #endif
 
     return 0;
@@ -130,8 +101,10 @@ RW A <- descA(m, n)
 BODY
 {
     // Read complex CSV data into the current tile
-    read_csv_complex_core(filename, A, descA->mb, descA->nb, nb_gpus);
-    
+    if( 0 != read_csv_complex_core(filename, A, descA->mb, descA->nb, nb_gpus) ) {
+        fprintf(stderr, "climate emulator: cannot read %s\n", filename);
+        exit(1);
+    }
     // Placeholder for potential sum operation (currently disabled)
     if(0 && 0 == nb_gpus) climate_emulator_sum_complex_core(A, descA->mb, descA->nb);
 }

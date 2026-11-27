@@ -50,14 +50,14 @@ OPTIONS:
     -t, --test              Run tests after building
     -i, --install           Install after building
     -p, --prefix DIR        Installation prefix (default: /usr/local)
-    --cuda                  Enable CUDA support
+    --cuda                  Enable CUDA support (default: off, CPU-only build)
     --hip                   Enable HIP support
     --fugaku                Enable Fugaku-specific optimizations
     --sanitizer             Enable AddressSanitizer
     --cutlass               Enable CUTLASS support (requires CUDA)
     --static                Build static libraries instead of shared
     --debug                 Build in debug mode
-    --release               Build in release mode (default)
+    --release               Build in Release mode (default: RelWithDebInfo)
 
 EXAMPLES:
     $0 --clean --test --install
@@ -74,7 +74,7 @@ CLEAN=false
 RUN_TESTS=false
 INSTALL=false
 PREFIX="/usr/local"
-ENABLE_CUDA=true
+ENABLE_CUDA=false
 ENABLE_HIP=false
 ENABLE_FUGAKU=false
 ENABLE_SANITIZER=false
@@ -221,8 +221,6 @@ CMAKE_ARGS=(
     -DON_FUGAKU="$ENABLE_FUGAKU"
     -DENABLE_SANITIZER="$ENABLE_SANITIZER"
     -DENABLE_CUTLASS="$ENABLE_CUTLASS"
-    -DBUILD_TESTING="$RUN_TESTS"
-    -DPARSEC_MAX_DEP_OUT_COUNT=16
 )
 
 # Add CUDA-specific options
@@ -255,7 +253,7 @@ print_success "CMake configuration completed"
 
 # Build
 print_status "Building with $JOBS parallel jobs..."
-make -j"$JOBS"
+cmake --build . -j "$JOBS"
 
 if [[ $? -ne 0 ]]; then
     print_error "Build failed"
@@ -267,10 +265,16 @@ print_success "Build completed"
 # Run tests if requested
 if [[ "$RUN_TESTS" == "true" ]]; then
     print_status "Running tests..."
-    make test
-    
+    # The GPU-labelled cases need a device; run them only for a GPU build
+    CTEST_ARGS=(--output-on-failure -L hicma)
+    if [[ "$ENABLE_CUDA" != "true" && "$ENABLE_HIP" != "true" ]]; then
+        CTEST_ARGS+=(-LE gpu)
+    fi
+    ctest "${CTEST_ARGS[@]}"
+
     if [[ $? -ne 0 ]]; then
-        print_warning "Some tests failed"
+        print_error "Some tests failed"
+        exit 1
     else
         print_success "All tests passed"
     fi
@@ -279,7 +283,7 @@ fi
 # Install if requested
 if [[ "$INSTALL" == "true" ]]; then
     print_status "Installing to $PREFIX..."
-    make install
+    cmake --install .
     
     if [[ $? -ne 0 ]]; then
         print_error "Installation failed"

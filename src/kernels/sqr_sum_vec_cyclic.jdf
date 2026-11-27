@@ -64,7 +64,7 @@ void parsec_print_tile2(float *A, int m, int n){
  * @param C Destination vector
  * @param tempnn Number of elements to copy
  */
-void copy_diag(float *T, float *C, int tempnn) {
+static void copy_diag(float *T, float *C, int tempnn) {
     int i;
     for (i=0; i<tempnn; i++) {
         C[i] = T[i*tempnn+i];

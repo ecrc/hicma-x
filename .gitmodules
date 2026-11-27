@@ -10,3 +10,7 @@
     path = hcore
     url = ../../QingleiCao/hcore.git
     branch = hicma_parsec 
+[submodule "omnicast"]
+	path = omnicast
+	url = ../../QingleiCao/OmniCast.git
+	branch = main

@@ -24,8 +24,6 @@
 
 #include "hicma_parsec.h"
 
-#define NUM_FILES 3
-
 /**
  * @brief Main function for testing distributed matrix reading and redistribution
  * @param argc Number of command line arguments
@@ -38,7 +36,7 @@ int main(int argc, char ** argv)
     hicma_parsec_params_t params;
     starsh_params_t params_kernel;
     hicma_parsec_data_t data;
-    hicma_parsec_matrix_analysis_t analysis;
+    hicma_parsec_matrix_analysis_t analysis = {0};
     
     // PaRSEC context pointer
     parsec_context_t* parsec = NULL;
@@ -101,9 +99,6 @@ int main(int argc, char ** argv)
     parsec_redistribute(parsec, (parsec_tiled_matrix_t *) &genotype_desc, 
                        (parsec_tiled_matrix_t *)&A,  
                        params.nsnp, params.N, 0, 0, 0, 0);
-
-    // Uncomment the following line to print the matrix contents for debugging
-    // parsec_print_cm(parsec, (parsec_tiled_matrix_t *)&A, params.rank, params.P, params.nodes/params.P); 
 
     printf("Cleaning up allocated resources\n");
 
