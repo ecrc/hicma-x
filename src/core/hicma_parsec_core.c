@@ -3865,7 +3865,8 @@ void hicma_parsec_core_potrf_gpu( parsec_tiled_matrix_t* descA,
 #endif
 
 #if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
-        HICMA_CUSOLVER( rocsolver_spotrf(handle, rocblas_fill_lower, tempkn, T, ldak, dev_info) );
+        /* not rocsolver_spotrf: see hicma_potrf_lower_hip_d in hicma_parsec_hip.cu */
+        HICMA_CUBLAS( hicma_potrf_lower_hip_s(handle, tempkn, T, ldak, dev_info) );
 #endif
 
 
@@ -3878,8 +3879,9 @@ void hicma_parsec_core_potrf_gpu( parsec_tiled_matrix_t* descA,
 #endif
 
 #if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
-        //printf("dev_info %d\n", dev_info[0]);
-        HICMA_CUSOLVER( rocsolver_dpotrf(handle, rocblas_fill_lower, tempkn, T, ldak, dev_info) );
+        /* not rocsolver_dpotrf, whose diagonal-block kernel has a race that gives
+         * a wrong factor now and then (hicma_parsec_hip.cu) */
+        HICMA_CUBLAS( hicma_potrf_lower_hip_d(handle, tempkn, T, ldak, dev_info) );
 #endif
 
     }

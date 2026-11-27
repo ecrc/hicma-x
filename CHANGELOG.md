@@ -555,6 +555,24 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   the GPU kernel time there, so halving them leaves the factorization within
   noise (0.997-1.014x).
 
+- **The GPU POTRF on HIP no longer calls rocSOLVER.** `rocsolver_?potrf`
+  factors its diagonal blocks (127 columns in double, 180 in single) in a
+  kernel (`potf2_simple`) where every thread reads the pivot from shared
+  memory and thread 0 then overwrites it with its square root before the
+  first barrier: a wave that reads late takes the square root twice, and
+  `info` stays 0. ROCm 6.3 (rocSOLVER 3.27) has it; upstream added the
+  barrier in March 2026 (ROCm/rocm-libraries#3794), and ROCm 6.4 and later
+  do not support gfx906. The waves drift apart when other kernels share the
+  GPU, as they always do in the tile Cholesky: on a Radeon VII at N=8192,
+  19 of 3000 factorizations had a wrong diagonal tile (FP64 as often as
+  adaptive; none with one execution stream, none on an A100), and one wrong
+  factor passed its check. `hicma_potrf_lower_hip_d`/`_s`
+  (`src/core/hicma_parsec_hip.cu`) factor each 64-column diagonal block in
+  one workgroup, with a barrier between reading and writing the pivot, and
+  the rest with hipBLAS TRSM and SYRK: 0 wrong factorizations in 3000, with
+  the same residuals and `info` as rocSOLVER and 4.75 ms against 4.92 ms
+  per 1024 tile (the report, chapter 13).
+
 ### Multi-node and multi-GPU pass (two Radeon VII nodes)
 
 - Multi-rank GPU runs aborted at the first tile a GPU sent when the MPI
@@ -621,6 +639,9 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   use `--tensor_gemm_hp 0x20` (BF16) with adaptive precisions in the dense
   layout. gfx906 keeps them and has no BF16 hardware: keep FP16 there.
 - `--enable_stochastic_rounding` is not implemented for kinds 8, 9 and 10.
+- DPLASMA's own HIP POTRF (its testers with GPUs) still calls rocSOLVER and is
+  exposed to its race on AMD GPUs (the report, chapter 13); HiCMA-X's check
+  runs its DPLASMA reference factorization on the CPU.
 - The CPU and GPU runtime-decision GEMMs use different storage policies for
   FP16 updates.
 - Mixed-precision runs reach the accuracy of the precisions they use, not an

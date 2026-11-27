@@ -516,3 +516,116 @@ extern "C" void set_device_double(double* d_dst, double x, cudaStream_t stream)
 
 
 /****************************************************************************************************/
+
+
+/****************************************************************************************************/
+/* Lower Cholesky of a tile without rocSOLVER (hicma_potrf_lower_hip_d/_s)
+ *
+ * rocSOLVER's ?potrf factors its diagonal blocks (127 columns in double, 180 in single) with the
+ * potf2 kernel of roclapack_potf2_specialized_kernels.hpp (potf2_simple). There every thread reads
+ * the pivot A(k,k) from shared memory and thread 0 then overwrites it with its square root before
+ * the first barrier, so a wave that reads late scales its part of column k by the fourth root of the
+ * pivot, and info stays 0. It is in ROCm 6.3 (rocSOLVER 3.27) and later releases; upstream added the
+ * barrier in March 2026 (ROCm/rocm-libraries#3794), and ROCm 6.4 and later no longer support gfx906.
+ * The waves drift apart when other kernels run on the GPU, which the tile Cholesky always does
+ * (TRSMs, SYRKs and GEMMs on the other streams): about one POTRF in a thousand was wrong on a
+ * Radeon VII, and the factorization with it, now and then without failing its check.
+ *
+ * Here a single workgroup factors each block of HICMA_POTF2_NB columns in shared memory, with a
+ * barrier between reading the pivot and writing it, and hipBLAS does the TRSM and SYRK in between.
+ * Same contract as rocsolver_?potrf (lower, info on the device: 0, or the 1-based column of the
+ * first pivot that is not positive), on the stream of the hipBLAS handle. */
+#define HICMA_POTF2_NB      64
+#define HICMA_POTF2_THREADS 256
+
+template <typename T>
+__global__ void hicma_potf2_lower_kernel(int n, T *A, int lda, int *info, int offset)
+{
+    __shared__ T s[HICMA_POTF2_NB * HICMA_POTF2_NB];
+    const int tid = hipThreadIdx_x, nt = hipBlockDim_x;
+
+    for( int idx = tid; idx < n * n; idx += nt ) {
+        const int i = idx % n, j = idx / n;
+        s[i + j * HICMA_POTF2_NB] = (i >= j) ? A[i + (size_t)j * lda] : T(0);
+    }
+    __syncthreads();
+
+    for( int k = 0; k < n; k++ ) {
+        const T akk = s[k + k * HICMA_POTF2_NB];
+        __syncthreads();   /* every thread has read the pivot before thread 0 replaces it */
+        if( !(akk > T(0)) || !isfinite(akk) ) {
+            /* every thread read the same value: they all leave here */
+            if( 0 == tid && 0 == *info ) *info = offset + k + 1;
+            return;        /* the block keeps its input values; the factorization has failed (info) */
+        }
+        const T lkk = sqrt(akk);
+        for( int i = k + 1 + tid; i < n; i += nt ) s[i + k * HICMA_POTF2_NB] /= lkk;
+        if( 0 == tid ) s[k + k * HICMA_POTF2_NB] = lkk;
+        __syncthreads();
+        const int m = n - k - 1;
+        for( int idx = tid; idx < m * m; idx += nt ) {
+            const int i = k + 1 + idx % m, j = k + 1 + idx / m;
+            if( i >= j ) s[i + j * HICMA_POTF2_NB] -= s[i + k * HICMA_POTF2_NB] * s[j + k * HICMA_POTF2_NB];
+        }
+        __syncthreads();
+    }
+
+    for( int idx = tid; idx < n * n; idx += nt ) {
+        const int i = idx % n, j = idx / n;
+        if( i >= j ) A[i + (size_t)j * lda] = s[i + j * HICMA_POTF2_NB];
+    }
+}
+
+static hipblasStatus_t hicma_potrf_trsm(hipblasHandle_t h, int m, int n, const double *L, int lda, double *B)
+{
+    const double one = 1.0;
+    return hipblasDtrsm(h, HIPBLAS_SIDE_RIGHT, HIPBLAS_FILL_MODE_LOWER, HIPBLAS_OP_T, HIPBLAS_DIAG_NON_UNIT, m, n, &one, L, lda, B, lda);
+}
+static hipblasStatus_t hicma_potrf_trsm(hipblasHandle_t h, int m, int n, const float *L, int lda, float *B)
+{
+    const float one = 1.0f;
+    return hipblasStrsm(h, HIPBLAS_SIDE_RIGHT, HIPBLAS_FILL_MODE_LOWER, HIPBLAS_OP_T, HIPBLAS_DIAG_NON_UNIT, m, n, &one, L, lda, B, lda);
+}
+static hipblasStatus_t hicma_potrf_syrk(hipblasHandle_t h, int n, int k, const double *A, int lda, double *C)
+{
+    const double one = 1.0, mone = -1.0;
+    return hipblasDsyrk(h, HIPBLAS_FILL_MODE_LOWER, HIPBLAS_OP_N, n, k, &mone, A, lda, &one, C, lda);
+}
+static hipblasStatus_t hicma_potrf_syrk(hipblasHandle_t h, int n, int k, const float *A, int lda, float *C)
+{
+    const float one = 1.0f, mone = -1.0f;
+    return hipblasSsyrk(h, HIPBLAS_FILL_MODE_LOWER, HIPBLAS_OP_N, n, k, &mone, A, lda, &one, C, lda);
+}
+
+template <typename T>
+static hipblasStatus_t hicma_potrf_lower_hip(hipblasHandle_t handle, int n, T *A, int lda, int *info)
+{
+    hipStream_t stream = NULL;
+    hipblasStatus_t st = hipblasGetStream(handle, &stream);
+    if( HIPBLAS_STATUS_SUCCESS != st ) return st;
+    if( hipSuccess != hipMemsetAsync(info, 0, sizeof(int), stream) ) return HIPBLAS_STATUS_EXECUTION_FAILED;
+    for( int j = 0; j < n; j += HICMA_POTF2_NB ) {
+        const int jb = (n - j < HICMA_POTF2_NB) ? n - j : HICMA_POTF2_NB;
+        const int r = n - j - jb;
+        T *Ajj = A + j + (size_t)j * lda;
+        hipLaunchKernelGGL(hicma_potf2_lower_kernel<T>, dim3(1), dim3(HICMA_POTF2_THREADS), 0, stream, jb, Ajj, lda, info, j);
+        if( hipSuccess != hipGetLastError() ) return HIPBLAS_STATUS_EXECUTION_FAILED;
+        if( r <= 0 ) break;
+        T *Arj = Ajj + jb, *Arr = Ajj + jb + (size_t)jb * lda;
+        st = hicma_potrf_trsm(handle, r, jb, Ajj, lda, Arj);
+        if( HIPBLAS_STATUS_SUCCESS != st ) return st;
+        st = hicma_potrf_syrk(handle, r, jb, Arj, lda, Arr);
+        if( HIPBLAS_STATUS_SUCCESS != st ) return st;
+    }
+    return HIPBLAS_STATUS_SUCCESS;
+}
+
+extern "C" hipblasStatus_t hicma_potrf_lower_hip_d(hipblasHandle_t handle, int n, double *A, int lda, int *info)
+{
+    return hicma_potrf_lower_hip<double>(handle, n, A, lda, info);
+}
+
+extern "C" hipblasStatus_t hicma_potrf_lower_hip_s(hipblasHandle_t handle, int n, float *A, int lda, int *info)
+{
+    return hicma_potrf_lower_hip<float>(handle, n, A, lda, info);
+}

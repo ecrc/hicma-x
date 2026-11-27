@@ -573,10 +573,10 @@ static void hicma_gpu_handles_warmup( parsec_potrf_stream_workspace_t *sw, hipSt
         hipblasDnrm2(sw->handle_cublas_deviceptr, mb * mb, A, 1, (double *)B);
         hipblasSnrm2(sw->handle_cublas_deviceptr, mb * mb, A, 1, (float *)B);
     }
-    if( NULL != sw->handle_cusolver && NULL != sw->gpu_buffer ) {
+    if( NULL != sw->handle_cusolver && NULL != sw->gpu_buffer ) {  /* the GPU POTRF, hicma_potrf_lower_hip_* */
         hipblasSetStream(sw->handle_cusolver, stream);
-        rocsolver_dpotrf(sw->handle_cusolver, rocblas_fill_lower, mb, C, mb, (int *)sw->gpu_buffer);
-        rocsolver_spotrf(sw->handle_cusolver, rocblas_fill_lower, mb, C, mb, (int *)sw->gpu_buffer);
+        hicma_potrf_lower_hip_d(sw->handle_cusolver, mb, (double *)C, mb, (int *)sw->gpu_buffer);
+        hicma_potrf_lower_hip_s(sw->handle_cusolver, mb, (float *)C, mb, (int *)sw->gpu_buffer);
     }
     hipMemsetAsync(A, 0, bytes, stream);
     hipMemsetAsync(B, 0, bytes, stream);

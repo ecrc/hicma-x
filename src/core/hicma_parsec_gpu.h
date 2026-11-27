@@ -385,6 +385,14 @@ int bitmask_tensergemm_GPU( int8_t *input, void *A,  void *B, int32_t *C, int m,
 // stream: stream to enqueue the kernel (0 = default)
 void set_device_double(double* d_dst, double x, cudaStream_t stream);
 
+#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+/* Lower Cholesky of an n x n tile on the stream of a hipBLAS handle, in place of
+ * rocsolver_?potrf, whose diagonal-block kernel has a race (hicma_parsec_hip.cu).
+ * info (device): 0, or the 1-based column of the first pivot that is not positive. */
+hipblasStatus_t hicma_potrf_lower_hip_d(hipblasHandle_t handle, int n, double *A, int lda, int *info);
+hipblasStatus_t hicma_potrf_lower_hip_s(hipblasHandle_t handle, int n, float *A, int lda, int *info);
+#endif
+
 /* ============================================================================
  * GPU core operations
  * ============================================================================ */

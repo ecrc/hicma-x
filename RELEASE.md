@@ -35,6 +35,11 @@ and the genomics (kernel ridge regression) applications.
   to a wrong factor or a later, unrelated error.
 - Validated on two nodes (two Radeon VII nodes over InfiniBand; a V100 and
   an A100 node over Ethernet) and with several GPUs per process.
+- On AMD GPUs the Cholesky factors its diagonal tiles with its own GPU
+  routine instead of rocSOLVER's POTRF, which has a race in ROCm releases
+  before its March 2026 fix (ROCm 6.4 and later do not support gfx906): on a
+  Radeon VII about one factorization in 150 came out wrong, now and then
+  without failing the check.
 
 ### Supported configurations
 
@@ -57,6 +62,10 @@ GSL optional (Matérn kernels).
 - The Cholesky drivers require `N` to be a multiple of `NB` (rejected at
   start-up). The TRMM supports partial tiles.
 - Cholesky kinds 1 to 4 have CUDA bodies only; on HIP they run on the CPU.
+- DPLASMA's own HIP POTRF (used by its testers, such as `testing_dpotrf`
+  with GPUs) still calls rocSOLVER, and can give a wrong factor on AMD GPUs
+  with a ROCm older than rocSOLVER's March 2026 fix. HiCMA-X does not use it
+  on GPUs: the reference factorization of `--check` runs on the CPU.
 - AMD GPUs (gfx90a: MI210, MI250X) flush FP16 subnormals (|x| < 6.1e-5) to
   zero in their FP16 GEMMs, and adaptive decisions put small entries in FP16:
   an adaptive kind-5 run at N=30720 gave 1.0e-5 for `--fixedacc 1e-8`. Pass
